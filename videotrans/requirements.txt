@@ -1,0 +1,17 @@
+--extra-index-url https://download.pytorch.org/whl/cu128
+yt-dlp>=2025.1.15
+google-genai>=1.14.0
+groq>=0.18.0
+torch>=2.7.0
+torchaudio>=2.7.0
+numpy>=1.26.4
+librosa>=0.10.2.post1
+soundfile>=0.12.1
+ffmpeg-python>=0.2.0
+python-dotenv>=1.0.1
+requests>=2.32.3
+pyannote.audio>=3.3.2
+audio-separator[gpu]>=0.34.0
+pydub>=0.25.1
+pysubs2>=1.7.3
+gradio_client>=2.0.0

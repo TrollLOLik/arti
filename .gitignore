@@ -1,0 +1,12 @@
+venv/
+logs/
+temp/
+.idea/
+.vscode/
+.windsurf/
+.env
+
+# Отключаем загрузку тяжелых аудиофайлов и баз данных/сессий (по желанию)
+*.wav
+*.session
+*.session-journal

@@ -1,0 +1,1873 @@
+"""
+Модели данных для работы с PostgreSQL
+"""
+import json
+import logging
+from datetime import datetime, timedelta
+from typing import Optional, List, Tuple, Dict, Any
+import asyncpg
+
+from .connection import get_db
+
+logger = logging.getLogger(__name__)
+
+# Выделенный логгер для логов заряда в logs/emotional.log
+emotional_logger = logging.getLogger("emotional.state")
+emotional_logger.setLevel(logging.INFO)
+if not any(isinstance(h, logging.FileHandler) for h in emotional_logger.handlers):
+    import os
+    os.makedirs("logs", exist_ok=True)
+    fh = logging.FileHandler("logs/emotional.log", encoding="utf-8")
+    fh.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+    emotional_logger.addHandler(fh)
+
+
+class ChatHistory:
+    """Работа с историей чатов"""
+    
+    @staticmethod
+    async def save(chat_id: int, user_name: str, message_text: str, timestamp: Optional[datetime] = None):
+        """Сохранить сообщение в историю чата"""
+        if timestamp is None:
+            timestamp = datetime.now()
+        
+        async with get_db() as conn:
+            await conn.execute("""
+                INSERT INTO chat_history (chat_id, timestamp, user_name, message_text, created_at)
+                VALUES ($1, $2, $3, $4, NOW())
+            """, chat_id, timestamp, user_name, message_text)
+            
+            # Очищаем старые записи (оставляем только последние 30)
+            await conn.execute("""
+                DELETE FROM chat_history
+                WHERE chat_id = $1
+                AND id NOT IN (
+                    SELECT id FROM chat_history
+                    WHERE chat_id = $1
+                    ORDER BY timestamp DESC
+                    LIMIT 30
+                )
+            """, chat_id)
+    
+    @staticmethod
+    async def get_recent(chat_id: int, limit: int = 30) -> List[Tuple[datetime, str]]:
+        """Получить последние сообщения чата"""
+        async with get_db() as conn:
+            rows = await conn.fetch("""
+                SELECT timestamp, user_name || ': ' || message_text as message
+                FROM chat_history
+                WHERE chat_id = $1
+                ORDER BY timestamp DESC
+                LIMIT $2
+            """, chat_id, limit)
+            
+            return [(row['timestamp'], row['message']) for row in reversed(rows)]
+    
+    @staticmethod
+    async def clear(chat_id: int):
+        """Очистить историю чата"""
+        async with get_db() as conn:
+            await conn.execute("DELETE FROM chat_history WHERE chat_id = $1", chat_id)
+
+
+class ChatHistoryRP:
+    """Работа с историей RP-чатов"""
+
+    @staticmethod
+    async def save(chat_id: int, user_name: str, message_text: str, timestamp: Optional[datetime] = None):
+        """Сохранить сообщение в RP-историю чата"""
+        if timestamp is None:
+            timestamp = datetime.now()
+
+        async with get_db() as conn:
+            await conn.execute("""
+                INSERT INTO chat_history_rp (chat_id, timestamp, user_name, message_text, created_at)
+                VALUES ($1, $2, $3, $4, NOW())
+            """, chat_id, timestamp, user_name, message_text)
+
+            await conn.execute("""
+                DELETE FROM chat_history_rp
+                WHERE chat_id = $1
+                AND id NOT IN (
+                    SELECT id FROM chat_history_rp
+                    WHERE chat_id = $1
+                    ORDER BY timestamp DESC
+                    LIMIT 30
+                )
+            """, chat_id)
+
+    @staticmethod
+    async def get_recent(chat_id: int, limit: int = 30) -> List[Tuple[datetime, str]]:
+        """Получить последние сообщения RP-чата"""
+        async with get_db() as conn:
+            rows = await conn.fetch("""
+                SELECT timestamp, user_name || ': ' || message_text as message
+                FROM chat_history_rp
+                WHERE chat_id = $1
+                ORDER BY timestamp DESC
+                LIMIT $2
+            """, chat_id, limit)
+
+            return [(row['timestamp'], row['message']) for row in reversed(rows)]
+
+    @staticmethod
+    async def clear(chat_id: int):
+        """Очистить RP-историю чата"""
+        async with get_db() as conn:
+            await conn.execute("DELETE FROM chat_history_rp WHERE chat_id = $1", chat_id)
+
+
+class ActiveUser:
+    """Работа с активными пользователями"""
+    
+    @staticmethod
+    async def add(chat_id: int, user_id: int):
+        """Добавить/обновить активного пользователя"""
+        async with get_db() as conn:
+            await conn.execute("""
+                INSERT INTO active_users (chat_id, user_id, last_activity)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (chat_id, user_id)
+                DO UPDATE SET last_activity = NOW()
+            """, chat_id, user_id)
+    
+    @staticmethod
+    async def is_active(chat_id: int, user_id: int, timeout_seconds: int = 20) -> bool:
+        """Проверить, активен ли пользователь"""
+        async with get_db() as conn:
+            row = await conn.fetchrow("""
+                SELECT last_activity
+                FROM active_users
+                WHERE chat_id = $1 AND user_id = $2
+            """, chat_id, user_id)
+            
+            if row is None:
+                return False
+            
+            time_diff = datetime.now() - row['last_activity']
+            return time_diff.total_seconds() <= timeout_seconds
+    
+    @staticmethod
+    async def cleanup_old(timeout_seconds: int = 20):
+        """Очистить старых неактивных пользователей"""
+        async with get_db() as conn:
+            await conn.execute("""
+                DELETE FROM active_users
+                WHERE last_activity < NOW() - INTERVAL '%s seconds'
+            """ % timeout_seconds)
+
+
+class SpamProtection:
+    """Работа со спам-защитой"""
+    
+    @staticmethod
+    async def get_or_create(chat_id: int, user_id: int) -> dict:
+        """Получить или создать запись спам-защиты"""
+        async with get_db() as conn:
+            row = await conn.fetchrow("""
+                SELECT blocked_until, warnings_sent, last_command_time, command_count, command_timestamps
+                FROM spam_protection
+                WHERE chat_id = $1 AND user_id = $2
+            """, chat_id, user_id)
+            
+            if row is None:
+                await conn.execute("""
+                    INSERT INTO spam_protection (chat_id, user_id)
+                    VALUES ($1, $2)
+                """, chat_id, user_id)
+                return {
+                    'blocked_until': None,
+                    'warnings_sent': False,
+                    'last_command_time': None,
+                    'command_count': 0,
+                    'command_timestamps': []
+                }
+            
+            # Парсим JSONB массив времен в список datetime
+            import json
+            timestamps_json = row['command_timestamps'] or []
+            if isinstance(timestamps_json, str):
+                try:
+                    timestamps_json = json.loads(timestamps_json)
+                except:
+                    timestamps_json = []
+            timestamps = []
+            for ts in timestamps_json:
+                if isinstance(ts, str):
+                    try:
+                        timestamps.append(datetime.fromisoformat(ts))
+                    except:
+                        continue
+                elif isinstance(ts, datetime):
+                    timestamps.append(ts)
+            
+            return {
+                'blocked_until': row['blocked_until'],
+                'warnings_sent': row['warnings_sent'],
+                'last_command_time': row['last_command_time'],
+                'command_count': row['command_count'],
+                'command_timestamps': timestamps
+            }
+    
+    @staticmethod
+    async def update(chat_id: int, user_id: int, **kwargs):
+        """Обновить данные спам-защиты"""
+        updates = []
+        values = []
+        param_idx = 1
+        
+        for key, value in kwargs.items():
+            if key in ['blocked_until', 'warnings_sent', 'last_command_time', 'command_count']:
+                updates.append(f"{key} = ${param_idx}")
+                values.append(value)
+                param_idx += 1
+            elif key == 'command_timestamps':
+                # Конвертируем список datetime в JSON
+                import json
+                timestamps_str = [ts.isoformat() if isinstance(ts, datetime) else str(ts) for ts in value]
+                updates.append(f"{key} = ${param_idx}::jsonb")
+                values.append(json.dumps(timestamps_str))
+                param_idx += 1
+        
+        if not updates:
+            return
+        
+        values.extend([chat_id, user_id])
+        
+        async with get_db() as conn:
+            await conn.execute(f"""
+                UPDATE spam_protection
+                SET {', '.join(updates)}
+                WHERE chat_id = ${param_idx} AND user_id = ${param_idx + 1}
+            """, *values)
+    
+    @staticmethod
+    async def clear(chat_id: int, user_id: int):
+        """Очистить данные спам-защиты"""
+        async with get_db() as conn:
+            await conn.execute("""
+                UPDATE spam_protection
+                SET blocked_until = NULL,
+                    warnings_sent = FALSE,
+                    last_command_time = NULL,
+                    command_count = 0,
+                    command_timestamps = '[]'::jsonb
+                WHERE chat_id = $1 AND user_id = $2
+            """, chat_id, user_id)
+
+
+class ResponseStatus:
+    """Статус ответов бота в чате"""
+    
+    @staticmethod
+    async def get(chat_id: int) -> bool:
+        """Получить статус ответов"""
+        async with get_db() as conn:
+            row = await conn.fetchrow("""
+                SELECT enabled FROM response_status WHERE chat_id = $1
+            """, chat_id)
+            
+            return row['enabled'] if row else False
+    
+    @staticmethod
+    async def set(chat_id: int, enabled: bool):
+        """Установить статус ответов"""
+        async with get_db() as conn:
+            await conn.execute("""
+                INSERT INTO response_status (chat_id, enabled, updated_at)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (chat_id)
+                DO UPDATE SET enabled = $2, updated_at = NOW()
+            """, chat_id, enabled)
+
+
+class LastMessage:
+    """Последние сообщения Арти пользователю"""
+    
+    @staticmethod
+    async def set(chat_id: int, user_id: int):
+        """Установить время последнего сообщения"""
+        async with get_db() as conn:
+            await conn.execute("""
+                INSERT INTO last_artis_messages (chat_id, user_id, message_time)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (chat_id, user_id)
+                DO UPDATE SET message_time = NOW()
+            """, chat_id, user_id)
+    
+    @staticmethod
+    async def get(chat_id: int, user_id: int) -> Optional[datetime]:
+        """Получить время последнего сообщения"""
+        async with get_db() as conn:
+            row = await conn.fetchrow("""
+                SELECT message_time
+                FROM last_artis_messages
+                WHERE chat_id = $1 AND user_id = $2
+            """, chat_id, user_id)
+            
+            return row['message_time'] if row else None
+
+
+class ImagePrompt:
+    """Ожидание промпта для изображения"""
+    
+    @staticmethod
+    async def set_waiting(chat_id: int, user_id: int, waiting: bool):
+        """Установить статус ожидания промпта"""
+        async with get_db() as conn:
+            if waiting:
+                await conn.execute("""
+                    INSERT INTO image_prompts (chat_id, user_id, waiting)
+                    VALUES ($1, $2, TRUE)
+                    ON CONFLICT (chat_id, user_id)
+                    DO UPDATE SET waiting = TRUE
+                """, chat_id, user_id)
+            else:
+                await conn.execute("""
+                    DELETE FROM image_prompts
+                    WHERE chat_id = $1 AND user_id = $2
+                """, chat_id, user_id)
+    
+    @staticmethod
+    async def is_waiting(chat_id: int, user_id: int) -> bool:
+        """Проверить, ожидается ли промпт"""
+        async with get_db() as conn:
+            row = await conn.fetchrow("""
+                SELECT waiting FROM image_prompts
+                WHERE chat_id = $1 AND user_id = $2
+            """, chat_id, user_id)
+            
+            return row['waiting'] if row else False
+
+
+class ChatModel:
+    """Выбор модели ИИ для чата"""
+
+    @staticmethod
+    async def get(chat_id: int, default_model: str) -> str:
+        """Получить выбранную модель"""
+        async with get_db() as conn:
+            row = await conn.fetchrow("""
+                SELECT model_id FROM chat_models WHERE chat_id = $1
+            """, chat_id)
+
+            return row['model_id'] if row else default_model
+
+    @staticmethod
+    async def set(chat_id: int, model_id: str):
+        """Установить модель"""
+        async with get_db() as conn:
+            await conn.execute("""
+                INSERT INTO chat_models (chat_id, model_id, updated_at)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (chat_id)
+                DO UPDATE SET model_id = $2, updated_at = NOW()
+            """, chat_id, model_id)
+
+
+class UserLocation:
+    """Работа с геолокацией пользователей"""
+
+    @staticmethod
+    async def save(user_id: int, lat: float, lng: float, address: str = None, city: str = None):
+        """Сохранить или обновить геопозицию пользователя"""
+        async with get_db() as conn:
+            await conn.execute("""
+                INSERT INTO user_locations (user_id, lat, lng, address, city, updated_at)
+                VALUES ($1, $2, $3, $4, $5, NOW())
+                ON CONFLICT (user_id)
+                DO UPDATE SET lat = $2, lng = $3, address = $4, city = $5, updated_at = NOW()
+            """, user_id, lat, lng, address, city)
+
+    @staticmethod
+    async def get(user_id: int) -> Optional[dict]:
+        """Получить геопозицию пользователя из БД"""
+        async with get_db() as conn:
+            row = await conn.fetchrow("""
+                SELECT lat, lng, address, city, updated_at
+                FROM user_locations WHERE user_id = $1
+            """, user_id)
+            if row:
+                return {
+                    "lat": row["lat"],
+                    "lng": row["lng"],
+                    "address": row["address"],
+                    "city": row["city"],
+                    "updated_at": row["updated_at"]
+                }
+            return None
+
+    @staticmethod
+    async def get_with_ttl(user_id: int, ttl_seconds: int = 14400) -> Optional[dict]:
+        """Получить геопозицию, если она не протухла (по умолчанию 4 часа)"""
+        async with get_db() as conn:
+            row = await conn.fetchrow("""
+                SELECT lat, lng, address, city, updated_at
+                FROM user_locations
+                WHERE user_id = $1 AND updated_at > NOW() - INTERVAL '%s seconds'
+            """ % ttl_seconds, user_id)
+            if row:
+                return {
+                    "lat": row["lat"],
+                    "lng": row["lng"],
+                    "address": row["address"],
+                    "city": row["city"],
+                    "updated_at": row["updated_at"]
+                }
+            return None
+
+    @staticmethod
+    async def update_address(user_id: int, address: str, city: str = None):
+        """Обновить адрес после геокодирования"""
+        async with get_db() as conn:
+            await conn.execute("""
+                UPDATE user_locations
+                SET address = $2, city = $3, updated_at = NOW()
+                WHERE user_id = $1
+            """, user_id, address, city)
+
+
+class SavedVoice:
+    @staticmethod
+    async def save(
+        user_id: int,
+        chat_id: int,
+        name: str,
+        catbox_url: str,
+        catbox_file_id: str = None,
+        source_kind: str = None,
+        cleaned: bool = False,
+        duration_sec: float = None,
+    ) -> dict:
+        async with get_db() as conn:
+            row = await conn.fetchrow("""
+                INSERT INTO saved_voices (
+                    user_id, chat_id, name, catbox_url, catbox_file_id,
+                    source_kind, cleaned, duration_sec, created_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+                ON CONFLICT (user_id, name)
+                DO UPDATE SET
+                    chat_id = $2,
+                    catbox_url = $4,
+                    catbox_file_id = $5,
+                    source_kind = $6,
+                    cleaned = $7,
+                    duration_sec = $8,
+                    created_at = NOW(),
+                    last_used_at = NULL
+                RETURNING *
+            """, user_id, chat_id, name, catbox_url, catbox_file_id, source_kind, cleaned, duration_sec)
+            return dict(row)
+
+    @staticmethod
+    async def list_for_user(user_id: int, limit: int = 20) -> List[dict]:
+        async with get_db() as conn:
+            rows = await conn.fetch("""
+                SELECT *
+                FROM saved_voices
+                WHERE user_id = $1
+                ORDER BY created_at DESC
+                LIMIT $2
+            """, user_id, limit)
+            return [dict(row) for row in rows]
+
+    @staticmethod
+    async def get(user_id: int, voice_id: int) -> Optional[dict]:
+        async with get_db() as conn:
+            row = await conn.fetchrow("""
+                SELECT *
+                FROM saved_voices
+                WHERE user_id = $1 AND id = $2
+            """, user_id, voice_id)
+            return dict(row) if row else None
+
+    @staticmethod
+    async def get_by_name(user_id: int, name: str) -> Optional[dict]:
+        async with get_db() as conn:
+            row = await conn.fetchrow("""
+                SELECT *
+                FROM saved_voices
+                WHERE user_id = $1 AND name = $2
+            """, user_id, name)
+            return dict(row) if row else None
+
+    @staticmethod
+    async def delete(user_id: int, voice_id: int) -> Optional[dict]:
+        async with get_db() as conn:
+            row = await conn.fetchrow("""
+                DELETE FROM saved_voices
+                WHERE user_id = $1 AND id = $2
+                RETURNING *
+            """, user_id, voice_id)
+            return dict(row) if row else None
+
+    @staticmethod
+    async def delete_by_name(user_id: int, name: str) -> Optional[dict]:
+        async with get_db() as conn:
+            row = await conn.fetchrow("""
+                DELETE FROM saved_voices
+                WHERE user_id = $1 AND name = $2
+                RETURNING *
+            """, user_id, name)
+            return dict(row) if row else None
+
+    @staticmethod
+    async def touch(user_id: int, voice_id: int):
+        async with get_db() as conn:
+            await conn.execute("""
+                UPDATE saved_voices
+                SET last_used_at = NOW()
+                WHERE user_id = $1 AND id = $2
+            """, user_id, voice_id)
+
+
+class MemoryMessage:
+    @staticmethod
+    async def save(
+        chat_id: int,
+        user_name: str,
+        message_text: str,
+        user_id: int = None,
+        role: str = "user",
+        mode: str = "default",
+        source: str = "chat",
+        metadata: Dict[str, Any] = None,
+    ) -> Optional[int]:
+        if not message_text:
+            return None
+
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
+        async with get_db() as conn:
+            row = await conn.fetchrow("""
+                INSERT INTO memory_messages (
+                    chat_id, user_id, user_name, role, mode, source, message_text, metadata, created_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, NOW())
+                RETURNING id
+            """, chat_id, user_id, user_name, role, mode, source, message_text, metadata_json)
+            return row["id"] if row else None
+
+    @staticmethod
+    async def search(chat_id: int, query: str, mode: str = "default", limit: int = 5) -> List[dict]:
+        query = (query or "").strip()
+        if not query:
+            return []
+
+        async with get_db() as conn:
+            rows = await conn.fetch("""
+                WITH q AS (
+                    SELECT plainto_tsquery('russian', $2) AS query
+                )
+                SELECT *,
+                    ts_rank(to_tsvector('russian', coalesce(message_text, '')), q.query) AS rank
+                FROM memory_messages
+                CROSS JOIN q
+                WHERE chat_id = $1
+                AND mode = $3
+                AND role IN ('user', 'assistant', 'memory')
+                AND (
+                    to_tsvector('russian', coalesce(message_text, '')) @@ q.query
+                    OR message_text ILIKE '%' || $2 || '%'
+                )
+                ORDER BY rank DESC, created_at DESC
+                LIMIT $4
+            """, chat_id, query, mode, limit)
+            return [dict(row) for row in rows]
+
+    @staticmethod
+    async def fetch_for_chunking(limit: int = 5000, after_id: int = 0) -> List[dict]:
+        async with get_db() as conn:
+            rows = await conn.fetch("""
+                SELECT id, chat_id, user_id, user_name, role, mode, message_text, created_at
+                FROM memory_messages
+                WHERE id > $1
+                AND role IN ('user', 'assistant', 'memory')
+                ORDER BY chat_id, mode, created_at, id
+                LIMIT $2
+            """, after_id, limit)
+            return [dict(row) for row in rows]
+
+
+def _vector_to_pg(value: List[float]) -> str:
+    return "[" + ",".join(f"{float(item):.8f}" for item in value) + "]"
+
+
+class MemoryChunk:
+    @staticmethod
+    async def create(
+        chat_id: int,
+        chunk_text: str,
+        message_ids: List[int],
+        user_id: int = None,
+        mode: str = "default",
+        token_estimate: int = 0,
+        metadata: Dict[str, Any] = None,
+    ) -> Optional[int]:
+        if not chunk_text or not message_ids:
+            return None
+
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
+        async with get_db() as conn:
+            exists = await conn.fetchval("""
+                SELECT id
+                FROM memory_chunks
+                WHERE message_ids = $1::bigint[]
+                LIMIT 1
+            """, message_ids)
+            if exists:
+                return exists
+
+            row = await conn.fetchrow("""
+                INSERT INTO memory_chunks (
+                    chat_id, user_id, mode, chunk_text, message_ids,
+                    token_estimate, metadata, created_at
+                )
+                VALUES ($1, $2, $3, $4, $5::bigint[], $6, $7::jsonb, NOW())
+                RETURNING id
+            """, chat_id, user_id, mode, chunk_text, message_ids, token_estimate, metadata_json)
+            return row["id"] if row else None
+
+    @staticmethod
+    async def bulk_create(chunks: List[Dict[str, Any]]) -> List[int]:
+        chunk_ids = []
+        for chunk in chunks:
+            chunk_id = await MemoryChunk.create(**chunk)
+            if chunk_id:
+                chunk_ids.append(chunk_id)
+        return chunk_ids
+
+    @staticmethod
+    async def set_embedding(chunk_id: int, vector: List[float], model: str):
+        if not chunk_id or not vector:
+            return
+
+        async with get_db() as conn:
+            await conn.execute("""
+                UPDATE memory_chunks
+                SET embedding = $2::vector,
+                    embedding_model = $3,
+                    embedded_at = NOW()
+                WHERE id = $1
+            """, chunk_id, _vector_to_pg(vector), model)
+
+    @staticmethod
+    async def search_vector(chat_id: int, mode: str, query_vector: List[float], limit: int = 5) -> List[dict]:
+        if not query_vector:
+            return []
+
+        async with get_db() as conn:
+            rows = await conn.fetch("""
+                SELECT *,
+                    1 - (embedding <=> $3::vector) AS similarity
+                FROM memory_chunks
+                WHERE chat_id = $1
+                AND mode = $2
+                AND embedding IS NOT NULL
+                ORDER BY embedding <=> $3::vector
+                LIMIT $4
+            """, chat_id, mode, _vector_to_pg(query_vector), limit)
+            return [dict(row) for row in rows]
+
+    @staticmethod
+    async def search_text(chat_id: int, mode: str, query: str, limit: int = 5) -> List[dict]:
+        query = (query or "").strip()
+        if not query:
+            return []
+
+        async with get_db() as conn:
+            rows = await conn.fetch("""
+                WITH q AS (
+                    SELECT plainto_tsquery('russian', $3) AS query
+                )
+                SELECT *,
+                    ts_rank(to_tsvector('russian', coalesce(chunk_text, '')), q.query) AS rank
+                FROM memory_chunks
+                CROSS JOIN q
+                WHERE chat_id = $1
+                AND mode = $2
+                AND (
+                    to_tsvector('russian', coalesce(chunk_text, '')) @@ q.query
+                    OR chunk_text ILIKE '%' || $3 || '%'
+                )
+                ORDER BY rank DESC, created_at DESC
+                LIMIT $4
+            """, chat_id, mode, query, limit)
+            return [dict(row) for row in rows]
+
+    @staticmethod
+    async def get_unembedded(limit: int = 100) -> List[dict]:
+        async with get_db() as conn:
+            rows = await conn.fetch("""
+                SELECT *
+                FROM memory_chunks
+                WHERE embedding IS NULL
+                ORDER BY created_at ASC, id ASC
+                LIMIT $1
+            """, limit)
+            return [dict(row) for row in rows]
+
+    @staticmethod
+    async def latest_message_id() -> int:
+        async with get_db() as conn:
+            value = await conn.fetchval("""
+                SELECT COALESCE(MAX(message_ids[array_length(message_ids, 1)]), 0)
+                FROM memory_chunks
+            """)
+            return int(value or 0)
+
+
+class MemoryEntity:
+    @staticmethod
+    async def get_or_create(
+        chat_id: int,
+        canonical_name: str,
+        normalized_name: str,
+        entity_type: str = "unknown",
+        aliases: List[str] = None,
+    ) -> Optional[dict]:
+        if not canonical_name or not normalized_name:
+            return None
+
+        async with get_db() as conn:
+            row = await conn.fetchrow("""
+                INSERT INTO memory_entities (
+                    chat_id, canonical_name, normalized_name, entity_type, mention_count, created_at, last_seen_at
+                )
+                VALUES ($1, $2, $3, $4, 1, NOW(), NOW())
+                ON CONFLICT (chat_id, normalized_name)
+                DO UPDATE SET
+                    canonical_name = EXCLUDED.canonical_name,
+                    entity_type = COALESCE(NULLIF(EXCLUDED.entity_type, 'unknown'), memory_entities.entity_type),
+                    mention_count = memory_entities.mention_count + 1,
+                    last_seen_at = NOW()
+                RETURNING *
+            """, chat_id, canonical_name, normalized_name, entity_type or "unknown")
+
+            if row and aliases:
+                for alias in aliases:
+                    alias_value = (alias or "").strip()
+                    if not alias_value:
+                        continue
+                    normalized_alias = alias_value.lower().replace("ё", "е")
+                    await conn.execute("""
+                        INSERT INTO memory_entity_aliases (
+                            chat_id, entity_id, alias, normalized_alias, created_at
+                        )
+                        VALUES ($1, $2, $3, $4, NOW())
+                        ON CONFLICT (chat_id, normalized_alias) DO NOTHING
+                    """, chat_id, row["id"], alias_value, normalized_alias)
+
+            return dict(row) if row else None
+
+    @staticmethod
+    async def find_related(chat_id: int, query: str, limit: int = 8) -> List[dict]:
+        query = (query or "").strip()
+        if not query:
+            return []
+
+        async with get_db() as conn:
+            rows = await conn.fetch("""
+                SELECT DISTINCT e.*
+                FROM memory_entities e
+                LEFT JOIN memory_entity_aliases a ON a.entity_id = e.id
+                WHERE e.chat_id = $1
+                AND (
+                    e.normalized_name ILIKE '%' || $2 || '%'
+                    OR $2 ILIKE '%' || e.normalized_name || '%'
+                    OR a.normalized_alias ILIKE '%' || $2 || '%'
+                    OR $2 ILIKE '%' || a.normalized_alias || '%'
+                )
+                ORDER BY e.last_seen_at DESC
+                LIMIT $3
+            """, chat_id, query.lower().replace("ё", "е"), limit)
+            return [dict(row) for row in rows]
+
+    @staticmethod
+    async def find_mentions(chat_id: int, text: str, limit: int = 5) -> List[dict]:
+        normalized_text = (text or "").strip().lower().replace("ё", "е")
+        if not normalized_text:
+            return []
+
+        async with get_db() as conn:
+            rows = await conn.fetch("""
+                SELECT DISTINCT e.*
+                FROM memory_entities e
+                LEFT JOIN memory_entity_aliases a ON a.entity_id = e.id
+                WHERE e.chat_id = $1
+                AND (
+                    $2 ILIKE '%' || e.normalized_name || '%'
+                    OR e.normalized_name ILIKE '%' || $2 || '%'
+                    OR $2 ILIKE '%' || a.normalized_alias || '%'
+                    OR a.normalized_alias ILIKE '%' || $2 || '%'
+                )
+                ORDER BY e.last_seen_at DESC
+                LIMIT $3
+            """, chat_id, normalized_text, limit)
+            return [dict(row) for row in rows]
+
+    @staticmethod
+    async def find_related_entities(chat_id: int, entity_ids: List[int], limit: int = 15) -> List[dict]:
+        """
+        Находит 2-hop связанные сущности для заданного списка ID сущностей.
+        Сортирует по суммарному весу связей.
+        """
+        entity_ids = [int(eid) for eid in entity_ids if eid]
+        if not entity_ids:
+            return []
+
+        async with get_db() as conn:
+            rows = await conn.fetch("""
+                WITH hop1 AS (
+                    SELECT id FROM memory_entities WHERE id = ANY($2::bigint[]) AND chat_id = $1
+                ),
+                hop1_relations AS (
+                    SELECT 
+                        CASE 
+                            WHEN source_entity_id IN (SELECT id FROM hop1) THEN target_entity_id
+                            ELSE source_entity_id
+                        END AS entity_id,
+                        weight
+                    FROM memory_relations 
+                    WHERE (source_entity_id IN (SELECT id FROM hop1) OR target_entity_id IN (SELECT id FROM hop1))
+                    AND chat_id = $1
+                ),
+                hop1_neighbors AS (
+                    SELECT entity_id AS id, MAX(weight) AS weight
+                    FROM hop1_relations
+                    WHERE entity_id NOT IN (SELECT id FROM hop1)
+                    GROUP BY entity_id
+                ),
+                hop2_relations AS (
+                    SELECT 
+                        CASE 
+                            WHEN source_entity_id IN (SELECT id FROM hop1_neighbors) THEN target_entity_id
+                            ELSE source_entity_id
+                        END AS entity_id,
+                        r.weight * hn.weight AS weight
+                    FROM memory_relations r
+                    JOIN hop1_neighbors hn ON (hn.id = r.source_entity_id OR hn.id = r.target_entity_id)
+                    WHERE r.chat_id = $1
+                ),
+                hop2_neighbors AS (
+                    SELECT entity_id AS id, MAX(weight) AS weight
+                    FROM hop2_relations
+                    WHERE entity_id NOT IN (SELECT id FROM hop1)
+                    AND entity_id NOT IN (SELECT id FROM hop1_neighbors)
+                    GROUP BY entity_id
+                ),
+                all_connected AS (
+                    SELECT id, 10.0 AS score FROM hop1
+                    UNION ALL
+                    SELECT id, weight AS score FROM hop1_neighbors
+                    UNION ALL
+                    SELECT id, weight * 0.5 AS score FROM hop2_neighbors
+                )
+                SELECT e.*, c.score
+                FROM memory_entities e
+                JOIN all_connected c ON c.id = e.id
+                ORDER BY c.score DESC
+                LIMIT $3
+            """, chat_id, entity_ids, limit)
+            return [dict(row) for row in rows]
+
+
+class MemoryFact:
+    @staticmethod
+    async def create(
+        chat_id: int,
+        fact_text: str,
+        user_id: int = None,
+        mode: str = "default",
+        summary: str = None,
+        importance: float = 0.5,
+        source_message_id: int = None,
+        metadata: Dict[str, Any] = None,
+        entity_ids: List[int] = None,
+    ) -> Optional[int]:
+        fact_text = (fact_text or "").strip()
+        if not fact_text:
+            return None
+
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
+        importance_value = max(0.0, min(float(importance or 0.5), 1.0))
+        async with get_db() as conn:
+            async with conn.transaction():
+                existing_id = await conn.fetchval("""
+                    SELECT id
+                    FROM memory_facts
+                    WHERE chat_id = $1
+                    AND mode = $2
+                    AND lower(fact_text) = lower($3)
+                    LIMIT 1
+                """, chat_id, mode, fact_text)
+
+                if existing_id:
+                    return existing_id
+
+                row = await conn.fetchrow("""
+                    INSERT INTO memory_facts (
+                        chat_id, user_id, mode, summary, fact_text, importance,
+                        source_message_id, metadata, created_at
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, NOW())
+                    RETURNING id
+                """, chat_id, user_id, mode, summary, fact_text, importance_value, source_message_id, metadata_json)
+
+                if not row:
+                    return None
+
+                fact_id = row["id"]
+                for entity_id in entity_ids or []:
+                    if not entity_id:
+                        continue
+                    await conn.execute("""
+                        INSERT INTO memory_fact_entities (fact_id, entity_id)
+                        VALUES ($1, $2)
+                        ON CONFLICT DO NOTHING
+                    """, fact_id, entity_id)
+
+                return fact_id
+
+    @staticmethod
+    async def search(chat_id: int, query: str, mode: str = "default", limit: int = 5) -> List[dict]:
+        query = (query or "").strip()
+        if not query:
+            async with get_db() as conn:
+                rows = await conn.fetch("""
+                    SELECT *
+                    FROM memory_facts
+                    WHERE chat_id = $1
+                    AND mode = $2
+                    AND archived_at IS NULL
+                    AND (cooldown_until IS NULL OR cooldown_until < NOW())
+                    ORDER BY importance DESC, created_at DESC
+                    LIMIT $3
+                """, chat_id, mode, limit)
+                return [dict(row) for row in rows]
+
+        async with get_db() as conn:
+            rows = await conn.fetch("""
+                WITH q AS (
+                    SELECT plainto_tsquery('russian', $2) AS query
+                ),
+                -- 1. Находим непосредственно упомянутые сущности
+                hop1 AS (
+                    SELECT DISTINCT e.id, 10.0 AS score
+                    FROM memory_entities e
+                    LEFT JOIN memory_entity_aliases a ON a.entity_id = e.id
+                    WHERE e.chat_id = $1
+                    AND (
+                        $4 ILIKE '%' || e.normalized_name || '%'
+                        OR e.normalized_name ILIKE '%' || $4 || '%'
+                        OR $4 ILIKE '%' || a.normalized_alias || '%'
+                        OR a.normalized_alias ILIKE '%' || $4 || '%'
+                    )
+                ),
+                -- 2. Находим 1-hop связи
+                hop1_relations AS (
+                    SELECT 
+                        CASE 
+                            WHEN source_entity_id IN (SELECT id FROM hop1) THEN target_entity_id
+                            ELSE source_entity_id
+                        END AS entity_id,
+                        weight
+                    FROM memory_relations 
+                    WHERE (source_entity_id IN (SELECT id FROM hop1) OR target_entity_id IN (SELECT id FROM hop1))
+                    AND chat_id = $1
+                ),
+                hop1_neighbors AS (
+                    SELECT entity_id AS id, MAX(weight) AS weight
+                    FROM hop1_relations
+                    WHERE entity_id NOT IN (SELECT id FROM hop1)
+                    GROUP BY entity_id
+                ),
+                -- 3. Находим 2-hop связи
+                hop2_relations AS (
+                    SELECT 
+                        CASE 
+                            WHEN source_entity_id IN (SELECT id FROM hop1_neighbors) THEN target_entity_id
+                            ELSE source_entity_id
+                        END AS entity_id,
+                        r.weight * hn.weight AS weight
+                    FROM memory_relations r
+                    JOIN hop1_neighbors hn ON (hn.id = r.source_entity_id OR hn.id = r.target_entity_id)
+                    WHERE r.chat_id = $1
+                ),
+                hop2_neighbors AS (
+                    SELECT entity_id AS id, MAX(weight) AS weight
+                    FROM hop2_relations
+                    WHERE entity_id NOT IN (SELECT id FROM hop1)
+                    AND entity_id NOT IN (SELECT id FROM hop1_neighbors)
+                    GROUP BY entity_id
+                ),
+                all_entities AS (
+                    SELECT id, 10.0 AS score FROM hop1
+                    UNION ALL
+                    SELECT id, weight AS score FROM hop1_neighbors
+                    UNION ALL
+                    SELECT id, weight * 0.5 AS score FROM hop2_neighbors
+                ),
+                ranked_facts AS (
+                    SELECT f.*,
+                        ts_rank(
+                            to_tsvector('russian', coalesce(f.summary, '') || ' ' || coalesce(f.fact_text, '')),
+                            q.query
+                        ) AS rank,
+                        (
+                            f.fact_text ILIKE '%' || $2 || '%'
+                            OR f.summary ILIKE '%' || $2 || '%'
+                        ) AS is_direct_match,
+                        COALESCE((
+                            SELECT SUM(ae.score)
+                            FROM memory_fact_entities fe
+                            JOIN all_entities ae ON ae.id = fe.entity_id
+                            WHERE fe.fact_id = f.id
+                        ), 0.0) AS entity_boost
+                    FROM memory_facts f
+                    CROSS JOIN q
+                    WHERE f.chat_id = $1
+                    AND f.mode = $3
+                    AND f.archived_at IS NULL
+                    AND (
+                        to_tsvector('russian', coalesce(f.summary, '') || ' ' || coalesce(f.fact_text, '')) @@ q.query
+                        OR f.fact_text ILIKE '%' || $2 || '%'
+                        OR f.summary ILIKE '%' || $2 || '%'
+                        OR EXISTS (
+                            SELECT 1 FROM memory_fact_entities fe
+                            WHERE fe.fact_id = f.id
+                            AND fe.entity_id IN (SELECT id FROM all_entities)
+                        )
+                    )
+                )
+                SELECT *
+                FROM ranked_facts
+                WHERE (
+                    cooldown_until IS NULL 
+                    OR cooldown_until < NOW()
+                    -- Bypass cooldown if FTS rank is exceptionally high (e.g. > 0.1) OR it is an exact text substring match
+                    OR rank > 0.1
+                    OR is_direct_match
+                )
+                ORDER BY (rank * 2.0 + importance + (entity_boost * 0.15) - (used_count * 0.05)) DESC, created_at DESC
+                LIMIT $5
+            """, chat_id, query, mode, query.lower().replace("ё", "е"), limit)
+            return [dict(row) for row in rows]
+
+    @staticmethod
+    async def fetch_for_consolidation(chat_id: int, mode: str = "default", limit: int = 80) -> List[dict]:
+        async with get_db() as conn:
+            rows = await conn.fetch("""
+                SELECT *
+                FROM memory_facts
+                WHERE chat_id = $1
+                AND mode = $2
+                AND archived_at IS NULL
+                AND importance < 0.8
+                ORDER BY created_at ASC, id ASC
+                LIMIT $3
+            """, chat_id, mode, limit)
+            return [dict(row) for row in rows]
+
+    @staticmethod
+    async def archive_many(fact_ids: List[int], reason: str = "consolidated", superseded_by: int = None) -> int:
+        fact_ids = [int(fact_id) for fact_id in fact_ids if fact_id]
+        if not fact_ids:
+            return 0
+
+        async with get_db() as conn:
+            result = await conn.execute("""
+                UPDATE memory_facts
+                SET archived_at = NOW(),
+                    archive_reason = $2,
+                    superseded_by = $3
+                WHERE id = ANY($1::bigint[])
+                AND archived_at IS NULL
+            """, fact_ids, reason, superseded_by)
+            return int(result.split()[-1])
+
+    @staticmethod
+    async def mark_used(fact_ids: List[int], cooldown_seconds: int = 3600):
+        fact_ids = [int(fact_id) for fact_id in fact_ids if fact_id]
+        if not fact_ids:
+            return
+
+        cooldown_until = datetime.now() + timedelta(seconds=cooldown_seconds)
+        async with get_db() as conn:
+            await conn.execute("""
+                UPDATE memory_facts
+                SET used_count = used_count + 1,
+                    last_used_at = NOW(),
+                    cooldown_until = $2
+                WHERE id = ANY($1::bigint[])
+            """, fact_ids, cooldown_until)
+
+
+class MemoryRelation:
+    @staticmethod
+    async def create(
+        chat_id: int,
+        source_entity_id: int,
+        target_entity_id: int,
+        relation_type: str,
+        description: str = None,
+        weight: float = 1.0,
+    ) -> Optional[int]:
+        if not source_entity_id or not target_entity_id or not relation_type:
+            return None
+
+        async with get_db() as conn:
+            row = await conn.fetchrow("""
+                INSERT INTO memory_relations (
+                    chat_id, source_entity_id, target_entity_id, relation_type, description, weight, created_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, NOW())
+                RETURNING id
+            """, chat_id, source_entity_id, target_entity_id, relation_type, description, float(weight or 1.0))
+            return row["id"] if row else None
+
+    @staticmethod
+    async def find_for_entities(chat_id: int, entity_ids: List[int], limit: int = 8) -> List[dict]:
+        entity_ids = [int(entity_id) for entity_id in entity_ids if entity_id]
+        if not entity_ids:
+            return []
+
+        async with get_db() as conn:
+            rows = await conn.fetch("""
+                SELECT
+                    r.*,
+                    s.canonical_name AS source_name,
+                    t.canonical_name AS target_name
+                FROM memory_relations r
+                JOIN memory_entities s ON s.id = r.source_entity_id
+                JOIN memory_entities t ON t.id = r.target_entity_id
+                WHERE r.chat_id = $1
+                AND (
+                    r.source_entity_id = ANY($2::bigint[])
+                    OR r.target_entity_id = ANY($2::bigint[])
+                )
+                ORDER BY r.weight DESC, r.created_at DESC
+                LIMIT $3
+            """, chat_id, entity_ids, limit)
+            return [dict(row) for row in rows]
+
+
+class MemoryUserProfile:
+    @staticmethod
+    async def get(chat_id: int, user_id: int, mode: str = "default") -> Optional[dict]:
+        async with get_db() as conn:
+            row = await conn.fetchrow("""
+                SELECT *
+                FROM memory_user_profiles
+                WHERE chat_id = $1
+                AND user_id = $2
+                AND mode = $3
+            """, chat_id, user_id, mode)
+            return dict(row) if row else None
+
+    @staticmethod
+    async def upsert(
+        chat_id: int,
+        user_id: int,
+        mode: str,
+        profile_json: Dict[str, Any],
+        profile_text: str,
+        source_fact_ids: List[int] = None,
+        source_entity_ids: List[int] = None,
+    ) -> Optional[int]:
+        if not chat_id or not user_id or not profile_text:
+            return None
+
+        profile_json_text = json.dumps(profile_json or {}, ensure_ascii=False)
+        source_fact_ids = [int(item) for item in source_fact_ids or [] if item]
+        source_entity_ids = [int(item) for item in source_entity_ids or [] if item]
+
+        async with get_db() as conn:
+            row = await conn.fetchrow("""
+                INSERT INTO memory_user_profiles (
+                    chat_id, user_id, mode, profile_json, profile_text,
+                    source_fact_ids, source_entity_ids, facts_version, updated_at
+                )
+                VALUES ($1, $2, $3, $4::jsonb, $5, $6::bigint[], $7::bigint[], 1, NOW())
+                ON CONFLICT (chat_id, user_id, mode)
+                DO UPDATE SET
+                    profile_json = EXCLUDED.profile_json,
+                    profile_text = EXCLUDED.profile_text,
+                    source_fact_ids = EXCLUDED.source_fact_ids,
+                    source_entity_ids = EXCLUDED.source_entity_ids,
+                    facts_version = memory_user_profiles.facts_version + 1,
+                    updated_at = NOW()
+                RETURNING id
+            """, chat_id, user_id, mode, profile_json_text, profile_text, source_fact_ids, source_entity_ids)
+            return row["id"] if row else None
+
+    @staticmethod
+    async def fetch_source_material(
+        chat_id: int,
+        user_id: int,
+        mode: str = "default",
+        fact_limit: int = 40,
+        entity_limit: int = 20,
+    ) -> Dict[str, List[dict]]:
+        async with get_db() as conn:
+            facts = await conn.fetch("""
+                SELECT *
+                FROM memory_facts
+                WHERE chat_id = $1
+                AND mode = $2
+                AND archived_at IS NULL
+                AND (user_id = $3 OR user_id IS NULL)
+                ORDER BY importance DESC, created_at DESC
+                LIMIT $4
+            """, chat_id, mode, user_id, fact_limit)
+
+            entities = await conn.fetch("""
+                SELECT *
+                FROM memory_entities
+                WHERE chat_id = $1
+                ORDER BY mention_count DESC, last_seen_at DESC
+                LIMIT $2
+            """, chat_id, entity_limit)
+
+            return {
+                "facts": [dict(row) for row in facts],
+                "entities": [dict(row) for row in entities],
+            }
+
+    @staticmethod
+    async def apply_reinforcement(chat_id: int, user_id: int, mode: str, feedback_type: str):
+        """
+        Применяет положительное или отрицательное подкрепление к аффективному профилю пользователя.
+        Увеличивает или уменьшает близость (closeness) и восприимчивость к стикерам (sticker_receptivity).
+        """
+        async with get_db() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow("""
+                    SELECT * FROM memory_user_profiles
+                    WHERE chat_id = $1 AND user_id = $2 AND mode = $3
+                    FOR UPDATE
+                """, chat_id, user_id, mode)
+                
+                profile_json = {}
+                profile_text = ""
+                if row:
+                    profile_json = json.loads(row["profile_json"]) if isinstance(row["profile_json"], str) else row["profile_json"]
+                    profile_text = row["profile_text"]
+                else:
+                    profile_text = "Новый субъект общения."
+                
+                if "affective" not in profile_json:
+                    profile_json["affective"] = {
+                        "closeness": 0.1,
+                        "sticker_receptivity": 0.5,
+                        "dominant_sentiment": "neutral",
+                        "emotional_triggers": {},
+                        "last_reinforcement_time": None
+                    }
+                
+                aff = profile_json["affective"]
+                
+                # Проверяем кулдаун (5 минут = 300 секунд)
+                last_time_str = aff.get("last_reinforcement_time")
+                if last_time_str:
+                    try:
+                        from datetime import datetime as _dt
+                        last_time = _dt.fromisoformat(last_time_str)
+                        elapsed = (_dt.now() - last_time).total_seconds()
+                        if elapsed < 300:
+                            log_entry = (
+                                f"[REINFORCEMENT_IGNORED] chat_id={chat_id} user_id={user_id} | "
+                                f"Feedback={feedback_type} | CooldownActive={300 - elapsed:.1f}s remaining"
+                            )
+                            logger.info(f"🔮 [ЭМОЦИОНАЛЬНАЯ МАШИНА] {log_entry}")
+                            emotional_logger.info(log_entry)
+                            return
+                    except Exception as e:
+                        logger.warning(f"Ошибка при парсинге времени последнего подкрепления: {e}")
+
+                # Начисляем сбалансированные шаги
+                if feedback_type == "positive":
+                    aff["closeness"] = min(aff.get("closeness", 0.1) + 0.01, 1.0)
+                    aff["sticker_receptivity"] = min(aff.get("sticker_receptivity", 0.5) + 0.02, 1.0)
+                else:
+                    aff["closeness"] = max(aff.get("closeness", 0.1) - 0.01, 0.0)
+                    aff["sticker_receptivity"] = max(aff.get("sticker_receptivity", 0.5) - 0.03, 0.0)
+                
+                from datetime import datetime as _dt
+                aff["last_reinforcement_time"] = _dt.now().isoformat()
+                profile_json["affective"] = aff
+                
+                # Логируем положительное/отрицательное подкрепление
+                log_entry = (
+                    f"[REINFORCEMENT] chat_id={chat_id} user_id={user_id} | "
+                    f"Feedback={feedback_type} | "
+                    f"New Closeness={aff['closeness']:.3f} | "
+                    f"New Receptivity={aff['sticker_receptivity']:.3f}"
+                )
+                logger.info(f"🔮 [ЭМОЦИОНАЛЬНАЯ МАШИНА] {log_entry}")
+                emotional_logger.info(log_entry)
+                
+                await conn.execute("""
+                    INSERT INTO memory_user_profiles (
+                        chat_id, user_id, mode, profile_json, profile_text, updated_at
+                    )
+                    VALUES ($1, $2, $3, $4::jsonb, $5, NOW())
+                    ON CONFLICT (chat_id, user_id, mode)
+                    DO UPDATE SET
+                        profile_json = EXCLUDED.profile_json,
+                        updated_at = NOW()
+                """, chat_id, user_id, mode, json.dumps(profile_json, ensure_ascii=False), profile_text)
+
+
+class MemoryTimeline:
+    @staticmethod
+    async def create(
+        chat_id: int,
+        summary: str,
+        user_id: int = None,
+        mode: str = "default",
+        period_start=None,
+        period_end=None,
+        title: str = "",
+        topics: List[str] = None,
+        source_message_ids: List[int] = None,
+        metadata: Dict[str, Any] = None,
+    ) -> Optional[int]:
+        summary = (summary or "").strip()
+        if not chat_id or not summary:
+            return None
+
+        topics = [str(item).strip() for item in topics or [] if str(item).strip()]
+        source_message_ids = [int(item) for item in source_message_ids or [] if item]
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
+
+        async with get_db() as conn:
+            row = await conn.fetchrow("""
+                INSERT INTO memory_timelines (
+                    chat_id, user_id, mode, period_start, period_end, title,
+                    summary, topics, source_message_ids, metadata, created_at, updated_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text[], $9::bigint[], $10::jsonb, NOW(), NOW())
+                RETURNING id
+            """, chat_id, user_id, mode, period_start, period_end, title or "", summary, topics, source_message_ids, metadata_json)
+            return row["id"] if row else None
+
+    @staticmethod
+    async def latest(chat_id: int, mode: str = "default", limit: int = 3) -> List[dict]:
+        async with get_db() as conn:
+            rows = await conn.fetch("""
+                SELECT *
+                FROM memory_timelines
+                WHERE chat_id = $1
+                AND mode = $2
+                ORDER BY COALESCE(period_end, updated_at) DESC, id DESC
+                LIMIT $3
+            """, chat_id, mode, limit)
+            return [dict(row) for row in rows]
+
+    @staticmethod
+    async def search(chat_id: int, mode: str, query: str, limit: int = 3) -> List[dict]:
+        query = (query or "").strip()
+        if not query:
+            return await MemoryTimeline.latest(chat_id=chat_id, mode=mode, limit=limit)
+
+        async with get_db() as conn:
+            rows = await conn.fetch("""
+                WITH q AS (
+                    SELECT plainto_tsquery('russian', $3) AS query
+                )
+                SELECT *,
+                    ts_rank(to_tsvector('russian', coalesce(title, '') || ' ' || coalesce(summary, '')), q.query) AS rank
+                FROM memory_timelines
+                CROSS JOIN q
+                WHERE chat_id = $1
+                AND mode = $2
+                AND (
+                    to_tsvector('russian', coalesce(title, '') || ' ' || coalesce(summary, '')) @@ q.query
+                    OR title ILIKE '%' || $3 || '%'
+                    OR summary ILIKE '%' || $3 || '%'
+                    OR $3 = ANY(topics)
+                )
+                ORDER BY rank DESC, COALESCE(period_end, updated_at) DESC
+                LIMIT $4
+            """, chat_id, mode, query, limit)
+            return [dict(row) for row in rows]
+
+    @staticmethod
+    async def fetch_messages_for_period(chat_id: int, mode: str = "default", after_id: int = 0, limit: int = 200) -> List[dict]:
+        async with get_db() as conn:
+            rows = await conn.fetch("""
+                SELECT id, chat_id, user_id, user_name, role, mode, message_text, created_at
+                FROM memory_messages
+                WHERE chat_id = $1
+                AND mode = $2
+                AND id > $3
+                AND role IN ('user', 'assistant', 'memory')
+                ORDER BY id ASC
+                LIMIT $4
+            """, chat_id, mode, after_id, limit)
+            return [dict(row) for row in rows]
+
+    @staticmethod
+    async def latest_source_message_id(chat_id: int, mode: str = "default") -> int:
+        async with get_db() as conn:
+            value = await conn.fetchval("""
+                SELECT COALESCE(MAX(source_message_ids[array_length(source_message_ids, 1)]), 0)
+                FROM memory_timelines
+                WHERE chat_id = $1
+                AND mode = $2
+            """, chat_id, mode)
+            return int(value or 0)
+
+
+class MemoryWikiPage:
+    @staticmethod
+    async def save(
+        page_key: str,
+        title: str,
+        content: str,
+        category: str,
+        chat_id: Optional[int] = None,
+        mode: str = "default",
+        importance: float = 0.5,
+        is_verified: bool = True,
+    ) -> Optional[int]:
+        page_key = (page_key or "").strip()
+        title = (title or "").strip()
+        content = (content or "").strip()
+        if not page_key or not title or not content:
+            return None
+
+        async with get_db() as conn:
+            row = await conn.fetchrow("""
+                INSERT INTO memory_wiki_pages (
+                    chat_id, mode, page_key, title, content, category,
+                    importance, is_verified, last_verified_at, created_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+                ON CONFLICT (chat_id, mode, page_key)
+                DO UPDATE SET
+                    title = EXCLUDED.title,
+                    content = EXCLUDED.content,
+                    category = EXCLUDED.category,
+                    importance = EXCLUDED.importance,
+                    is_verified = EXCLUDED.is_verified,
+                    last_verified_at = NOW()
+                RETURNING id
+            """, chat_id, mode, page_key, title, content, category, float(importance or 0.5), is_verified)
+            return row["id"] if row else None
+
+    @staticmethod
+    async def get_by_key(chat_id: Optional[int], mode: str, page_key: str) -> Optional[dict]:
+        async with get_db() as conn:
+            row = await conn.fetchrow("""
+                SELECT *
+                FROM memory_wiki_pages
+                WHERE (chat_id = $1 OR (chat_id IS NULL AND $1 IS NULL))
+                AND mode = $2
+                AND page_key = $3
+            """, chat_id, mode, page_key)
+            return dict(row) if row else None
+
+    @staticmethod
+    async def search(chat_id: int, mode: str, query: str, limit: int = 3) -> List[dict]:
+        query = (query or "").strip()
+        if not query:
+            async with get_db() as conn:
+                rows = await conn.fetch("""
+                    SELECT *
+                    FROM memory_wiki_pages
+                    WHERE (chat_id = $1 OR chat_id IS NULL)
+                    AND mode = $2
+                    ORDER BY importance DESC, created_at DESC
+                    LIMIT $3
+                """, chat_id, mode, limit)
+                return [dict(row) for row in rows]
+
+        async with get_db() as conn:
+            rows = await conn.fetch("""
+                WITH q AS (
+                    SELECT plainto_tsquery('russian', $3) AS query
+                )
+                SELECT w.*,
+                    ts_rank(to_tsvector('russian', coalesce(w.title, '') || ' ' || coalesce(w.content, '')), q.query) AS rank
+                FROM memory_wiki_pages w
+                CROSS JOIN q
+                WHERE (w.chat_id = $1 OR w.chat_id IS NULL)
+                AND w.mode = $2
+                AND (
+                    to_tsvector('russian', coalesce(w.title, '') || ' ' || coalesce(w.content, '')) @@ q.query
+                    OR w.title ILIKE '%' || $3 || '%'
+                    OR w.content ILIKE '%' || $3 || '%'
+                    OR w.page_key ILIKE '%' || $3 || '%'
+                )
+                ORDER BY rank DESC, w.importance DESC
+                LIMIT $4
+            """, chat_id, mode, query, limit)
+            return [dict(row) for row in rows]
+
+    @staticmethod
+    async def delete(chat_id: Optional[int], mode: str, page_key: str) -> bool:
+        async with get_db() as conn:
+            result = await conn.execute("""
+                DELETE FROM memory_wiki_pages
+                WHERE (chat_id = $1 OR (chat_id IS NULL AND $1 IS NULL))
+                AND mode = $2
+                AND page_key = $3
+            """, chat_id, mode, page_key)
+            return result.startswith("DELETE") and not result.endswith("0")
+
+
+class UserEvent:
+    @staticmethod
+    async def add(chat_id: int, event_date: Any, event_type: str, note: str):
+        """Добавить структурированное событие для пользователя (с UNIQUE дедупликацией)"""
+        # Сначала убедимся, что chat_emotional_states существует
+        await ChatEmotionalState.get_or_create(chat_id)
+        async with get_db() as conn:
+            await conn.execute("""
+                INSERT INTO user_events (chat_id, event_date, event_type, note, notified, created_at)
+                VALUES ($1, $2, $3, $4, FALSE, NOW())
+                ON CONFLICT (chat_id, event_date, event_type)
+                DO UPDATE SET note = EXCLUDED.note, notified = FALSE
+            """, chat_id, event_date, event_type, note)
+
+    @staticmethod
+    async def get_upcoming_for_chat(chat_id: int, start_date: Any, end_date: Any) -> List[dict]:
+        """Получить события в диапазоне дат для чата"""
+        async with get_db() as conn:
+            rows = await conn.fetch("""
+                SELECT event_date, event_type, note, notified 
+                FROM user_events 
+                WHERE chat_id = $1 AND event_date BETWEEN $2 AND $3
+                ORDER BY event_date ASC
+            """, chat_id, start_date, end_date)
+            return [dict(row) for row in rows]
+
+
+async def infer_user_timezone(chat_id: int, user_id: Optional[int]) -> Optional[int]:
+    """
+    Инферирует таймзону пользователя по геолокации или гистограмме его активности в чате.
+    Порог: >= 20 сообщений.
+    Смещение: int (офсет относительно UTC).
+    """
+    if user_id is None:
+        return None
+
+    # 1. Проверяем геолокацию
+    loc = await UserLocation.get(user_id)
+    if loc and loc.get("lng") is not None:
+        user_tz = int(round(loc["lng"] / 15.0))
+        logger.info(f"🔮 [ЭМОЦИОНАЛЬНАЯ МАШИНА] Таймзона для user_id={user_id} определена по геолокации: {user_tz:+d}")
+        return user_tz
+
+    # 2. Анализируем историю чата
+    async with get_db() as conn:
+        rows = await conn.fetch("""
+            SELECT timestamp 
+            FROM chat_history 
+            WHERE chat_id = $1 
+              AND user_name != 'Арти'
+            ORDER BY timestamp DESC
+            LIMIT 100
+        """, chat_id)
+
+    # Порог входа в инференс: минимум 20 сообщений для стабильности
+    if len(rows) < 20:
+        return None
+
+    # Вычисляем смещение времени сервера от UTC
+    import time as _time
+    server_offset = -_time.timezone if _time.daylight == 0 else -_time.altzone
+    server_offset_hours = server_offset / 3600.0
+
+    utc_hours = []
+    for r in rows:
+        dt = r["timestamp"]
+        utc_dt = dt - timedelta(hours=server_offset_hours)
+        utc_hours.append(utc_dt.hour)
+
+    best_tz = None
+    best_score = -999999
+
+    for tz in range(-12, 15):
+        score = 0
+        for h in utc_hours:
+            local_hour = (h + tz) % 24
+            if 12 <= local_hour < 20:
+                score += 2
+            elif 8 <= local_hour < 23:
+                score += 1
+            elif 1 <= local_hour < 6:
+                score += -5
+            else:
+                score += -1
+        if score > best_score:
+            best_score = score
+            best_tz = tz
+
+    if best_score > 0:
+        logger.info(f"🔮 [ЭМОЦИОНАЛЬНАЯ МАШИНА] Таймзона для user_id={user_id} в чате {chat_id} инферирована из {len(rows)} сообщений: {best_tz:+d} (score={best_score})")
+        return best_tz
+
+    return None
+
+
+class ChatEmotionalState:
+    @staticmethod
+    async def get_or_create(chat_id: int) -> dict:
+        async with get_db() as conn:
+            row = await conn.fetchrow("""
+                INSERT INTO chat_emotional_states (
+                    chat_id, charge, mood_state, last_sticker_time, last_activity_time, sticker_history, last_sent_sticker_mood, conversation_stage, user_tz
+                )
+                VALUES (
+                    $1, 0.0, 
+                    '{"happy": 0.0, "sad": 0.0, "angry": 0.0, "love": 0.0, "teasing": 0.0, "shock": 0.0, "blush": 0.0, "bored": 0.0, "thinking": 0.0}'::jsonb,
+                    NULL, NOW(), '[]'::jsonb, NULL, 'active', NULL
+                )
+                ON CONFLICT (chat_id) DO UPDATE SET
+                    chat_id = EXCLUDED.chat_id
+                RETURNING *
+            """, chat_id)
+            return dict(row)
+
+    @staticmethod
+    async def update_state(chat_id: int, user_message: str, closeness: float = 0.0, user_id: Optional[int] = None) -> dict:
+        import math
+        user_message = user_message or ""
+        async with get_db() as conn:
+            async with conn.transaction():
+                # 1. Загружаем текущее состояние
+                state = await conn.fetchrow("""
+                    SELECT * FROM chat_emotional_states WHERE chat_id = $1 FOR UPDATE
+                """, chat_id)
+                
+                if not state:
+                    state = await conn.fetchrow("""
+                        INSERT INTO chat_emotional_states (chat_id, charge, mood_state, last_sticker_time, last_activity_time, sticker_history, last_sent_sticker_mood, conversation_stage, user_tz)
+                        VALUES ($1, 0.0, '{"happy": 0.0, "sad": 0.0, "angry": 0.0, "love": 0.0, "teasing": 0.0, "shock": 0.0, "blush": 0.0, "bored": 0.0, "thinking": 0.0}'::jsonb, NULL, NOW(), '[]'::jsonb, NULL, 'active', NULL)
+                        RETURNING *
+                    """, chat_id)
+                
+                # Ленивое определение таймзоны
+                user_tz = state["user_tz"]
+                if user_tz is None and user_id is not None:
+                    user_tz = await infer_user_timezone(chat_id, user_id)
+                
+                # 2. Вычисляем распад (Time Decay)
+                now = datetime.now()
+                last_activity = state["last_activity_time"]
+                delta_t = (now - last_activity).total_seconds()
+                
+                # Затухание заряда (half-life = 15 мин = 900 сек)
+                lambda_c = 0.00077
+                charge = state["charge"] * math.exp(-lambda_c * delta_t)
+                
+                # Затухание вектора настроения (decay 10% каждые 3 минуты)
+                lambda_m = 0.00053
+                mood_dict = json.loads(state["mood_state"]) if isinstance(state["mood_state"], str) else state["mood_state"]
+                for emotion in mood_dict:
+                    mood_dict[emotion] = mood_dict[emotion] * math.exp(-lambda_m * delta_t)
+                
+                # 3. Анализируем интенсивность реплики пользователя
+                clean_msg = user_message.strip()
+                delta_charge = min(len(clean_msg) * 0.001, 0.08)
+                
+                # Капс
+                if clean_msg.isupper() and len(clean_msg) > 4:
+                    delta_charge += 0.15
+                
+                # Восклицательные знаки
+                excls = clean_msg.count("!")
+                delta_charge += min(excls * 0.05, 0.15)
+                
+                # Эмодзи
+                import re as _re
+                emojis = _re.findall(r'[^\x00-\x7F\u0400-\u04FF\s]', clean_msg)
+                delta_charge += min(len(emojis) * 0.02, 0.1)
+                
+                # Ключевые слова и сантимент с учетом отрицания
+                msg_lower = clean_msg.lower()
+                
+                love_words = ["люблю", "мило", "прелесть", "обожаю", "лучшая", "красивая", "классная"]
+                happy_words = ["ура", "круто", "отлично", "хаха", "радость", "смешно", "привет", "приветик"]
+                sad_words = ["грустно", "плачу", "плохо", "беда", "печально", "устал", "одиноко"]
+                angry_words = ["дурак", "бесишь", "заткнись", "плохой", "урод", "удали", "хватит", "хер"]
+                
+                # Функция определения отрицания перед ключевым словом
+                def check_negation(word: str) -> bool:
+                    pos = msg_lower.find(word)
+                    if pos > 0:
+                        prev_segment = msg_lower[max(0, pos-15):pos].strip()
+                        for neg in ["не ", "нет ", "без ", "не", "нет", "без"]:
+                            if prev_segment.endswith(neg):
+                                return True
+                    return False
+
+                # Определяем соответствие слов и их отрицание
+                matched_love = [w for w in love_words if w in msg_lower]
+                matched_happy = [w for w in happy_words if w in msg_lower]
+                matched_sad = [w for w in sad_words if w in msg_lower]
+                matched_angry = [w for w in angry_words if w in msg_lower]
+
+                closeness_mult = 1.5 if closeness > 0.6 else 1.0
+
+                if matched_love:
+                    word = matched_love[0]
+                    if check_negation(word):
+                        # Не люблю -> bored/sad
+                        delta_charge += 0.05
+                        mood_dict["bored"] = min(mood_dict["bored"] + 0.08, 1.0)
+                        mood_dict["sad"] = min(mood_dict["sad"] + 0.08, 1.0)
+                    else:
+                        delta_charge += 0.1 * closeness_mult
+                        mood_dict["love"] = min(mood_dict["love"] + 0.15, 1.0)
+                        mood_dict["blush"] = min(mood_dict["blush"] + 0.1, 1.0)
+                        
+                elif matched_happy:
+                    word = matched_happy[0]
+                    if check_negation(word):
+                        # Не рад -> sad/bored
+                        delta_charge += 0.05
+                        mood_dict["sad"] = min(mood_dict["sad"] + 0.08, 1.0)
+                        mood_dict["bored"] = min(mood_dict["bored"] + 0.08, 1.0)
+                    else:
+                        delta_charge += 0.08
+                        mood_dict["happy"] = min(mood_dict["happy"] + 0.12, 1.0)
+                        mood_dict["teasing"] = min(mood_dict["teasing"] + 0.05, 1.0)
+                        
+                elif matched_sad:
+                    word = matched_sad[0]
+                    if check_negation(word):
+                        # Не грусти / не плачь -> happy/love
+                        delta_charge += 0.08
+                        mood_dict["happy"] = min(mood_dict["happy"] + 0.06, 1.0)
+                        mood_dict["love"] = min(mood_dict["love"] + 0.04, 1.0)
+                    else:
+                        delta_charge += 0.06
+                        mood_dict["sad"] = min(mood_dict["sad"] + 0.15, 1.0)
+                        mood_dict["love"] = min(mood_dict["love"] + 0.08, 1.0)
+                        
+                elif matched_angry:
+                    word = matched_angry[0]
+                    if check_negation(word):
+                        # Без обид / не злись -> happy/love
+                        delta_charge += 0.08
+                        mood_dict["happy"] = min(mood_dict["happy"] + 0.06, 1.0)
+                        mood_dict["love"] = min(mood_dict["love"] + 0.04, 1.0)
+                    else:
+                        delta_charge += 0.12
+                        # Предохранитель агрессии
+                        if closeness >= 0.4:
+                            mood_dict["angry"] = min(mood_dict["angry"] + 0.2, 1.0)
+                        else:
+                            mood_dict["bored"] = min(mood_dict["bored"] + 0.15, 1.0)
+                            mood_dict["thinking"] = min(mood_dict["thinking"] + 0.05, 1.0)
+
+                # Применяем циркадный сдвиг к вектору
+                if user_tz is not None:
+                    hour = (datetime.utcnow() + timedelta(hours=user_tz)).hour
+                else:
+                    hour = datetime.now().hour
+
+                if 0 <= hour < 5:
+                    mood_dict["thinking"] = min(mood_dict["thinking"] + 0.12, 1.0)
+                    mood_dict["bored"] = min(mood_dict["bored"] + 0.08, 1.0)
+                    if closeness > 0.7:
+                        mood_dict["love"] = min(mood_dict["love"] + 0.1, 1.0)
+                elif 5 <= hour < 12:
+                    mood_dict["happy"] = min(mood_dict["happy"] + 0.1, 1.0)
+                    mood_dict["bored"] = max(mood_dict["bored"] - 0.08, 0.0)
+                
+                # Итоговый заряд
+                charge = max(0.0, min(charge + delta_charge, 1.0))
+                
+                # 4. Записываем обратно
+                mood_json = json.dumps(mood_dict, ensure_ascii=False)
+                
+                # Логируем изменение заряда для отладки и прозрачности
+                old_charge = state["charge"]
+                decayed_charge = state["charge"] * math.exp(-lambda_c * delta_t)
+                
+                log_entry_msg = (
+                    f"🔮 [ЭМОЦИОНАЛЬНАЯ МАШИНА] Обновление для chat_id={chat_id}:\n"
+                    f"  - Прошло времени с активности: {delta_t:.1f} сек.\n"
+                    f"  - Исходный заряд: {old_charge:.3f} -> После распада (Decay): {decayed_charge:.3f}\n"
+                    f"  - Прибавка за реплику (user_message): +{delta_charge:.3f}\n"
+                    f"  - Итоговый заряд чата (Charge): {charge:.3f}/1.000\n"
+                    f"  - Текущий вектор настроений Арти: {mood_json}"
+                )
+                logger.info(log_entry_msg)
+                
+                # Записываем плоский структурированный лог в logs/emotional.log
+                flat_log_entry = (
+                    f"[UPDATE_STATE] chat_id={chat_id} | "
+                    f"TimePassed={delta_t:.1f}s | "
+                    f"OldCharge={old_charge:.3f} -> Decayed={decayed_charge:.3f} | "
+                    f"Delta={delta_charge:.3f} | "
+                    f"FinalCharge={charge:.3f} | "
+                    f"Moods={mood_json}"
+                )
+                emotional_logger.info(flat_log_entry)
+
+                row = await conn.fetchrow("""
+                    UPDATE chat_emotional_states
+                    SET charge = $2,
+                        mood_state = $3::jsonb,
+                        last_activity_time = NOW(),
+                        conversation_stage = 'active',
+                        user_tz = $4
+                    WHERE chat_id = $1
+                    RETURNING *
+                """, chat_id, charge, mood_json, user_tz)
+                return dict(row)
+
+    @staticmethod
+    async def record_sticker_sent(chat_id: int, file_id: str, mood: str):
+        async with get_db() as conn:
+            async with conn.transaction():
+                state = await conn.fetchrow("""
+                    SELECT * FROM chat_emotional_states WHERE chat_id = $1 FOR UPDATE
+                """, chat_id)
+                
+                if not state:
+                    return
+                
+                history = json.loads(state["sticker_history"]) if isinstance(state["sticker_history"], str) else state["sticker_history"]
+                if not isinstance(history, list):
+                    history = []
+                
+                # Анти-повтор: пишем последние 3 стикера
+                history.append(file_id)
+                history = history[-3:]
+                
+                mood_dict = json.loads(state["mood_state"]) if isinstance(state["mood_state"], str) else state["mood_state"]
+                # Бустим вес отправленного настроения
+                if mood in mood_dict:
+                    mood_dict[mood] = min(mood_dict[mood] + 0.4, 1.0)
+                
+                # Сброс заряда (эмоциональный катарсис)
+                charge = 0.05
+                
+                # Логируем отправленный стикер и сброс заряда
+                log_entry = (
+                    f"[STICKER_SENT] chat_id={chat_id} | "
+                    f"Sticker={file_id} | "
+                    f"Mood={mood} | "
+                    f"Charge Reset to 0.05"
+                )
+                logger.info(f"🔮 [ЭМОЦИОНАЛЬНАЯ МАШИНА] {log_entry}")
+                emotional_logger.info(log_entry)
+                
+                await conn.execute("""
+                    UPDATE chat_emotional_states
+                    SET charge = $2,
+                        mood_state = $3::jsonb,
+                        last_sticker_time = NOW(),
+                        sticker_history = $4::jsonb,
+                        last_sent_sticker_mood = $5
+                    WHERE chat_id = $1
+                """, chat_id, charge, json.dumps(mood_dict, ensure_ascii=False), json.dumps(history, ensure_ascii=False), mood)
+
+
