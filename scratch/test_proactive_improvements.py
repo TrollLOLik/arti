@@ -134,8 +134,12 @@ async def run_tests():
     # Say server time is 01:23 (local offset +5). If user offset is -5, local time is 15:23 (active).
     # If user offset is +3, local time is 23:23 (quiet hours!).
     # We will simulate this by checking local hours logic:
-    for test_tz, expected_quiet in [( -5, False ), ( 3, True ), ( 5, True ), ( 12, True ), ( 0, False )]:
-        user_local_time = datetime.utcnow() + timedelta(hours=test_tz)
+    # Используем фиксированную опорную точку UTC (полдень), чтобы тест был детерминированным
+    # и не зависел от момента запуска. Проверяем границы окна тишины (8 -> тихо, 9 -> активно,
+    # 23 -> тихо, 0 -> тихо).
+    base_utc = datetime(2024, 1, 1, 12, 0, 0)
+    for test_tz, expected_quiet in [(0, False), (-3, False), (-4, True), (11, True), (12, True)]:
+        user_local_time = base_utc + timedelta(hours=test_tz)
         local_hour = user_local_time.hour
         is_quiet = local_hour >= 23 or local_hour < 9
         assert is_quiet == expected_quiet, f"For TZ={test_tz} local_hour={local_hour}, is_quiet={is_quiet} but expected {expected_quiet}"
@@ -154,7 +158,7 @@ async def run_tests():
         states = await conn.fetch("""
             SELECT chat_id FROM chat_emotional_states
             WHERE conversation_stage = 'active' AND chat_id = $1
-        """)
+        """, chat_id)
         assert len(states) == 0, "Expected proactive_sent chat to be ignored by proactive scheduler candidate scan"
         logger.info("[OK] Proactive Back-Off suppresses duplicate pushes (stage proactive_sent is skipped)")
 
@@ -165,6 +169,133 @@ async def run_tests():
         state = await conn.fetchrow("SELECT conversation_stage FROM chat_emotional_states WHERE chat_id = $1", chat_id)
         assert state["conversation_stage"] == "active", f"Expected stage reset to active, got {state['conversation_stage']}"
         logger.info("[OK] User reply successfully resets stage to 'active', unfreezing future proactive pushes")
+
+    # =========================================================================
+    # TEST 5: Closeness growth from regular interaction (passive, throttled)
+    # =========================================================================
+    logger.info("\n--- TEST 5: Passive Closeness Growth ---")
+    from database.models import MemoryUserProfile
+
+    async def _get_closeness():
+        prof = await MemoryUserProfile.get(chat_id, user_id, mode)
+        if not prof or not prof.get("profile_json"):
+            return None
+        pj = json.loads(prof["profile_json"]) if isinstance(prof["profile_json"], str) else prof["profile_json"]
+        return pj.get("affective", {})
+
+    # Clean profile for a deterministic baseline
+    async with get_db() as conn:
+        await conn.execute("DELETE FROM memory_user_profiles WHERE chat_id = $1", chat_id)
+
+    await MemoryUserProfile.grow_closeness(chat_id, user_id, mode, proactive_reply=False)
+    aff1 = await _get_closeness()
+    assert aff1 is not None, "Expected profile to be created by grow_closeness"
+    assert abs(aff1["closeness"] - 0.11) < 1e-6, f"Expected closeness 0.11 after first passive growth, got {aff1['closeness']}"
+    logger.info(f"[OK] Passive growth bumped closeness 0.10 -> {aff1['closeness']:.3f}")
+
+    # Second immediate call must be throttled (no change within 90 sec)
+    await MemoryUserProfile.grow_closeness(chat_id, user_id, mode, proactive_reply=False)
+    aff2 = await _get_closeness()
+    assert abs(aff2["closeness"] - aff1["closeness"]) < 1e-6, "Expected passive growth to be throttled within 90 sec"
+    logger.info("[OK] Rapid second message correctly throttled (no closeness inflation)")
+
+    # =========================================================================
+    # TEST 6: Closeness bonus for replying to a proactive push (no throttle)
+    # =========================================================================
+    logger.info("\n--- TEST 6: Proactive-Reply Closeness Bonus ---")
+    before = (await _get_closeness())["closeness"]
+    await MemoryUserProfile.grow_closeness(chat_id, user_id, mode, proactive_reply=True)
+    after = (await _get_closeness())["closeness"]
+    # Passive is throttled (just ran), so only the +0.05 proactive bonus applies
+    assert abs((after - before) - 0.05) < 1e-6, f"Expected +0.05 proactive-reply bonus, got delta {after - before}"
+    logger.info(f"[OK] Proactive reply bonus applied immediately (bypasses throttle): {before:.3f} -> {after:.3f}")
+
+    # was_proactive_reply must be surfaced by update_state when stage was 'proactive_sent'
+    async with get_db() as conn:
+        await conn.execute("UPDATE chat_emotional_states SET conversation_stage = 'proactive_sent' WHERE chat_id = $1", chat_id)
+    st = await ChatEmotionalState.update_state(chat_id, "ой привет, замоталась", closeness=0.6, user_id=user_id)
+    assert st.get("was_proactive_reply") is True, "Expected update_state to flag was_proactive_reply when stage was proactive_sent"
+    logger.info("[OK] update_state correctly flags was_proactive_reply for replies to proactive pushes")
+
+    # =========================================================================
+    # TEST 7: Proactive sticker bypasses charge gate (force=True)
+    # =========================================================================
+    logger.info("\n--- TEST 7: Forced Proactive Sticker (charge gate bypass) ---")
+    import ai.stickers as stickers_mod
+
+    class _FakeBot:
+        def __init__(self):
+            self.sent = []
+        async def send_chat_action(self, **kwargs):
+            return None
+        async def send_sticker(self, **kwargs):
+            self.sent.append(kwargs)
+        async def set_message_reaction(self, **kwargs):
+            return None
+
+    # Force near-zero charge (the exact condition after long silence / catharsis reset)
+    async with get_db() as conn:
+        await conn.execute("UPDATE chat_emotional_states SET charge = 0.0, last_sticker_time = NULL WHERE chat_id = $1", chat_id)
+
+    orig_enabled = stickers_mod.STICKERS_ENABLED
+    orig_loader = stickers_mod.load_sticker_pack
+    orig_rand = stickers_mod.random.random
+    stickers_mod.STICKERS_ENABLED = True
+
+    async def _fake_pack(bot):
+        return {"bored": ["FAKE_STICKER_FILE_ID"]}
+    stickers_mod.load_sticker_pack = _fake_pack
+
+    try:
+        # force=True: must send despite charge=0
+        bot_force = _FakeBot()
+        await stickers_mod.send_mood_sticker_task(bot_force, chat_id, user_id, "bored", 12345, force=True)
+        assert len(bot_force.sent) == 1, f"Expected forced proactive sticker to send despite charge=0, sent={len(bot_force.sent)}"
+        logger.info("[OK] force=True sends proactive sticker even when charge=0 (gate bypassed)")
+
+        # force=False with charge=0: probability gate must block (roll forced high)
+        async with get_db() as conn:
+            await conn.execute("UPDATE chat_emotional_states SET charge = 0.0, last_sticker_time = NULL WHERE chat_id = $1", chat_id)
+        stickers_mod.random.random = lambda: 0.99
+        bot_gated = _FakeBot()
+        await stickers_mod.send_mood_sticker_task(bot_gated, chat_id, user_id, "bored", 12345, force=False)
+        assert len(bot_gated.sent) == 0, "Expected probability gate to block sticker when charge=0 and force=False"
+        logger.info("[OK] force=False with charge=0 correctly blocked by probability gate")
+    finally:
+        stickers_mod.STICKERS_ENABLED = orig_enabled
+        stickers_mod.load_sticker_pack = orig_loader
+        stickers_mod.random.random = orig_rand
+
+    # =========================================================================
+    # TEST 8: Event extractor runs with fallback tz (user_tz=0) for new users
+    # =========================================================================
+    logger.info("\n--- TEST 8: Event Extractor Fallback Timezone ---")
+    import config as config_mod
+
+    class _FakeModels:
+        def generate_content(self, model, contents, config):
+            class _R:
+                text = '[{"event_date": "2099-06-03", "event_type": "exam", "note": "Экзамен по матлабу"}]'
+            return _R()
+
+    class _FakeClient:
+        models = _FakeModels()
+
+    async with get_db() as conn:
+        await conn.execute("DELETE FROM user_events WHERE chat_id = $1", chat_id)
+
+    orig_client = config_mod.genai_client
+    config_mod.genai_client = _FakeClient()
+    try:
+        # user_tz=0 fallback (new user whose tz is not yet inferred)
+        await extract_and_save_events_task(chat_id, "у меня экзамен 3.06", user_tz=0)
+    finally:
+        config_mod.genai_client = orig_client
+
+    events = await UserEvent.get_upcoming_for_chat(chat_id, date(2099, 1, 1), date(2099, 12, 31))
+    assert len(events) == 1, f"Expected extractor to insert 1 event with fallback tz, got {len(events)}"
+    assert events[0]["event_type"] == "exam", f"Expected exam event, got {events[0]['event_type']}"
+    logger.info("[OK] Event extractor runs and persists events even when user_tz falls back to 0")
 
     logger.info("\n[SUCCESS] All Premium Proactive & Emotional improvements verified perfectly!")
 
