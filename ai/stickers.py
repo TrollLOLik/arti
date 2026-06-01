@@ -260,10 +260,14 @@ async def _classify_via_gemini_vision(bot: Bot, pack_name: str, stickers: List) 
     return None
 
 
-async def send_mood_sticker_task(bot: Bot, chat_id: int, user_id: int, mood: str, message_id: int, mode: str = "default"):
+async def send_mood_sticker_task(bot: Bot, chat_id: int, user_id: int, mood: str, message_id: int, mode: str = "default", force: bool = False):
     """
     Фоновая асинхронная задача: рассчитывает вероятность P_send, 
     выбирает стикер с защитой от повторов и отправляет его после имитации раздумья.
+
+    force=True — проактивный пуш: вероятностный гейт по conversational-charge пропускается
+    (после долгого молчания заряд ≈ 0, иначе проактивный стикер почти никогда не уходит).
+    Жёсткий 2-минутный анти-спам сохраняется в любом случае.
     """
     if not STICKERS_ENABLED or mood not in SUPPORTED_MOODS:
         return
@@ -283,12 +287,11 @@ async def send_mood_sticker_task(bot: Bot, chat_id: int, user_id: int, mood: str
             closeness = aff.get("closeness", 0.1)
             sticker_receptivity = aff.get("sticker_receptivity", 0.5)
 
-        # Вычисляем факторы вероятности
-        # Фактор времени (RecencyFactor) — защита от спама (не чаще 1 стикера в 2 минуты)
+        # Фактор времени (RecencyFactor) — жёсткий анти-спам (не чаще 1 стикера в 2 минуты).
+        # Дельту берём из БД (seconds_since_sticker), чтобы не смешивать datetime.now() с временем БД.
         recency_factor = 1.0
-        last_sticker_time = emo_state.get("last_sticker_time")
-        if last_sticker_time:
-            diff_sec = (datetime.now() - last_sticker_time).total_seconds()
+        diff_sec = emo_state.get("seconds_since_sticker")
+        if diff_sec is not None:
             if diff_sec < 120:
                 logger.info("Отмена отправки стикера: сработал жесткий временной анти-спам (2 минуты).")
                 return
@@ -296,36 +299,45 @@ async def send_mood_sticker_task(bot: Bot, chat_id: int, user_id: int, mood: str
                 # В промежутке от 2 до 10 минут вероятность плавно растёт
                 recency_factor = (diff_sec - 120) / 480
 
-        # Вероятностный гейт
-        p_send = charge * sticker_receptivity * recency_factor
-        
-        # Близким друзьям повышаем базовую вероятность
-        if closeness > 0.6:
-            p_send = min(p_send * 1.3, 1.0)
-            
-        random_val = random.random()
-        logger.info(f"Вероятностный гейт стикера: p_send={p_send:.2f}, roll={random_val:.2f}, charge={charge:.2f}")
-        
-        verdict = "PASS" if random_val <= p_send else "FAIL"
-        flat_log_entry = (
-            f"[STICKER_GATE] chat_id={chat_id} user_id={user_id} | "
-            f"Mood={mood} | "
-            f"Charge={charge:.3f} | "
-            f"Receptivity={sticker_receptivity:.3f} | "
-            f"RecencyFactor={recency_factor:.3f} | "
-            f"Closeness={closeness:.3f} | "
-            f"P_send={p_send:.3f} | "
-            f"Roll={random_val:.3f} | "
-            f"Verdict={verdict}"
-        )
-        emotional_logger.info(flat_log_entry)
-        
-        if random_val > p_send:
-            logger.info("Стикер заблокирован вероятностным гейтом.")
-            # FALLBACK TO REACTION: если заряд средний (> 0.15), шлем нативную реакцию
-            if charge > 0.15:
-                await try_send_telegram_reaction(bot, chat_id, message_id, mood)
-            return
+        if force:
+            # Проактивный пуш: модель уже решила прислать стикер, поэтому обходим
+            # вероятностный гейт по conversational-charge (после долгого молчания он ≈ 0).
+            emotional_logger.info(
+                f"[STICKER_GATE] chat_id={chat_id} user_id={user_id} | Mood={mood} | "
+                f"Charge={charge:.3f} | Closeness={closeness:.3f} | Verdict=FORCED"
+            )
+            logger.info("Проактивный стикер: вероятностный гейт пропущен (force=True).")
+        else:
+            # Вероятностный гейт
+            p_send = charge * sticker_receptivity * recency_factor
+
+            # Близким друзьям повышаем базовую вероятность
+            if closeness > 0.6:
+                p_send = min(p_send * 1.3, 1.0)
+
+            random_val = random.random()
+            logger.info(f"Вероятностный гейт стикера: p_send={p_send:.2f}, roll={random_val:.2f}, charge={charge:.2f}")
+
+            verdict = "PASS" if random_val <= p_send else "FAIL"
+            flat_log_entry = (
+                f"[STICKER_GATE] chat_id={chat_id} user_id={user_id} | "
+                f"Mood={mood} | "
+                f"Charge={charge:.3f} | "
+                f"Receptivity={sticker_receptivity:.3f} | "
+                f"RecencyFactor={recency_factor:.3f} | "
+                f"Closeness={closeness:.3f} | "
+                f"P_send={p_send:.3f} | "
+                f"Roll={random_val:.3f} | "
+                f"Verdict={verdict}"
+            )
+            emotional_logger.info(flat_log_entry)
+
+            if random_val > p_send:
+                logger.info("Стикер заблокирован вероятностным гейтом.")
+                # FALLBACK TO REACTION: если заряд средний (> 0.15), шлем нативную реакцию
+                if charge > 0.15:
+                    await try_send_telegram_reaction(bot, chat_id, message_id, mood)
+                return
 
         # 2. Загружаем стикерпак
         pack = await load_sticker_pack(bot)

@@ -1318,6 +1318,87 @@ class MemoryUserProfile:
                         updated_at = NOW()
                 """, chat_id, user_id, mode, json.dumps(profile_json, ensure_ascii=False), profile_text)
 
+    @staticmethod
+    async def grow_closeness(chat_id: int, user_id: int, mode: str, proactive_reply: bool = False):
+        """
+        Растит близость (closeness) и восприимчивость к стикерам от ОБЫЧНОГО общения,
+        а не только от эмодзи-реакций. Пассивный рост троттлится (не чаще 1 раза в 90 секунд),
+        чтобы серия быстрых сообщений не накручивала близость. Бонус за ответ на проактивный
+        пуш начисляется без троттлинга как сильный позитивный сигнал.
+        """
+        if not chat_id or not user_id:
+            return
+        async with get_db() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow("""
+                    SELECT * FROM memory_user_profiles
+                    WHERE chat_id = $1 AND user_id = $2 AND mode = $3
+                    FOR UPDATE
+                """, chat_id, user_id, mode)
+
+                profile_json = {}
+                profile_text = "Новый субъект общения."
+                if row:
+                    profile_json = json.loads(row["profile_json"]) if isinstance(row["profile_json"], str) else (row["profile_json"] or {})
+                    profile_text = row["profile_text"] or profile_text
+
+                if "affective" not in profile_json:
+                    profile_json["affective"] = {
+                        "closeness": 0.1,
+                        "sticker_receptivity": 0.5,
+                        "dominant_sentiment": "neutral",
+                        "emotional_triggers": {},
+                        "last_reinforcement_time": None,
+                    }
+                aff = profile_json["affective"]
+
+                from datetime import datetime as _dt
+                now = _dt.now()
+                changed = False
+
+                # Пассивный рост от обычного общения (троттлинг 90 сек)
+                throttle_ok = True
+                last_passive_str = aff.get("last_passive_growth_time")
+                if last_passive_str:
+                    try:
+                        throttle_ok = (now - _dt.fromisoformat(last_passive_str)).total_seconds() >= 90
+                    except Exception:
+                        throttle_ok = True
+                if throttle_ok:
+                    aff["closeness"] = min(aff.get("closeness", 0.1) + 0.01, 1.0)
+                    aff["sticker_receptivity"] = min(aff.get("sticker_receptivity", 0.5) + 0.01, 1.0)
+                    aff["last_passive_growth_time"] = now.isoformat()
+                    changed = True
+
+                # Бонус за ответ на проактивный пуш (без троттлинга)
+                if proactive_reply:
+                    aff["closeness"] = min(aff.get("closeness", 0.1) + 0.05, 1.0)
+                    aff["sticker_receptivity"] = min(aff.get("sticker_receptivity", 0.5) + 0.03, 1.0)
+                    changed = True
+
+                if not changed:
+                    return
+
+                profile_json["affective"] = aff
+                log_entry = (
+                    f"[CLOSENESS_GROWTH] chat_id={chat_id} user_id={user_id} | "
+                    f"ProactiveReply={proactive_reply} | "
+                    f"Closeness={aff['closeness']:.3f} | Receptivity={aff['sticker_receptivity']:.3f}"
+                )
+                logger.info(f"🔮 [ЭМОЦИОНАЛЬНАЯ МАШИНА] {log_entry}")
+                emotional_logger.info(log_entry)
+
+                await conn.execute("""
+                    INSERT INTO memory_user_profiles (
+                        chat_id, user_id, mode, profile_json, profile_text, updated_at
+                    )
+                    VALUES ($1, $2, $3, $4::jsonb, $5, NOW())
+                    ON CONFLICT (chat_id, user_id, mode)
+                    DO UPDATE SET
+                        profile_json = EXCLUDED.profile_json,
+                        updated_at = NOW()
+                """, chat_id, user_id, mode, json.dumps(profile_json, ensure_ascii=False), profile_text)
+
 
 class MemoryTimeline:
     @staticmethod
@@ -1628,7 +1709,7 @@ class ChatEmotionalState:
                 )
                 ON CONFLICT (chat_id) DO UPDATE SET
                     chat_id = EXCLUDED.chat_id
-                RETURNING *
+                RETURNING *, EXTRACT(EPOCH FROM (NOW() - last_sticker_time))::float8 AS seconds_since_sticker
             """, chat_id)
             return dict(row)
 
@@ -1639,26 +1720,31 @@ class ChatEmotionalState:
         async with get_db() as conn:
             async with conn.transaction():
                 # 1. Загружаем текущее состояние
+                # Дельту времени считаем на стороне БД (NOW()), чтобы не смешивать
+                # наивный datetime.now() приложения с временем БД (разные TZ -> неверный распад).
                 state = await conn.fetchrow("""
-                    SELECT * FROM chat_emotional_states WHERE chat_id = $1 FOR UPDATE
+                    SELECT *, EXTRACT(EPOCH FROM (NOW() - last_activity_time))::float8 AS delta_t_seconds
+                    FROM chat_emotional_states WHERE chat_id = $1 FOR UPDATE
                 """, chat_id)
                 
                 if not state:
                     state = await conn.fetchrow("""
                         INSERT INTO chat_emotional_states (chat_id, charge, mood_state, last_sticker_time, last_activity_time, sticker_history, last_sent_sticker_mood, conversation_stage, user_tz)
                         VALUES ($1, 0.0, '{"happy": 0.0, "sad": 0.0, "angry": 0.0, "love": 0.0, "teasing": 0.0, "shock": 0.0, "blush": 0.0, "bored": 0.0, "thinking": 0.0}'::jsonb, NULL, NOW(), '[]'::jsonb, NULL, 'active', NULL)
-                        RETURNING *
+                        RETURNING *, 0.0::float8 AS delta_t_seconds
                     """, chat_id)
+                
+                # Запоминаем, был ли это первый ответ юзера на проактивный пуш
+                # (для бонуса близости — сильный позитивный сигнал)
+                was_proactive_reply = (state["conversation_stage"] == 'proactive_sent')
                 
                 # Ленивое определение таймзоны
                 user_tz = state["user_tz"]
                 if user_tz is None and user_id is not None:
                     user_tz = await infer_user_timezone(chat_id, user_id)
                 
-                # 2. Вычисляем распад (Time Decay)
-                now = datetime.now()
-                last_activity = state["last_activity_time"]
-                delta_t = (now - last_activity).total_seconds()
+                # 2. Вычисляем распад (Time Decay) — дельта посчитана БД (UTC-консистентно)
+                delta_t = max(0.0, state["delta_t_seconds"] or 0.0)
                 
                 # Затухание заряда (half-life = 15 мин = 900 сек)
                 lambda_c = 0.00077
@@ -1692,8 +1778,8 @@ class ChatEmotionalState:
                 
                 love_words = ["люблю", "мило", "прелесть", "обожаю", "лучшая", "красивая", "классная"]
                 happy_words = ["ура", "круто", "отлично", "хаха", "радость", "смешно", "привет", "приветик"]
-                sad_words = ["грустно", "плачу", "плохо", "беда", "печально", "устал", "одиноко"]
-                angry_words = ["дурак", "бесишь", "заткнись", "плохой", "урод", "удали", "хватит", "хер"]
+                sad_words = ["грус", "плачу", "плохо", "беда", "печаль", "устал", "одинок"]
+                angry_words = ["дурак", "бесишь", "заткнись", "плохой", "урод", "удали", "хватит", "хер", "обид", "злост"]
                 
                 # Функция определения отрицания перед ключевым словом
                 def check_negation(word: str) -> bool:
@@ -1705,11 +1791,16 @@ class ChatEmotionalState:
                                 return True
                     return False
 
-                # Определяем соответствие слов и их отрицание
-                matched_love = [w for w in love_words if w in msg_lower]
-                matched_happy = [w for w in happy_words if w in msg_lower]
-                matched_sad = [w for w in sad_words if w in msg_lower]
-                matched_angry = [w for w in angry_words if w in msg_lower]
+                # Сопоставление по границе начала слова (\bслово), а не по подстроке,
+                # иначе ловятся ложные совпадения (например, "ура" внутри "дурак" -> happy).
+                # Префиксная граница сохраняет склонения ("привет" ловит "приветик").
+                def _kw_match(words):
+                    return [w for w in words if _re.search(r"\b" + _re.escape(w), msg_lower)]
+
+                matched_love = _kw_match(love_words)
+                matched_happy = _kw_match(happy_words)
+                matched_sad = _kw_match(sad_words)
+                matched_angry = _kw_match(angry_words)
 
                 closeness_mult = 1.5 if closeness > 0.6 else 1.0
 
@@ -1821,7 +1912,9 @@ class ChatEmotionalState:
                     WHERE chat_id = $1
                     RETURNING *
                 """, chat_id, charge, mood_json, user_tz)
-                return dict(row)
+                result = dict(row)
+                result["was_proactive_reply"] = was_proactive_reply
+                return result
 
     @staticmethod
     async def record_sticker_sent(chat_id: int, file_id: str, mood: str):

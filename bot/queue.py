@@ -537,30 +537,42 @@ async def _user_text_worker(user_id: int):
     _user_workers.pop(user_id, None)
 
 
+# Паттерны с границей начала слова (\b<стем>), чтобы не ловить подстроки
+# вроде "др" в "друг"/"вдруг" или "май" в "майка". Суффиксы допускаются (склонения).
+_EVENT_STEM_PATTERNS = [
+    r"завтра", r"послезавтра",
+    r"понедельник", r"вторник", r"сред[ауые]", r"четверг", r"пятниц", r"суббот", r"воскресень",
+    r"экзамен", r"дедлайн", r"защит", r"собес", r"день\s+рожд",
+    r"встреч", r"годовщин", r"праздник",
+    # Месяцы (достаточно длинные стемы, чтобы избежать ложных срабатываний)
+    r"январ", r"феврал", r"март", r"апрел", r"июн", r"июл", r"август",
+    r"сентябр", r"октябр", r"ноябр", r"декабр",
+]
+# Неоднозначные короткие слова — требуем строгую границу с обеих сторон (\bслово\b)
+_EVENT_EXACT_PATTERNS = [
+    r"др",            # сленг "день рождения", но не "друг"/"вдруг"
+    r"ма[йяе]",       # май/мая/мае, но не "майка"
+]
+
+
 def check_event_pre_filter(text: str) -> bool:
     import re
     text_lower = text.lower()
-    
-    # 1. Ключевые слова-маркеры дат и событий
-    keywords = [
-        "завтра", "послезавтра", "понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье",
-        "экзамен", "дедлайн", "защит", "собес", "собеседование", "др", "день рожд", "день рожден",
-        "встреч", "годовщин", "праздник"
-    ]
-    if any(k in text_lower for k in keywords):
-        return True
-        
-    # 2. Названия месяцев
-    months = [
-        "янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"
-    ]
-    if any(m in text_lower for m in months):
-        return True
-        
-    # 3. Регулярные выражения для числовых дат (например, "03.06", "3.06")
+
+    # 1. Стемы событий/дат с границей начала слова
+    for pat in _EVENT_STEM_PATTERNS:
+        if re.search(r"\b" + pat, text_lower):
+            return True
+
+    # 2. Неоднозначные короткие слова — строгая граница слова
+    for pat in _EVENT_EXACT_PATTERNS:
+        if re.search(r"\b" + pat + r"\b", text_lower):
+            return True
+
+    # 3. Числовые даты (например, "03.06", "3.06")
     if re.search(r'\d{1,2}\.\d{1,2}', text_lower):
         return True
-        
+
     return False
 
 
@@ -670,9 +682,16 @@ async def process_user_reply(request, bot):
         closeness = prof_json.get("affective", {}).get("closeness", 0.1)
         
     updated_state = await ChatEmotionalState.update_state(chat_id, user_message, closeness, user_id=user_id)
+    # Рост близости от ОБЫЧНОГО общения (+ бонус за ответ на проактивный пуш),
+    # а не только от эмодзи-реакций — иначе closeness почти никогда не растёт.
+    await MemoryUserProfile.grow_closeness(
+        chat_id, user_id, mode,
+        proactive_reply=updated_state.get("was_proactive_reply", False),
+    )
     user_tz = updated_state.get("user_tz")
-    if user_tz is not None:
-        asyncio.create_task(extract_and_save_events_task(chat_id, user_message, user_tz))
+    # Экстрактор событий: если tz ещё не определён, берём фолбэк (UTC) —
+    # абсолютные даты резолвятся корректно, иначе раннее событие потерялось бы.
+    asyncio.create_task(extract_and_save_events_task(chat_id, user_message, user_tz if user_tz is not None else 0))
 
     action_type = 'record_audio' if is_voice else 'typing'
     repeating_task = asyncio.create_task(
@@ -1881,12 +1900,14 @@ async def proactive_scheduler_worker(bot):
     while True:
         try:
             logger.info("Шедулер проактивных стикеров: сканирование активных чатов...")
-            now = datetime.now()
-            
+
             async with get_db() as conn:
-                # Извлекаем все активные сессии, где тишина > 18 часов
+                # Извлекаем все активные сессии, где тишина > 18 часов.
+                # Длительность тишины считаем на стороне БД (NOW()), чтобы не смешивать
+                # наивный datetime.now() приложения с временем БД (разные TZ -> неверная дельта).
                 states = await conn.fetch("""
-                    SELECT chat_id, last_activity_time, last_proactive_push_time, user_tz
+                    SELECT chat_id, last_activity_time, last_proactive_push_time, user_tz,
+                           EXTRACT(EPOCH FROM (NOW() - last_activity_time))::float8 / 3600.0 AS silence_hours
                     FROM chat_emotional_states
                     WHERE conversation_stage = 'active'
                       AND last_activity_time < NOW() - INTERVAL '18 hours'
@@ -1914,8 +1935,8 @@ async def proactive_scheduler_worker(bot):
                     logger.info(f"Шедулер: Пропускаем чат {chat_id}, так как локальное время {local_hour:02d}:00 входит в quiet hours (23:00 - 09:00).")
                     continue
                 
-                # Разность часов
-                diff_act_hours = (now - last_act).total_seconds() / 3600.0
+                # Разность часов (посчитана БД, UTC-консистентно)
+                diff_act_hours = max(0.0, state["silence_hours"] or 0.0)
                 
                 # 3. Чистим вчерашние и прошедшие события в чате
                 async with get_db() as conn:
@@ -2069,7 +2090,7 @@ async def proactive_scheduler_worker(bot):
                         # Отправляем стикер
                         if sticker_mood:
                             from ai.stickers import send_mood_sticker_task
-                            asyncio.create_task(send_mood_sticker_task(bot, chat_id, user_id, sticker_mood, sent_msg.message_id, mode=mode))
+                            asyncio.create_task(send_mood_sticker_task(bot, chat_id, user_id, sticker_mood, sent_msg.message_id, mode=mode, force=True))
                         
                         break # За раз пушим только одного юзера в чате
                         
