@@ -329,6 +329,17 @@ async def run_tests():
     assert mood_dict["teasing"] < 0.4, f"Expected teasing to be dampened from 0.4, got {mood_dict['teasing']}"
     logger.info("[OK] Emotional loss message ('больно тебя терять') correctly triggered empathetic sad/love shift")
 
+    # Регресс на ложное отрицание: "мне" заканчивается на "не", раньше "мне больно"/"мне жаль"
+    # уходило в позитивную ветку (happy/love). Должно распознаваться как грусть.
+    for phrase in ["мне больно", "мне жаль", "мне так тоскливо без тебя"]:
+        async with get_db() as conn:
+            await conn.execute("DELETE FROM chat_emotional_states WHERE chat_id = $1", chat_id)
+            await ChatEmotionalState.get_or_create(chat_id)
+        st = await ChatEmotionalState.update_state(chat_id, phrase, closeness=0.6, user_id=None)
+        md = json.loads(st["mood_state"]) if isinstance(st["mood_state"], str) else st["mood_state"]
+        assert md["sad"] > 0.1, f"Expected '{phrase}' to trigger sad (not false negation), got {md['sad']}"
+    logger.info("[OK] 'мне больно'/'мне жаль' no longer misread as negation -> sad triggered correctly")
+
     logger.info("\n[SUCCESS] All Premium Proactive & Emotional improvements verified perfectly!")
 
 if __name__ == "__main__":

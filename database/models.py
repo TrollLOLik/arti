@@ -1715,9 +1715,10 @@ class ChatEmotionalState:
                     pos = msg_lower.find(word)
                     if pos > 0:
                         prev_segment = msg_lower[max(0, pos-15):pos].strip()
-                        for neg in ["не ", "нет ", "без ", "не", "нет", "без"]:
-                            if prev_segment.endswith(neg):
-                                return True
+                        # Частица отрицания должна быть отдельным словом, а не хвостом другого
+                        # (иначе "мне" → "не" даёт ложное отрицание для "мне больно"/"мне жаль").
+                        if _re.search(r"(?:^|\s)(?:не|нет|без)$", prev_segment):
+                            return True
                     return False
 
                 # Сопоставление по границе начала слова (\bслово), а не по подстроке,
