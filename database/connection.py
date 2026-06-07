@@ -107,26 +107,6 @@ async def _create_tables_internal(conn):
 
 
     
-    # Активные пользователи
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS active_users (
-            id SERIAL PRIMARY KEY,
-            chat_id BIGINT NOT NULL,
-            user_id BIGINT NOT NULL,
-            last_activity TIMESTAMP NOT NULL DEFAULT NOW(),
-            UNIQUE(chat_id, user_id)
-        )
-    """)
-    
-    await conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_active_users_chat_user 
-        ON active_users(chat_id, user_id)
-    """)
-    
-    await conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_active_users_last_activity 
-        ON active_users(last_activity)
-    """)
     
     # Спам-защита
     await conn.execute("""

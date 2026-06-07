@@ -117,45 +117,6 @@ class ChatHistoryRP:
             await conn.execute("DELETE FROM chat_history_rp WHERE chat_id = $1", chat_id)
 
 
-class ActiveUser:
-    """Работа с активными пользователями"""
-    
-    @staticmethod
-    async def add(chat_id: int, user_id: int):
-        """Добавить/обновить активного пользователя"""
-        async with get_db() as conn:
-            await conn.execute("""
-                INSERT INTO active_users (chat_id, user_id, last_activity)
-                VALUES ($1, $2, NOW())
-                ON CONFLICT (chat_id, user_id)
-                DO UPDATE SET last_activity = NOW()
-            """, chat_id, user_id)
-    
-    @staticmethod
-    async def is_active(chat_id: int, user_id: int, timeout_seconds: int = 20) -> bool:
-        """Проверить, активен ли пользователь"""
-        async with get_db() as conn:
-            row = await conn.fetchrow("""
-                SELECT last_activity
-                FROM active_users
-                WHERE chat_id = $1 AND user_id = $2
-            """, chat_id, user_id)
-            
-            if row is None:
-                return False
-            
-            time_diff = datetime.now() - row['last_activity']
-            return time_diff.total_seconds() <= timeout_seconds
-    
-    @staticmethod
-    async def cleanup_old(timeout_seconds: int = 20):
-        """Очистить старых неактивных пользователей"""
-        async with get_db() as conn:
-            await conn.execute("""
-                DELETE FROM active_users
-                WHERE last_activity < NOW() - INTERVAL '%s seconds'
-            """ % timeout_seconds)
-
 
 class SpamProtection:
     """Работа со спам-защитой"""
