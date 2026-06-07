@@ -108,6 +108,11 @@ MEMORY_CONSOLIDATION_INTERVAL = 50
 MEMORY_PROFILES_ENABLED = True
 MEMORY_TIMELINE_ENABLED = True
 MEMORY_PROFILE_APPLY = False
+# Авто-перестроение смыслового профиля пользователя в живом диалоге (а не только
+# вручную через maintain_memory.py). Троттлится интервалом ниже, чтобы не дёргать LLM
+# на каждом сообщении: первый раз профиль строится сразу, как появились факты.
+MEMORY_PROFILE_AUTO = True
+MEMORY_PROFILE_MIN_INTERVAL_SEC = 1800
 MEMORY_TIMELINE_APPLY = False
 MEMORY_TIMELINE_MIN_MESSAGES = 30
 STICKERS_ENABLED = os.getenv("STICKERS_ENABLED", "True").strip().lower() == "true"
