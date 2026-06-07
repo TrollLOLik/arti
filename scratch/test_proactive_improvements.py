@@ -523,24 +523,35 @@ async def run_tests():
     # TEST 13: Эмоциональное состояние влияет на тон ответа (build_emotional_directive)
     # =========================================================================
     logger.info("\n--- TEST 13: Emotional state -> tone directive ---")
+    import random as _random
     from ai.generation import build_emotional_directive
 
-    # (a) Высокий заряд + teasing/happy → живой, азартный тон
+    def _seeded():
+        # Детерминированный rng — чтобы тесты не зависели от рандомного «акцента».
+        return _random.Random(0)
+
+    EVENING_TZ = 3   # локальный вечер (UTC сейчас в районе 16-19ч в CI/локально)
+
+    # (a) Высокий заряд + teasing/happy → живой, азартный тон; числа/механика не утекают
     hot = build_emotional_directive(
         0.768,
         {"teasing": 0.83, "happy": 0.82, "love": 0.21, "sad": 0.0, "angry": 0.0,
          "blush": 0.0, "shock": 0.0, "bored": 0.0, "thinking": 0.0},
+        user_tz=EVENING_TZ, rng=_seeded(),
     )
     assert hot, "Директива должна формироваться при наличии состояния"
-    assert "разогрета" in hot, hot
+    assert "Заряд высокий" in hot, hot
+    assert "азарт" in hot, hot
     assert "игривость" in hot, hot  # ярлык teasing проступил
+    # сильные настроения (>=0.5) диктуют тон жёстче
+    assert "Особенно сильно" in hot, hot
     # числа/механика не утекают в текст директивы
     assert "0.83" not in hot and "charge" not in hot.lower(), hot
-    logger.info("[OK] Высокий заряд + teasing/happy → живой/азартный тон, без чисел")
+    logger.info("[OK] Высокий заряд + сильные teasing/happy → азартный тон с акцентом, без чисел")
 
     # (b) Низкий заряд → сдержаннее
-    cold = build_emotional_directive(0.08, {"bored": 0.3})
-    assert "сдержаннее" in cold, cold
+    cold = build_emotional_directive(0.08, {"bored": 0.3}, user_tz=EVENING_TZ, rng=_seeded())
+    assert "Заряд низкий" in cold and "сдержанн" in cold, cold
     assert "скука" in cold, cold
     logger.info("[OK] Низкий заряд → сдержанный тон")
 
@@ -549,16 +560,46 @@ async def run_tests():
     assert "серьёзную" in cold, cold
     logger.info("[OK] Guardrail 'давать заднюю на серьёзном' встроен независимо от заряда")
 
-    # (d) Фон ниже порога (0.2) не попадает в директиву
-    faint = build_emotional_directive(0.5, {"happy": 0.05, "thinking": 0.1})
+    # (d) Фон ниже порога (0.2) не попадает; слабое настроение не даёт акцента «Особенно сильно»
+    faint = build_emotional_directive(0.5, {"happy": 0.05, "thinking": 0.1, "teasing": 0.3},
+                                      user_tz=EVENING_TZ, rng=_seeded())
     assert "радость" not in faint and "задумчивость" not in faint, faint
-    logger.info("[OK] Слабые настроения (ниже порога) не окрашивают тон")
+    assert "Особенно сильно" not in faint, faint  # teasing=0.3 < 0.5
+    logger.info("[OK] Слабые настроения ниже порога не окрашивают; нет ложного 'сильного' акцента")
 
-    # (e) Устойчивость: mood_state строкой (как jsonb из БД) и битый ввод
-    from_str = build_emotional_directive(0.7, '{"angry": 0.4}')
+    # (e) Скука выше порога → честно теряет интерес / может свернуть тему
+    boredom = build_emotional_directive(0.4, {"bored": 0.5}, user_tz=EVENING_TZ, rng=_seeded())
+    assert "скучновато" in boredom and "сверни" in boredom, boredom
+    logger.info("[OK] Высокая скука → разрешение сменить угол / свернуть тему")
+
+    # (f) Время суток влияет на базовую окраску (утро vs день vs вечер vs ночь).
+    # tz подбираем от текущего UTC-часа так, чтобы локальный час попал в нужную полосу.
+    import ai.generation as _gen
+    _utc_h = datetime.utcnow().hour
+    def _tz_for(target_local_hour):
+        return target_local_hour - _utc_h
+    assert "Сейчас утро" in _gen._time_of_day_line(_tz_for(8)), _gen._time_of_day_line(_tz_for(8))
+    assert "Сейчас день" in _gen._time_of_day_line(_tz_for(14)), _gen._time_of_day_line(_tz_for(14))
+    assert "вечер" in _gen._time_of_day_line(_tz_for(20)), _gen._time_of_day_line(_tz_for(20))
+    assert "ночь" in _gen._time_of_day_line(_tz_for(2)), _gen._time_of_day_line(_tz_for(2))
+    # и в полной директиве суточная строка тоже присутствует
+    assert "Сейчас утро" in build_emotional_directive(0.5, {}, user_tz=_tz_for(8), rng=_seeded())
+    logger.info("[OK] Время суток (утро/день/вечер/ночь) меняет базовую окраску тона")
+
+    # (g) Рандом детерминирован при фиксированном seed, но различается между seed'ами
+    d0 = build_emotional_directive(0.7, {"happy": 0.6}, user_tz=EVENING_TZ, rng=_random.Random(0))
+    d0b = build_emotional_directive(0.7, {"happy": 0.6}, user_tz=EVENING_TZ, rng=_random.Random(0))
+    variants = {build_emotional_directive(0.7, {"happy": 0.6}, user_tz=EVENING_TZ, rng=_random.Random(s))
+                for s in range(12)}
+    assert d0 == d0b, "Один seed → один результат (детерминизм)"
+    assert len(variants) > 1, "Разные seed'ы должны давать вариативность формулировок"
+    logger.info("[OK] Рандом: детерминирован при seed, вариативен между seed'ами")
+
+    # (h) Устойчивость: mood_state строкой (как jsonb из БД), None и битый ввод
+    from_str = build_emotional_directive(0.7, '{"angry": 0.4}', user_tz=EVENING_TZ, rng=_seeded())
     assert "раздражение" in from_str, from_str
-    assert build_emotional_directive(None, None), "Даже без данных guardrail остаётся"
-    assert "серьёзную" in build_emotional_directive(None, "not-json"), "Битый JSON не должен ронять"
+    assert build_emotional_directive(None, None, rng=_seeded()), "Даже без данных guardrail остаётся"
+    assert "серьёзную" in build_emotional_directive(None, "not-json", rng=_seeded()), "Битый JSON не должен ронять"
     logger.info("[OK] Принимает mood_state строкой; устойчив к None/битому JSON")
 
     logger.info("\n[SUCCESS] All Premium Proactive & Emotional improvements verified perfectly!")
