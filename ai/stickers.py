@@ -264,7 +264,7 @@ async def _classify_via_gemini_vision(bot: Bot, pack_name: str, stickers: List) 
     return None
 
 
-async def send_mood_sticker_task(bot: Bot, chat_id: int, user_id: int, mood: str, message_id: int, mode: str = "default", force: bool = False):
+async def send_mood_sticker_task(bot: Bot, chat_id: int, user_id: int, mood: str, message_id: int, mode: str = "default", force: bool = False, user_message_id: Optional[int] = None):
     """
     Фоновая асинхронная задача: рассчитывает вероятность P_send, 
     выбирает стикер с защитой от повторов и отправляет его после имитации раздумья.
@@ -340,7 +340,8 @@ async def send_mood_sticker_task(bot: Bot, chat_id: int, user_id: int, mood: str
                 logger.info("Стикер заблокирован вероятностным гейтом.")
                 # FALLBACK TO REACTION: если заряд средний (> 0.15), шлем нативную реакцию
                 if charge > 0.15:
-                    await try_send_telegram_reaction(bot, chat_id, message_id, mood)
+                    reaction_target_id = user_message_id if user_message_id is not None else message_id
+                    await try_send_telegram_reaction(bot, chat_id, reaction_target_id, mood)
                 return
 
         # 2. Загружаем стикерпак

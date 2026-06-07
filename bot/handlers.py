@@ -593,7 +593,8 @@ async def _process_images(
                     user_id=user_id,
                     mood=sticker_mood,
                     message_id=sticker_reply_to_message_id,
-                    mode=mode
+                    mode=mode,
+                    user_message_id=message_id
                 )
             )
 
