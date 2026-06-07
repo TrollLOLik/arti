@@ -164,22 +164,10 @@ user_game_state = defaultdict(lambda: defaultdict(str))
 
 # Выбор модели для чата (по умолчанию — быстрая Gemini)
 DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
-MODEL_OPTIONS = {
-    "gemini": {"name": "Gemini 3.1 Flash [⚡ S+ | 🧠 A]", "model": "gemini-3.1-flash-lite-preview"},
-    "sonnet": {"name": "Sonnet 4.6 (maintenance) [⚡ S | 🧠 S+]", "model": "kr/claude-sonnet-4.6"},
-    "opus": {"name": "Opus 4.8 (maintenance) [⚡ S | 🧠 S++]", "model": "kr/claude-opus-4.7"},
-    "deepseek": {"name": "DeepSeek v4 Pro [⚡ S | 🧠 S]", "model": "nvidia/deepseek-ai/deepseek-v4-pro"},
-    "geminipro": {"name": "Gemini 3.1 Pro (maintenance) [⚡ A+ | 🧠 S+]", "model": "capy/gemini-3.1-pro-preview"},
-    "minimax": {"name": "MiniMax M3 [⚡ B | 🧠 S+]", "model": "opencode-zen/minimax-m3-free"},
-    "kimi": {"name": "Kimi K2.6 [⚡ A | 🧠 S]", "model": "nvidia/moonshotai/kimi-k2.6"},
-    "glm": {"name": "GLM 5.1 [⚡ B | 🧠 S+]", "model": "nvidia/z-ai/glm-5.1"},
-    "gpt": {"name": "GPT 5.5 [⚡ A | 🧠 S++]", "model": "fmd/gpt-5.5"},
-    "grok": {"name": "Grok 4.3 [⚡ S | 🧠 A]", "model": "pol/grok-4.3"},
-    "qwen": {"name": "Qwen 3.6 Plus [⚡ A | 🧠 S]", "model": "fireworks/qwen3p6-plus"},
-    "step": {"name": "Step 3.7 Flash [⚡ A | 🧠 A+]", "model": "nvidia/stepfun-ai/step-3.7-flash"},
-    "mimo": {"name": "Mimo V2.5 Pro [⚡ A | 🧠 A+]", "model": "opencode-zen/mimo-v2.5-free"},
-    "nemotron": {"name": "Nemotron 3 Ultra [⚡ A | 🧠 S]", "model": "nvidia/nvidia/nemotron-3-ultra-550b-a55b"},
-}
+
+# Состояние ожидания поискового запроса модели (для админов)
+waiting_for_model_search = defaultdict(lambda: defaultdict(bool))
+
 
 # ============================================================================
 # ВАРИАНТЫ ОТВЕТОВ

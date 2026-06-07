@@ -17,7 +17,7 @@ from config import (
     TTS_ENABLED,
     music_flow_state, waiting_for_image_prompt, pending_image_inputs, waiting_for_video_prompt, pending_video_inputs,
     pending_photo_action, pending_doc_action, rp_mode_state,
-    pending_video_url_action
+    pending_video_url_action, waiting_for_model_search
 )
 from utils.response_status import is_responses_enabled
 from utils.chat_history import (
@@ -40,6 +40,7 @@ from bot.commands import (
     handle_dub_flow, handle_dub_attachment, classify_dub_media,
     handle_vclone_flow, handle_vclone_attachment, classify_vclone_media,
     handle_vclone_save_flow, _vclone_caption_fastpath,
+    _show_model_menu,
 )
 
 logger = logging.getLogger(__name__)
@@ -82,8 +83,27 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not await is_responses_enabled(chat_id):
         return
 
-    # --- Проверяем ожидающие фото без caption ---
     user_text = update.message.text or ""
+
+    # --- Проверяем, ожидает ли бот поисковый запрос для моделей ---
+    if waiting_for_model_search.get(chat_id, {}).get(user_id):
+        if user_text.startswith("/"):
+            waiting_for_model_search[chat_id].pop(user_id, None)
+        else:
+            waiting_for_model_search[chat_id][user_id] = False
+            if "model_flow" in context.user_data:
+                flow = context.user_data["model_flow"]
+                flow["query"] = user_text.strip()
+                flow["page"] = 0
+                flow["menu_mode"] = "list"
+                try:
+                    await update.message.delete()
+                except Exception:
+                    pass
+                await _show_model_menu(update, context, edit=True)
+            return
+
+    # --- Проверяем ожидающие фото без caption ---
     photo_key = (chat_id, user_id)
     if photo_key in pending_photo_action:
         # Если это команда — отменяем ожидание фото, пропускаем дальше

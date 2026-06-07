@@ -4,6 +4,7 @@
 import re
 import random
 import logging
+from typing import Optional, List, Tuple, Dict, Any
 
 import telegram
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -13,8 +14,9 @@ from config import (
     START_RESPONSES, STOP_RESPONSES, CLEAR_CONTEXT_RESPONSES,
     music_flow_state, waiting_for_video_prompt, waiting_for_image_prompt,
     pending_image_inputs, pending_video_inputs, pending_map_requests, pending_photo_action,
-    rp_mode_state, SKIP_WORDS, MODEL_OPTIONS, dub_flow_state, vclone_flow_state,
-    vclone_save_flow_state, pending_video_url_action, CATBOX_USERHASH
+    rp_mode_state, SKIP_WORDS, dub_flow_state, vclone_flow_state,
+    vclone_save_flow_state, pending_video_url_action, CATBOX_USERHASH,
+    waiting_for_model_search
 )
 from utils.spam_protection import handle_spam_protection
 from utils.admin import is_admin
@@ -24,7 +26,8 @@ from utils.text_processing import extract_urls_and_make_keyboard
 from utils.model_selection import get_chat_model, set_chat_model
 from ai.generation import generate_response_stream
 from bot.queue import enqueue_generation, _extract_photo_urls, enqueue_dubbing
-from database.models import ChatHistory, SpamProtection as SpamProtectionModel, SavedVoice, MemoryUserProfile, MemoryFact
+from database.models import ChatHistory, SpamProtection as SpamProtectionModel, SavedVoice, MemoryUserProfile, MemoryFact, AIModel
+
 
 logger = logging.getLogger(__name__)
 
@@ -406,6 +409,7 @@ async def handle_cancel_command(update: Update, context: ContextTypes.DEFAULT_TY
     pending_video_inputs[chat_id][user_id] = []
     context.user_data.pop("video_flow", None)
     context.user_data.pop("pending_base64_for_gen", None)
+    waiting_for_model_search[chat_id].pop(user_id, None)
     if chat_id in music_flow_state and user_id in music_flow_state[chat_id]:
         del music_flow_state[chat_id][user_id]
     if chat_id in dub_flow_state and user_id in dub_flow_state[chat_id]:
@@ -758,16 +762,215 @@ async def rps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # /model (Выбор модели ИИ)
 # ============================================================================
 
-async def _build_model_keyboard(chat_id: int) -> InlineKeyboardMarkup:
-    """Строим клавиатуру с текущей моделью отмеченной ✅"""
+def get_model_display_name(model_info: dict) -> str:
+    name = model_info["name"]
+    name = name.replace(" (maintenance)", "")
+    
+    speed = model_info.get("speed")
+    intel = model_info.get("intelligence")
+    is_maint = model_info.get("is_maintenance", False)
+    
+    prefix = "🛠️ " if is_maint else ""
+    
+    if speed or intel:
+        parts = []
+        if speed:
+            parts.append(f"⚡ {speed}")
+        if intel:
+            parts.append(f"🧠 {intel}")
+        suffix = f" [{' | '.join(parts)}]"
+    else:
+        suffix = ""
+        
+    display_name = f"{prefix}{name}{suffix}"
+    if is_maint:
+        display_name += " (обслуживание)"
+    return display_name
+
+
+async def _show_model_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, edit: bool = False):
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    
+    # Инициализация состояния
+    if "model_flow" not in context.user_data:
+        context.user_data["model_flow"] = {
+            "page": 0,
+            "query": None,
+            "provider": None,
+            "speed": None,
+            "intelligence": None,
+            "menu_message_id": None,
+            "menu_mode": "list"
+        }
+    
+    flow = context.user_data["model_flow"]
+    
+    # Получаем текущую модель
     current_model = await get_chat_model(chat_id)
+    current_model_info = await AIModel.get_by_model_id(current_model)
+    if current_model_info:
+        current_name = get_model_display_name(current_model_info)
+    else:
+        current_name = current_model
+
+    text = f"🤖 <b>Выбор модели ИИ</b>\n\nТекущая модель: <b>{current_name}</b>\n\n"
     keyboard = []
-    for key, info in MODEL_OPTIONS.items():
-        label = info["name"]
-        if info["model"] == current_model:
-            label = f"✅ {label}"
-        keyboard.append([InlineKeyboardButton(label, callback_data=f"model_{key}")])
-    return InlineKeyboardMarkup(keyboard)
+    
+    if flow["menu_mode"] == "list":
+        # Получаем список с пагинацией и фильтрами
+        models, total = await AIModel.search_and_filter(
+            query=flow["query"],
+            provider=flow["provider"],
+            speed=flow["speed"],
+            intelligence=flow["intelligence"],
+            limit=5,
+            offset=flow["page"] * 5
+        )
+        
+        total_pages = max(1, (total + 4) // 5)
+        if flow["page"] >= total_pages:
+            flow["page"] = max(0, total_pages - 1)
+            models, total = await AIModel.search_and_filter(
+                query=flow["query"],
+                provider=flow["provider"],
+                speed=flow["speed"],
+                intelligence=flow["intelligence"],
+                limit=5,
+                offset=flow["page"] * 5
+            )
+            total_pages = max(1, (total + 4) // 5)
+        
+        if not models:
+            text += "<i>Модели не найдены по заданным критериям.</i>\n\n"
+        else:
+            text += f"Страница <b>{flow['page'] + 1}</b> из <b>{total_pages}</b>\n\n"
+            for m in models:
+                display_name = get_model_display_name(m)
+                if m["model"] == current_model:
+                    display_name = f"✅ {display_name}"
+                keyboard.append([InlineKeyboardButton(display_name, callback_data=f"model_choose_{m['key']}")])
+        
+        # Статус фильтров/поиска
+        status_parts = []
+        if flow["query"]:
+            status_parts.append(f"🔍 Поиск: <code>{flow['query']}</code>")
+        if flow["provider"]:
+            status_parts.append(f"🏢 Провайдер: <b>{flow['provider']}</b>")
+        if flow["speed"]:
+            status_parts.append(f"⚡ Скорость: <b>{flow['speed']}</b>")
+        if flow["intelligence"]:
+            status_parts.append(f"🧠 Интеллект: <b>{flow['intelligence']}</b>")
+            
+        if status_parts:
+            text += "<b>Активные фильтры:</b>\n" + "\n".join(status_parts) + "\n\n"
+            
+        # Пагинация
+        nav_row = []
+        if flow["page"] > 0:
+            nav_row.append(InlineKeyboardButton("⬅️ Назад", callback_data="model_prev"))
+        else:
+            nav_row.append(InlineKeyboardButton(" ▪️ ", callback_data="model_noop"))
+            
+        nav_row.append(InlineKeyboardButton(f"{flow['page'] + 1}/{total_pages}", callback_data="model_noop"))
+        
+        if (flow["page"] + 1) * 5 < total:
+            nav_row.append(InlineKeyboardButton("Вперед ➡️", callback_data="model_next"))
+        else:
+            nav_row.append(InlineKeyboardButton(" ▪️ ", callback_data="model_noop"))
+            
+        keyboard.append(nav_row)
+        
+        # Строка управления
+        control_row = [
+            InlineKeyboardButton("🔍 Поиск", callback_data="model_search"),
+            InlineKeyboardButton("🏷️ Фильтры", callback_data="model_filter_menu")
+        ]
+        keyboard.append(control_row)
+        
+        # Сброс
+        if flow["query"] or flow["provider"] or flow["speed"] or flow["intelligence"]:
+            keyboard.append([InlineKeyboardButton("🧹 Сбросить всё", callback_data="model_fclear")])
+            
+    elif flow["menu_mode"] == "filters":
+        text += "🏷️ <b>Фильтрация моделей</b>\n\nВыберите критерий:"
+        keyboard.append([InlineKeyboardButton("🏢 Провайдер", callback_data="model_fmenu_prov")])
+        keyboard.append([InlineKeyboardButton("⚡ Скорость", callback_data="model_fmenu_speed")])
+        keyboard.append([InlineKeyboardButton("🧠 Интеллект", callback_data="model_fmenu_intel")])
+        keyboard.append([InlineKeyboardButton("↩️ Назад к списку", callback_data="model_back")])
+        
+    elif flow["menu_mode"] == "f_provider":
+        text += "🏢 <b>Фильтр по провайдеру</b>\n\nВыберите провайдера:"
+        providers = await AIModel.get_unique_providers()
+        row = []
+        for p in providers:
+            label = p
+            if flow["provider"] == p:
+                label = f"✅ {p}"
+            row.append(InlineKeyboardButton(label, callback_data=f"model_fprov_{p}"))
+            if len(row) == 2:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+        keyboard.append([InlineKeyboardButton("↩️ Назад к фильтрам", callback_data="model_filter_menu")])
+        
+    elif flow["menu_mode"] == "f_speed":
+        text += "⚡ <b>Фильтр по скорости</b>\n\nВыберите оценку скорости:"
+        speeds = await AIModel.get_unique_speeds()
+        row = []
+        for s in speeds:
+            label = s
+            if flow["speed"] == s:
+                label = f"✅ {s}"
+            row.append(InlineKeyboardButton(label, callback_data=f"model_fspeed_{s}"))
+            if len(row) == 2:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+        keyboard.append([InlineKeyboardButton("↩️ Назад к фильтрам", callback_data="model_filter_menu")])
+        
+    elif flow["menu_mode"] == "f_intelligence":
+        text += "🧠 <b>Фильтр по интеллекту</b>\n\nВыберите оценку интеллекта:"
+        intelligences = await AIModel.get_unique_intelligences()
+        row = []
+        for i in intelligences:
+            label = i
+            if flow["intelligence"] == i:
+                label = f"✅ {i}"
+            row.append(InlineKeyboardButton(label, callback_data=f"model_fintel_{i}"))
+            if len(row) == 2:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+        keyboard.append([InlineKeyboardButton("↩️ Назад к фильтрам", callback_data="model_filter_menu")])
+        
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if edit:
+        try:
+            if update.callback_query:
+                await update.callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode='HTML')
+            elif flow["menu_message_id"]:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=flow["menu_message_id"],
+                    text=text,
+                    reply_markup=reply_markup,
+                    parse_mode='HTML'
+                )
+        except Exception as e:
+            logger.warning(f"Ошибка при редактировании меню моделей: {e}")
+            # Отправка нового сообщения в крайнем случае
+            sent = await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup, parse_mode='HTML')
+            flow["menu_message_id"] = sent.message_id
+    else:
+        from config import waiting_for_model_search
+        waiting_for_model_search[chat_id].pop(user_id, None)
+        sent = await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')
+        flow["menu_message_id"] = sent.message_id
 
 
 async def handle_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -782,26 +985,25 @@ async def handle_model_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("У вас нет прав для выполнения этой команды.")
         return
 
-    current_model = await get_chat_model(chat_id)
-    current_name = next(
-        (info["name"] for info in MODEL_OPTIONS.values() if info["model"] == current_model),
-        "Неизвестная"
-    )
+    args = context.args or []
+    query_val = " ".join(args).strip() if args else None
 
-    reply_markup = await _build_model_keyboard(chat_id)
+    # Инициализация состояния
+    context.user_data["model_flow"] = {
+        "page": 0,
+        "query": query_val,
+        "provider": None,
+        "speed": None,
+        "intelligence": None,
+        "menu_message_id": None,
+        "menu_mode": "list"
+    }
 
-    await update.message.reply_text(
-        f"🤖 <b>Выбор модели ИИ</b>\n\n"
-        f"Текущая модель: <b>{current_name}</b>\n\n"
-        f"⚡ — Скорость генерации (S/A/B/C)\n"
-        f"🧠 — Интеллектуальный уровень (S/A/B/C)",
-        reply_markup=reply_markup,
-        parse_mode='HTML'
-    )
+    await _show_model_menu(update, context, edit=False)
 
 
 async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback для выбора модели."""
+    """Callback для выбора модели, пагинации, поиска и фильтрации."""
     query = update.callback_query
     user = query.from_user
     chat_id = query.message.chat_id
@@ -810,28 +1012,133 @@ async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("❌ Только админы могут менять модель.", show_alert=True)
         return
 
-    model_key = query.data.replace("model_", "")
-    if model_key not in MODEL_OPTIONS:
-        await query.answer("Неизвестная модель.", show_alert=True)
+    await query.answer()
+    data = query.data
+
+    if "model_flow" not in context.user_data:
+        context.user_data["model_flow"] = {
+            "page": 0,
+            "query": None,
+            "provider": None,
+            "speed": None,
+            "intelligence": None,
+            "menu_message_id": query.message.message_id,
+            "menu_mode": "list"
+        }
+        
+    flow = context.user_data["model_flow"]
+    flow["menu_message_id"] = query.message.message_id
+
+    if data == "model_noop":
         return
+        
+    elif data == "model_prev":
+        if flow["page"] > 0:
+            flow["page"] -= 1
+        await _show_model_menu(update, context, edit=True)
+        
+    elif data == "model_next":
+        flow["page"] += 1
+        await _show_model_menu(update, context, edit=True)
+        
+    elif data == "model_filter_menu":
+        flow["menu_mode"] = "filters"
+        await _show_model_menu(update, context, edit=True)
+        
+    elif data == "model_fmenu_prov":
+        flow["menu_mode"] = "f_provider"
+        await _show_model_menu(update, context, edit=True)
+        
+    elif data == "model_fmenu_speed":
+        flow["menu_mode"] = "f_speed"
+        await _show_model_menu(update, context, edit=True)
+        
+    elif data == "model_fmenu_intel":
+        flow["menu_mode"] = "f_intelligence"
+        await _show_model_menu(update, context, edit=True)
+        
+    elif data == "model_back":
+        flow["menu_mode"] = "list"
+        await _show_model_menu(update, context, edit=True)
+        
+    elif data.startswith("model_fprov_"):
+        prov = data.replace("model_fprov_", "")
+        if flow["provider"] == prov:
+            flow["provider"] = None
+        else:
+            flow["provider"] = prov
+        flow["page"] = 0
+        flow["menu_mode"] = "list"
+        await _show_model_menu(update, context, edit=True)
+        
+    elif data.startswith("model_fspeed_"):
+        speed = data.replace("model_fspeed_", "")
+        if flow["speed"] == speed:
+            flow["speed"] = None
+        else:
+            flow["speed"] = speed
+        flow["page"] = 0
+        flow["menu_mode"] = "list"
+        await _show_model_menu(update, context, edit=True)
+        
+    elif data.startswith("model_fintel_"):
+        intel = data.replace("model_fintel_", "")
+        if flow["intelligence"] == intel:
+            flow["intelligence"] = None
+        else:
+            flow["intelligence"] = intel
+        flow["page"] = 0
+        flow["menu_mode"] = "list"
+        await _show_model_menu(update, context, edit=True)
+        
+    elif data == "model_fclear":
+        flow["query"] = None
+        flow["provider"] = None
+        flow["speed"] = None
+        flow["intelligence"] = None
+        flow["page"] = 0
+        flow["menu_mode"] = "list"
+        await _show_model_menu(update, context, edit=True)
+        
+    elif data == "model_search":
+        from config import waiting_for_model_search
+        waiting_for_model_search[chat_id][user.id] = True
+        
+        cancel_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("↩️ Назад к списку", callback_data="model_back")]
+        ])
+        
+        await query.message.edit_text(
+            "🔍 <b>Поиск модели ИИ</b>\n\n"
+            "<i>настраивает линзы сканера...</i>\n"
+            "<blockquote>«Напиши название модели, ключевое слово или имя провайдера, которое ты хочешь найти.»</blockquote>\n\n"
+            "💡 <i>Для отмены введите /cancel или нажмите кнопку ниже.</i>",
+            reply_markup=cancel_markup,
+            parse_mode='HTML'
+        )
+        
+    elif data.startswith("model_choose_"):
+        key = data.replace("model_choose_", "")
+        selected = await AIModel.get_by_key(key)
+        if not selected:
+            await query.answer("❌ Неизвестная модель.", show_alert=True)
+            return
+            
+        if selected.get("is_maintenance", False):
+            display_name = get_model_display_name(selected)
+            await query.answer(
+                f"❌ Модель временно недоступна.\n\n"
+                f"{display_name} сейчас находится на обслуживании. Пожалуйста, выберите другую модель.",
+                show_alert=True
+            )
+            return
+            
+        await set_chat_model(chat_id, selected["model"])
+        display_name = get_model_display_name(selected)
+        await query.answer(f"Модель переключена: {display_name}")
+        logger.info(f"Модель в чате {chat_id} переключена на {selected['model']} ({key}) пользователем {user.id}")
+        await _show_model_menu(update, context, edit=True)
 
-    selected = MODEL_OPTIONS[model_key]
-    await set_chat_model(chat_id, selected["model"])
-
-    await query.answer(f"Модель переключена: {selected['name']}")
-
-    current_name = selected["name"]
-    reply_markup = await _build_model_keyboard(chat_id)
-
-    await query.edit_message_text(
-        f"🤖 <b>Выбор модели ИИ</b>\n\n"
-        f"Текущая модель: <b>{current_name}</b>\n\n"
-        f"⚡ — Скорость генерации (S/A/B/C)\n"
-        f"🧠 — Интеллектуальный уровень (S/A/B/C)",
-        reply_markup=reply_markup,
-        parse_mode='HTML'
-    )
-    logger.info(f"Модель в чате {chat_id} переключена на {selected['model']} ({model_key}) пользователем {user.id}")
 
 
 

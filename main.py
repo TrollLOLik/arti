@@ -136,6 +136,7 @@ def run_with_restart():
             application.add_handler(CommandHandler("rps", handle_rps_command))
             application.add_handler(CommandHandler("rp", handle_rp_command))
             application.add_handler(CommandHandler("model", handle_model_command))
+            application.add_handler(CommandHandler("models", handle_model_command))
             application.add_handler(CommandHandler("dub", handle_dub_command))
             application.add_handler(CommandHandler("vclone", handle_vclone_command))
             application.add_handler(CommandHandler("steal", handle_vclone_command))  # alias

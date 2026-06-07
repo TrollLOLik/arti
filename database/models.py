@@ -1964,3 +1964,130 @@ class ChatEmotionalState:
                 """, chat_id, charge, json.dumps(mood_dict, ensure_ascii=False), json.dumps(history, ensure_ascii=False), mood)
 
 
+class AIModel:
+    """Работа со списком ИИ моделей"""
+
+    @staticmethod
+    async def get_all_active() -> List[Dict[str, Any]]:
+        """Получить все активные модели"""
+        async with get_db() as conn:
+            rows = await conn.fetch("""
+                SELECT key, name, model, provider, speed, intelligence, is_active, is_maintenance
+                FROM ai_models
+                WHERE is_active = TRUE
+                ORDER BY created_at ASC, key ASC
+            """)
+            return [dict(r) for r in rows]
+
+    @staticmethod
+    async def get_by_key(key: str) -> Optional[Dict[str, Any]]:
+        """Получить модель по ключу"""
+        async with get_db() as conn:
+            row = await conn.fetchrow("""
+                SELECT key, name, model, provider, speed, intelligence, is_active, is_maintenance
+                FROM ai_models
+                WHERE key = $1
+            """, key)
+            return dict(row) if row else None
+
+    @staticmethod
+    async def get_by_model_id(model_id: str) -> Optional[Dict[str, Any]]:
+        """Получить модель по ее идентификатору (модели)"""
+        async with get_db() as conn:
+            row = await conn.fetchrow("""
+                SELECT key, name, model, provider, speed, intelligence, is_active, is_maintenance
+                FROM ai_models
+                WHERE model = $1
+            """, model_id)
+            return dict(row) if row else None
+
+    @staticmethod
+    async def search_and_filter(
+        query: Optional[str] = None,
+        provider: Optional[str] = None,
+        speed: Optional[str] = None,
+        intelligence: Optional[str] = None,
+        limit: int = 5,
+        offset: int = 0
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """Поиск, фильтрация и пагинация моделей. Возвращает (список моделей, общее количество)"""
+        conditions = ["is_active = TRUE"]
+        params = []
+        param_idx = 1
+
+        if query:
+            conditions.append(f"(key ILIKE ${param_idx} OR name ILIKE ${param_idx} OR model ILIKE ${param_idx} OR provider ILIKE ${param_idx})")
+            params.append(f"%{query}%")
+            param_idx += 1
+
+        if provider:
+            conditions.append(f"provider = ${param_idx}")
+            params.append(provider)
+            param_idx += 1
+
+        if speed:
+            conditions.append(f"speed = ${param_idx}")
+            params.append(speed)
+            param_idx += 1
+
+        if intelligence:
+            conditions.append(f"intelligence = ${param_idx}")
+            params.append(intelligence)
+            param_idx += 1
+
+        where_clause = " AND ".join(conditions)
+
+        async with get_db() as conn:
+            # Считаем общее число подходящих записей
+            count_query = f"SELECT COUNT(*) FROM ai_models WHERE {where_clause}"
+            total = await conn.fetchval(count_query, *params)
+
+            # Получаем страницу записей
+            select_query = f"""
+                SELECT key, name, model, provider, speed, intelligence, is_active, is_maintenance
+                FROM ai_models
+                WHERE {where_clause}
+                ORDER BY created_at ASC, key ASC
+                LIMIT ${param_idx} OFFSET ${param_idx + 1}
+            """
+            rows = await conn.fetch(select_query, *(params + [limit, offset]))
+            return [dict(r) for r in rows], total
+
+    @staticmethod
+    async def get_unique_providers() -> List[str]:
+        """Получить список уникальных провайдеров для фильтрации"""
+        async with get_db() as conn:
+            rows = await conn.fetch("""
+                SELECT DISTINCT provider
+                FROM ai_models
+                WHERE is_active = TRUE AND provider IS NOT NULL AND provider != ''
+                ORDER BY provider ASC
+            """)
+            return [r['provider'] for r in rows]
+
+    @staticmethod
+    async def get_unique_speeds() -> List[str]:
+        """Получить список уникальных уровней скорости для фильтрации"""
+        async with get_db() as conn:
+            rows = await conn.fetch("""
+                SELECT DISTINCT speed
+                FROM ai_models
+                WHERE is_active = TRUE AND speed IS NOT NULL AND speed != ''
+                ORDER BY speed ASC
+            """)
+            return [r['speed'] for r in rows]
+
+    @staticmethod
+    async def get_unique_intelligences() -> List[str]:
+        """Получить список уникальных уровней интеллекта для фильтрации"""
+        async with get_db() as conn:
+            rows = await conn.fetch("""
+                SELECT DISTINCT intelligence
+                FROM ai_models
+                WHERE is_active = TRUE AND intelligence IS NOT NULL AND intelligence != ''
+                ORDER BY intelligence ASC
+            """)
+            return [r['intelligence'] for r in rows]
+
+
+

@@ -687,7 +687,72 @@ async def _create_tables_internal(conn):
         )
     """)
 
+    # Таблица моделей ИИ
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS ai_models (
+            key VARCHAR(50) PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            model VARCHAR(255) NOT NULL,
+            provider VARCHAR(100),
+            speed VARCHAR(10),
+            intelligence VARCHAR(10),
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            is_maintenance BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+    """)
+
+    # Миграция: добавляем столбец is_maintenance если его нет
+    await conn.execute("""
+        DO $$ 
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name = 'ai_models' 
+                AND column_name = 'is_maintenance'
+            ) THEN
+                ALTER TABLE ai_models 
+                ADD COLUMN is_maintenance BOOLEAN NOT NULL DEFAULT FALSE;
+            END IF;
+        END $$;
+    """)
+
+    # Сидирование начальных моделей ИИ
+    count = await conn.fetchval("SELECT COUNT(*) FROM ai_models")
+    if count == 0:
+        logger.info("Сидирование начальных моделей ИИ в таблицу ai_models...")
+        seed_data = [
+            ("gemini", "Gemini 3.1 Flash", "gemini-3.1-flash-lite-preview", "Google", "S+", "A", False),
+            ("sonnet", "Sonnet 4.6 (maintenance)", "kr/claude-sonnet-4.6", "Anthropic", "S", "S+", True),
+            ("opus", "Opus 4.8 (maintenance)", "kr/claude-opus-4.7", "Anthropic", "S", "S++", True),
+            ("deepseek", "DeepSeek v4 Pro", "nvidia/deepseek-ai/deepseek-v4-pro", "DeepSeek", "S", "S", False),
+            ("geminipro", "Gemini 3.1 Pro (maintenance)", "capy/gemini-3.1-pro-preview", "Google", "A+", "S+", True),
+            ("minimax", "MiniMax M3", "opencode-zen/minimax-m3-free", "MiniMax", "B", "S+", False),
+            ("kimi", "Kimi K2.6", "nvidia/moonshotai/kimi-k2.6", "Moonshot", "A", "S", False),
+            ("glm", "GLM 5.1", "nvidia/z-ai/glm-5.1", "GLM", "B", "S+", False),
+            ("gpt", "GPT 5.5", "fmd/gpt-5.5", "OpenAI", "A", "S++", False),
+            ("grok", "Grok 4.3", "pol/grok-4.3", "xAI", "S", "A", False),
+            ("qwen", "Qwen 3.6 Plus", "fireworks/qwen3p6-plus", "Qwen", "A", "S", False),
+            ("step", "Step 3.7 Flash", "nvidia/stepfun-ai/step-3.7-flash", "Step", "A", "A+", False),
+            ("mimo", "Mimo V2.5 Pro", "opencode-zen/mimo-v2.5-free", "Mimo", "A", "A+", False),
+            ("nemotron", "Nemotron 3 Ultra", "nvidia/nvidia/nemotron-3-ultra-550b-a55b", "Nvidia", "A", "S", False),
+        ]
+        for key, name, model, provider, speed, intelligence, is_maintenance in seed_data:
+            await conn.execute("""
+                INSERT INTO ai_models (key, name, model, provider, speed, intelligence, is_maintenance, is_active)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
+            """, key, name, model, provider, speed, intelligence, is_maintenance)
+        logger.info(f"Успешно добавлено {len(seed_data)} начальных моделей ИИ")
+    else:
+        # Миграция существующих строк: обновляем признак обслуживания для начальных моделей
+        await conn.execute("""
+            UPDATE ai_models 
+            SET is_maintenance = TRUE 
+            WHERE key IN ('sonnet', 'opus', 'geminipro')
+        """)
+
     logger.info("Таблицы базы данных созданы/проверены")
+
 
 
 @asynccontextmanager
