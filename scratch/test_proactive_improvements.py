@@ -519,6 +519,48 @@ async def run_tests():
             await conn.execute("DELETE FROM memory_user_profiles WHERE chat_id = ANY($1::bigint[])", [p_chat, p_empty])
             await conn.execute("DELETE FROM memory_facts WHERE chat_id = ANY($1::bigint[])", [p_chat, p_empty])
 
+    # =========================================================================
+    # TEST 13: Эмоциональное состояние влияет на тон ответа (build_emotional_directive)
+    # =========================================================================
+    logger.info("\n--- TEST 13: Emotional state -> tone directive ---")
+    from ai.generation import build_emotional_directive
+
+    # (a) Высокий заряд + teasing/happy → живой, азартный тон
+    hot = build_emotional_directive(
+        0.768,
+        {"teasing": 0.83, "happy": 0.82, "love": 0.21, "sad": 0.0, "angry": 0.0,
+         "blush": 0.0, "shock": 0.0, "bored": 0.0, "thinking": 0.0},
+    )
+    assert hot, "Директива должна формироваться при наличии состояния"
+    assert "разогрета" in hot, hot
+    assert "игривость" in hot, hot  # ярлык teasing проступил
+    # числа/механика не утекают в текст директивы
+    assert "0.83" not in hot and "charge" not in hot.lower(), hot
+    logger.info("[OK] Высокий заряд + teasing/happy → живой/азартный тон, без чисел")
+
+    # (b) Низкий заряд → сдержаннее
+    cold = build_emotional_directive(0.08, {"bored": 0.3})
+    assert "сдержаннее" in cold, cold
+    assert "скука" in cold, cold
+    logger.info("[OK] Низкий заряд → сдержанный тон")
+
+    # (c) Предохранитель на серьёзную тему присутствует ВСЕГДА (в т.ч. при высоком заряде)
+    assert "серьёзную" in hot and "ненавязчиво" in hot, hot
+    assert "серьёзную" in cold, cold
+    logger.info("[OK] Guardrail 'давать заднюю на серьёзном' встроен независимо от заряда")
+
+    # (d) Фон ниже порога (0.2) не попадает в директиву
+    faint = build_emotional_directive(0.5, {"happy": 0.05, "thinking": 0.1})
+    assert "радость" not in faint and "задумчивость" not in faint, faint
+    logger.info("[OK] Слабые настроения (ниже порога) не окрашивают тон")
+
+    # (e) Устойчивость: mood_state строкой (как jsonb из БД) и битый ввод
+    from_str = build_emotional_directive(0.7, '{"angry": 0.4}')
+    assert "раздражение" in from_str, from_str
+    assert build_emotional_directive(None, None), "Даже без данных guardrail остаётся"
+    assert "серьёзную" in build_emotional_directive(None, "not-json"), "Битый JSON не должен ронять"
+    logger.info("[OK] Принимает mood_state строкой; устойчив к None/битому JSON")
+
     logger.info("\n[SUCCESS] All Premium Proactive & Emotional improvements verified perfectly!")
 
 if __name__ == "__main__":

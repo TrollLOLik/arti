@@ -460,6 +460,7 @@ async def _process_images(
             user_id=user_id,
             is_rp_mode=rp_mode_state.get(chat_id, False),
             enable_introspection=True,
+            emotional_state=img_state,
         )
         logger.info(f"RAW ИИ ОТВЕТ (фото, {len(base64_images)} шт): {response_text}")
 

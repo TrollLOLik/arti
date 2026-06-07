@@ -870,6 +870,7 @@ async def process_user_reply(request, bot):
             user_id=user_id,
             is_rp_mode=is_rp,
             enable_introspection=True,
+            emotional_state=updated_state,
         )
         
         if uploaded_video_file:

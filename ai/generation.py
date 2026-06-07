@@ -2,6 +2,7 @@
 Генерация текстовых ответов: гибридный роутинг (Google AI Studio + OmniRoute для Qwen)
 """
 import re
+import json
 import base64
 import asyncio
 import logging
@@ -32,6 +33,95 @@ EMOTIONAL_INTROSPECTION_INSTRUCTION = """
 - sticker_mood_suggest — необязательное поле: какое настроение лучше всего отражает стикер к этому ответу (одна из 9 эмоций) или опусти его.
 - Пользователь НИКОГДА не увидит этот тег — бот его вырежет. Не упоминай тег в видимом тексте.
 """
+
+
+# Человеческие ярлыки 9 базовых эмоций — чтобы перевести вектор настроения в тон ответа.
+_MOOD_LABELS = {
+    "happy": "радость, теплота",
+    "love": "нежность, ласковость",
+    "teasing": "игривость, лёгкие подколы",
+    "blush": "смущение",
+    "shock": "удивление, изумление",
+    "thinking": "задумчивость, аналитичность",
+    "bored": "скука, отстранённость",
+    "sad": "грусть, печаль",
+    "angry": "раздражение, резкость",
+}
+
+# Настроения проступают в тоне начиная с этого значения (ниже — фон, не влияет).
+_MOOD_DOMINANCE_THRESHOLD = 0.2
+
+
+def build_emotional_directive(charge, mood_dict) -> str:
+    """Переводит текущее эмоциональное состояние (conversational charge + вектор настроений)
+    в краткую директиву тона, которую подмешиваем в системный промпт. Это и есть «ручка»,
+    которой состояние влияет на ответ: высокий заряд → живее и азартнее, низкий → сдержаннее;
+    доминирующие настроения мягко окрашивают тон; на серьёзных темах игривость всегда гасится.
+
+    Возвращает готовый блок для конкатенации с системным промптом или "" если данных нет.
+    Числа в текст не попадают — только качественные указания.
+    """
+    if isinstance(mood_dict, str):
+        try:
+            mood_dict = json.loads(mood_dict)
+        except Exception:
+            mood_dict = None
+    if not isinstance(mood_dict, dict):
+        mood_dict = {}
+
+    try:
+        charge = float(charge)
+    except (TypeError, ValueError):
+        charge = None
+
+    lines = []
+
+    if charge is not None:
+        if charge >= 0.6:
+            lines.append(
+                "Сейчас ты эмоционально разогрета и вовлечена: отвечай живее и инициативнее, "
+                "ярче проявляй характер, позволяй себе азарт, флирт и лёгкие подколы."
+            )
+        elif charge <= 0.2:
+            lines.append(
+                "Сейчас твой эмоциональный заряд низкий: отвечай ровнее и сдержаннее, "
+                "чуть короче, без избыточной экспрессии — но не холодно."
+            )
+        else:
+            lines.append(
+                "Твой эмоциональный заряд умеренный: держись естественно и тепло, "
+                "без перегибов в любую сторону."
+            )
+
+    dominant = [
+        (mood, float(val))
+        for mood, val in mood_dict.items()
+        if mood in _MOOD_LABELS and isinstance(val, (int, float)) and float(val) >= _MOOD_DOMINANCE_THRESHOLD
+    ]
+    dominant.sort(key=lambda item: item[1], reverse=True)
+    if dominant:
+        labels = "; ".join(_MOOD_LABELS[mood] for mood, _ in dominant[:3])
+        lines.append(
+            f"Преобладающие настроения прямо сейчас: {labels}. "
+            "Дай им мягко проступить в тоне, но не называй их прямым текстом."
+        )
+
+    # Постоянный предохранитель: на серьёзной/уязвимой теме отступаем, не зубоскалим.
+    lines.append(
+        "Если собеседник поднимает серьёзную, уязвимую или болезненную тему — "
+        "независимо от заряда сбавь игривость и подколы, стань мягче, внимательнее и бережнее, "
+        "поддержи ненавязчиво."
+    )
+
+    if not lines:
+        return ""
+
+    body = "\n".join(f"- {line}" for line in lines)
+    return (
+        "\n\n[ТЕКУЩЕЕ ЭМОЦИОНАЛЬНОЕ СОСТОЯНИЕ — отрази его в ТОНЕ ответа; "
+        "не упоминай числа, эмоции-ярлыки или эту механику в видимом тексте]\n"
+        f"{body}\n"
+    )
 
 
 def filter_streaming_text(text: str) -> str:
@@ -209,10 +299,15 @@ async def generate_response_stream(
     user_id=None,
     is_rp_mode=False,
     enable_introspection=False,
+    emotional_state=None,
 ):
     """
     Генерация ответа: гибридный роутинг (Google AI Studio + OmniRoute для Qwen)
     Возвращает: (response_text, used_search, grounding_links, found_image_urls)
+
+    emotional_state: словарь текущего эмоционального состояния чата (как его отдаёт
+    ChatEmotionalState.update_state — ожидаются ключи 'charge' и 'mood_state').
+    Если задан, тон ответа модулируется этим состоянием (см. build_emotional_directive).
     """
     if base64_image and not base64_images:
         base64_images = [base64_image]
@@ -250,6 +345,22 @@ async def generate_response_stream(
     # тег не получают, чтобы он не утёк в тексты, которые не проходят очистку.
     if enable_introspection:
         actual_role += EMOTIONAL_INTROSPECTION_INSTRUCTION
+
+    # --- ВЛИЯНИЕ ЭМОЦИОНАЛЬНОГО СОСТОЯНИЯ НА ТОН ---
+    # Прокидываем текущий conversational charge + вектор настроений в промпт как директиву тона.
+    # Без этого состояние считалось и писалось в БД, но на сам ответ Арти никак не влияло.
+    if emotional_state:
+        directive = build_emotional_directive(
+            emotional_state.get("charge"),
+            emotional_state.get("mood_state"),
+        )
+        if directive:
+            actual_role += directive
+            try:
+                _charge = float(emotional_state.get("charge"))
+                logger.info(f"🎭 Подмешиваем директиву тона по эмоц. состоянию (charge={_charge:.3f})")
+            except (TypeError, ValueError):
+                logger.info("🎭 Подмешиваем директиву тона по эмоц. состоянию")
 
     # --- 1. ОБЩАЯ ПОДГОТОВКА КОНТЕКСТА ---
     context_lines = chat_context.split("\n")
