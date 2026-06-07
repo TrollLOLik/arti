@@ -1670,19 +1670,21 @@ class ChatEmotionalState:
                 # 2. Вычисляем распад (Time Decay) — дельта посчитана БД (UTC-консистентно)
                 delta_t = max(0.0, state["delta_t_seconds"] or 0.0)
                 
-                # Затухание заряда (half-life = 15 мин = 900 сек)
-                lambda_c = 0.00077
+                # Затухание заряда (ускорено: half-life ~23 мин) — заряд держится дольше и быстрее копится
+                lambda_c = 0.0005
                 charge = state["charge"] * math.exp(-lambda_c * delta_t)
                 
-                # Затухание вектора настроения (decay 10% каждые 3 минуты)
-                lambda_m = 0.00053
+                # Затухание вектора настроения (ослаблено: half-life ~38 мин) — настроения живут дольше
+                lambda_m = 0.0003
                 mood_dict = json.loads(state["mood_state"]) if isinstance(state["mood_state"], str) else state["mood_state"]
                 for emotion in mood_dict:
-                    mood_dict[emotion] = mood_dict[emotion] * math.exp(-lambda_m * delta_t)
+                    decayed = mood_dict[emotion] * math.exp(-lambda_m * delta_t)
+                    # Обнуляем денормализованные «хвосты», иначе в логах/выводе мусор вида 3e-175
+                    mood_dict[emotion] = decayed if decayed >= 0.0005 else 0.0
                 
                 # 3. Анализируем интенсивность реплики пользователя
                 clean_msg = user_message.strip()
-                delta_charge = min(len(clean_msg) * 0.001, 0.08)
+                delta_charge = min(len(clean_msg) * 0.0015, 0.12)
                 
                 # Капс
                 if clean_msg.isupper() and len(clean_msg) > 4:
@@ -1702,7 +1704,10 @@ class ChatEmotionalState:
                 
                 love_words = ["люблю", "мило", "прелесть", "обожаю", "лучшая", "красивая", "классная"]
                 happy_words = ["ура", "круто", "отлично", "хаха", "радость", "смешно", "привет", "приветик"]
-                sad_words = ["грус", "плачу", "плохо", "беда", "печаль", "устал", "одинок"]
+                sad_words = ["грус", "плачу", "плохо", "беда", "печаль", "устал", "одинок",
+                             "больно", "болит", "теря", "потер", "утрат", "скуча", "скорб",
+                             "тоск", "жаль", "слез", "слёз", "всплак", "плак", "расстро",
+                             "невыносим", "смерт", "прощай", "разлук"]
                 angry_words = ["дурак", "бесишь", "заткнись", "плохой", "урод", "удали", "хватит", "хер", "обид", "злост"]
                 
                 # Функция определения отрицания перед ключевым словом
@@ -1762,7 +1767,10 @@ class ChatEmotionalState:
                     else:
                         delta_charge += 0.06
                         mood_dict["sad"] = min(mood_dict["sad"] + 0.15, 1.0)
-                        mood_dict["love"] = min(mood_dict["love"] + 0.08, 1.0)
+                        mood_dict["love"] = min(mood_dict["love"] + 0.10, 1.0)
+                        # Сопереживание: гасим игривость/радость, чтобы не «веселиться» в ответ на боль
+                        mood_dict["happy"] = max(mood_dict["happy"] - 0.10, 0.0)
+                        mood_dict["teasing"] = max(mood_dict["teasing"] - 0.10, 0.0)
                         
                 elif matched_angry:
                     word = matched_angry[0]
