@@ -6,6 +6,7 @@ import os
 import base64
 import asyncio
 import logging
+import random
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -1765,10 +1766,22 @@ async def video_url_action_callback(update: Update, context: ContextTypes.DEFAUL
         return
 
 
+# Троттлинг ненавязчивого ответа Арти на реакцию (в памяти процесса): не чаще
+# одного авто-ответа на чат раз в REACTION_REPLY_MIN_INTERVAL секунд.
+_last_reaction_reply: dict = {}
+REACTION_REPLY_MIN_INTERVAL = 150.0
+REACTION_REPLY_PROB = 0.5
+
+
 async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Обрабатывает изменения реакций пользователей на сообщения Арти.
-    Применяет положительное или отрицательное подкрепление к аффективному профилю пользователя.
+
+    На добавленную реакцию:
+      1) подкрепляет аффективный профиль (closeness/receptivity),
+      2) сдвигает вектор настроения Арти (влияет на тон следующих ответов),
+      3) на эмоционально сильную реакцию иногда (вероятностно, с троттлингом)
+         отвечает короткой репликой или стикером — ненавязчиво.
     """
     reaction_update = update.message_reaction
     if not reaction_update:
@@ -1779,6 +1792,7 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
     if not user or user.is_bot:
         return
     user_id = user.id
+    message_id = reaction_update.message_id
 
     new_reactions = reaction_update.new_reaction or []
     old_reactions = reaction_update.old_reaction or []
@@ -1791,17 +1805,88 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
     if not added_emojis:
         return
 
-    # Положительные эмодзи-реакции
-    positive_emojis = {"👍", "❤️", "🔥", "🥰", "👏", "🎉", "🤩", "😍"}
-    negative_emojis = {"👎", "💩", "😡", "🤬", "🤮"}
-
-    from database.models import MemoryUserProfile
+    from bot.reactions import classify_reactions
+    from database.models import MemoryUserProfile, ChatEmotionalState
     mode = "rp" if rp_mode_state.get(chat_id) else "default"
 
-    for emoji in added_emojis:
-        if emoji in positive_emojis:
-            logger.info(f"Получена положительная реакция '{emoji}' от пользователя {user_id} в чате {chat_id}. Применяем подкрепление.")
-            await MemoryUserProfile.apply_reinforcement(chat_id, user_id, mode, "positive")
-        elif emoji in negative_emojis:
-            logger.info(f"Получена отрицательная реакция '{emoji}' от пользователя {user_id} в чате {chat_id}. Применяем наказание.")
-            await MemoryUserProfile.apply_reinforcement(chat_id, user_id, mode, "negative")
+    effect = classify_reactions(added_emojis)
+    if not effect:
+        logger.info(f"Реакции {added_emojis} от {user_id} в чате {chat_id} не распознаны — пропускаем.")
+        return
+
+    logger.info(
+        f"Реакция {added_emojis} от {user_id} в чате {chat_id}: "
+        f"reinforcement={effect['reinforcement']} mood={effect['mood']} reply_mood={effect['reply_mood']}"
+    )
+
+    # 1) Подкрепление аффективного профиля
+    if effect["reinforcement"]:
+        await MemoryUserProfile.apply_reinforcement(chat_id, user_id, mode, effect["reinforcement"])
+
+    # 2) Сдвиг вектора настроения Арти
+    if effect["mood"]:
+        await ChatEmotionalState.apply_mood_delta(chat_id, effect["mood"], source="reaction")
+
+    # 3) Ненавязчивый ответ на сильную реакцию
+    await _maybe_reply_to_reaction(context, chat_id, user_id, message_id, mode, effect["reply_mood"])
+
+
+async def _maybe_reply_to_reaction(context, chat_id, user_id, message_id, mode, reply_mood):
+    """Иногда отвечает на сильную эмоциональную реакцию репликой или стикером.
+
+    Срабатывает не на каждую реакцию: только если задан reply_mood, ответы в чате
+    включены, прошёл троттлинг и выпала вероятность. Так Арти «замечает» сильную
+    реакцию, но не спамит.
+    """
+    if not reply_mood:
+        return
+    if not await is_responses_enabled(chat_id):
+        return
+
+    import time as _t
+    now = _t.monotonic()
+    last = _last_reaction_reply.get(chat_id)
+    if last is not None and (now - last) < REACTION_REPLY_MIN_INTERVAL:
+        return
+    if random.random() > REACTION_REPLY_PROB:
+        return
+    _last_reaction_reply[chat_id] = now
+
+    bot = context.bot
+    # Канал ответа: примерно поровну короткая реплика или стикер.
+    if random.random() < 0.5:
+        from bot.reactions import pick_reaction_reply
+        text = pick_reaction_reply(reply_mood)
+        if not text:
+            return
+        try:
+            await bot.send_chat_action(chat_id=chat_id, action="typing")
+            await asyncio.sleep(random.uniform(1.2, 2.6))
+            await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_to_message_id=message_id,
+                parse_mode='HTML',
+            )
+            logger.info(f"Арти ответила репликой на реакцию (mood={reply_mood}) в чате {chat_id}.")
+        except Exception as e:
+            logger.warning(f"Не удалось отправить реплику на реакцию в чате {chat_id}: {e}")
+    else:
+        from bot.reactions import REPLY_MOOD_TO_STICKER
+        from ai.stickers import send_mood_sticker_task
+        sticker_mood = REPLY_MOOD_TO_STICKER.get(reply_mood)
+        if not sticker_mood:
+            return
+        asyncio.create_task(
+            send_mood_sticker_task(
+                bot=bot,
+                chat_id=chat_id,
+                user_id=user_id,
+                mood=sticker_mood,
+                message_id=message_id,
+                mode=mode,
+                force=True,
+                user_message_id=message_id,
+            )
+        )
+        logger.info(f"Арти ответила стикером на реакцию (mood={sticker_mood}) в чате {chat_id}.")

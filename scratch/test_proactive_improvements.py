@@ -602,6 +602,55 @@ async def run_tests():
     assert "серьёзную" in build_emotional_directive(None, "not-json", rng=_seeded()), "Битый JSON не должен ронять"
     logger.info("[OK] Принимает mood_state строкой; устойчив к None/битому JSON")
 
+    # =========================================================================
+    # TEST 14: Богатая реакция на эмодзи-реакции (bot/reactions.py, без БД)
+    # =========================================================================
+    logger.info("\n--- TEST 14: Reaction taxonomy -> mood/reinforcement/reply ---")
+    from bot.reactions import (
+        REACTION_EFFECTS, REACTION_REPLIES, REPLY_MOOD_TO_STICKER,
+        classify_reactions, pick_reaction_reply,
+    )
+    _SUPPORTED = {"happy", "sad", "angry", "love", "teasing", "shock", "blush", "bored", "thinking"}
+
+    # (a) Покрытие шире прежних 13 эмодзи; все mood-ключи из whitelist эмоций
+    assert len(REACTION_EFFECTS) >= 60, len(REACTION_EFFECTS)
+    bad_moods = [(k, m) for k, v in REACTION_EFFECTS.items() for m in v["mood"] if m not in _SUPPORTED]
+    assert not bad_moods, bad_moods
+    logger.info(f"[OK] Покрыто {len(REACTION_EFFECTS)} реакций; все настроения из whitelist")
+
+    # (b) Нормализация VS16: сердечко с/без U+FE0F матчится в один эффект
+    assert classify_reactions(["\u2764\ufe0f"]) == classify_reactions(["\u2764"]) is not None
+    logger.info("[OK] VS16-нормализация: ❤️ и ❤ дают одинаковый эффект")
+
+    # (c) Разбитое сердце → грусть + негатив + нежный авто-ответ
+    hb = classify_reactions(["\U0001f494"])
+    assert hb["mood"].get("sad") == 0.20 and hb["reinforcement"] == "negative" and hb["reply_mood"] == "tender", hb
+    # огонь → азарт (teasing) с авто-ответом; зевок → скука без ответа
+    assert classify_reactions(["\U0001f525"])["reply_mood"] == "teasing"
+    yawn = classify_reactions(["\U0001f971"])
+    assert yawn["reply_mood"] is None and yawn["reinforcement"] == "negative" and yawn["mood"].get("bored") == 0.16, yawn
+    logger.info("[OK] 💔→sad/tender, 🔥→teasing, 🥱→bored корректны")
+
+    # (d) Агрегация нескольких реакций: негатив приоритетнее, настроения суммируются
+    mix = classify_reactions(["\U0001f44d", "\U0001f44e"])
+    assert mix["reinforcement"] == "negative" and mix["mood"].get("angry") == 0.12, mix
+    assert round(mix["mood"].get("happy", 0), 3) == 0.08, mix
+    logger.info("[OK] Агрегация: negative приоритетнее positive, дельты суммируются")
+
+    # (e) Неизвестная (нереакционная) эмодзи игнорируется
+    assert classify_reactions(["\U0001f600"]) is None  # 😀 не входит в набор реакций TG
+    assert classify_reactions([]) is None
+    logger.info("[OK] Неизвестные эмодзи и пустой список → None")
+
+    # (f) Каждое reply_mood имеет непустой пул реплик и валидное настроение для стикера
+    for k, v in REACTION_EFFECTS.items():
+        rm = v["reply_mood"]
+        if rm:
+            assert pick_reaction_reply(rm), rm
+            assert REPLY_MOOD_TO_STICKER.get(rm) in _SUPPORTED, rm
+    assert pick_reaction_reply(None) is None
+    logger.info("[OK] У всех reply_mood есть реплики и валидный стикер-мэппинг")
+
     logger.info("\n[SUCCESS] All Premium Proactive & Emotional improvements verified perfectly!")
 
 if __name__ == "__main__":
