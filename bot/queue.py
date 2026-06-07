@@ -662,11 +662,6 @@ async def process_user_reply(request, bot):
     user_id = request['user_id']
     user_name = request['user_name']
     user_message = request['user_message']
-    # Защита от инъекций: вырезаем служебный тег интроспекции из ВВОДА юзера, чтобы он не утёк
-    # в промпт/контекст и не был отражён моделью обратно (парсим тег только из ответа Арти).
-    if user_message:
-        from database.models import strip_introspection_tags
-        user_message = strip_introspection_tags(user_message)
     message_id = request['message_id']
     callback_context = request['context']
     is_voice = request.get('is_voice', True)
@@ -674,6 +669,15 @@ async def process_user_reply(request, bot):
     document_text = request.get('document_text')
     video_file_id = request.get('video_file_id')
     is_video_note = request.get('is_video_note', False)
+
+    # Защита от инъекций: вырезаем служебный тег интроспекции из ЛЮБОГО ввода юзера
+    # (текст сообщения И содержимое документа), чтобы он не утёк в промпт и не был отражён
+    # моделью обратно — парсим тег строго только из сгенерированного ответа Арти.
+    from database.models import strip_introspection_tags
+    if user_message:
+        user_message = strip_introspection_tags(user_message)
+    if document_text:
+        document_text = strip_introspection_tags(document_text)
 
     # Обновление эмоционального состояния чата
     from database.models import ChatEmotionalState, MemoryUserProfile
