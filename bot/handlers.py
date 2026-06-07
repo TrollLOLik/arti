@@ -431,7 +431,11 @@ async def _process_images(
             prof_json = json.loads(user_profile["profile_json"]) if isinstance(user_profile["profile_json"], str) else user_profile["profile_json"]
             closeness = prof_json.get("affective", {}).get("closeness", 0.1)
             
-        await ChatEmotionalState.update_state(chat_id, user_caption, closeness, user_id=user_id)
+        # Защита от инъекций: вырезаем тег интроспекции из ВВОДА юзера (парсим только из ответа Арти).
+        from database.models import strip_introspection_tags
+        user_caption = strip_introspection_tags(user_caption)
+        # defer_sentiment=True: словарный сдвиг отложен до apply_turn_sentiment пост-генерации.
+        img_state = await ChatEmotionalState.update_state(chat_id, user_caption, closeness, user_id=user_id, defer_sentiment=True)
 
         image_details = "изображение" if len(base64_images) == 1 else f"{len(base64_images)} изображений"
         await _save_message(chat_id, user_name, f"Пользователь прислал {image_details}. Подпись: {user_caption}", user_id=user_id)
@@ -455,6 +459,7 @@ async def _process_images(
             base64_images=base64_images,
             user_id=user_id,
             is_rp_mode=rp_mode_state.get(chat_id, False),
+            enable_introspection=True,
         )
         logger.info(f"RAW ИИ ОТВЕТ (фото, {len(base64_images)} шт): {response_text}")
 
@@ -466,6 +471,14 @@ async def _process_images(
         sticker_match = re.search(r'<sticker>(.*?)</sticker>', response_text, re.IGNORECASE)
         if sticker_match:
             sticker_mood = sticker_match.group(1).strip().lower()
+
+        # Гибридный сентимент: интроспекция LLM > словарный фолбэк; затем вырезаем служебный тег.
+        introspection_sticker = await ChatEmotionalState.apply_turn_sentiment(
+            chat_id, response_text, img_state.get("keyword_mood_delta")
+        )
+        if not sticker_mood and introspection_sticker:
+            sticker_mood = introspection_sticker
+        response_text = strip_introspection_tags(response_text)
 
         # Очищаем все теги стикеров из ответа
         from ai.stickers import _clean_deformed_tags

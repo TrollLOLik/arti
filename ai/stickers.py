@@ -46,6 +46,10 @@ def _clean_deformed_tags(text: str) -> str:
     text = re.sub(r'<sticker>.*?</sticker>', '', text, flags=re.DOTALL | re.IGNORECASE)
     # Осиротевшие закрывающие теги
     text = re.sub(r'</sticker>', '', text, flags=re.IGNORECASE)
+    # Страховка: вырезаем служебный тег интроспекции (и его незакрытый хвост), если он дошёл
+    # сюда из какого-либо пути генерации, минуя явный strip_introspection_tags.
+    text = re.sub(r'<!--\s*emotional_introspection\s*:\s*\{.*?\}\s*-->', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<!--\s*emotional_introspection\b.*$', '', text, flags=re.DOTALL | re.IGNORECASE)
     return text.strip()
 
 

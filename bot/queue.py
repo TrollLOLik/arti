@@ -662,6 +662,11 @@ async def process_user_reply(request, bot):
     user_id = request['user_id']
     user_name = request['user_name']
     user_message = request['user_message']
+    # Защита от инъекций: вырезаем служебный тег интроспекции из ВВОДА юзера, чтобы он не утёк
+    # в промпт/контекст и не был отражён моделью обратно (парсим тег только из ответа Арти).
+    if user_message:
+        from database.models import strip_introspection_tags
+        user_message = strip_introspection_tags(user_message)
     message_id = request['message_id']
     callback_context = request['context']
     is_voice = request.get('is_voice', True)
@@ -681,7 +686,10 @@ async def process_user_reply(request, bot):
         prof_json = json.loads(user_profile["profile_json"]) if isinstance(user_profile["profile_json"], str) else user_profile["profile_json"]
         closeness = prof_json.get("affective", {}).get("closeness", 0.1)
         
-    updated_state = await ChatEmotionalState.update_state(chat_id, user_message, closeness, user_id=user_id)
+    # defer_sentiment=True: словарный сдвиг НЕ применяется здесь (до генерации) — его применит
+    # apply_turn_sentiment пост-генерации, отдав приоритет интроспекции самой LLM, а словарь
+    # оставив как fail-closed фолбэк. Распад/заряд/циркадная база считаются как раньше.
+    updated_state = await ChatEmotionalState.update_state(chat_id, user_message, closeness, user_id=user_id, defer_sentiment=True)
     # Рост близости от ОБЫЧНОГО общения (+ бонус за ответ на проактивный пуш),
     # а не только от эмодзи-реакций — иначе closeness почти никогда не растёт.
     await MemoryUserProfile.grow_closeness(
@@ -857,6 +865,7 @@ async def process_user_reply(request, bot):
             custom_system_prompt=custom_system_prompt,
             user_id=user_id,
             is_rp_mode=is_rp,
+            enable_introspection=True,
         )
         
         if uploaded_video_file:
@@ -880,6 +889,18 @@ async def process_user_reply(request, bot):
         sticker_match = re.search(r'<sticker>(.*?)</sticker>', response_text, re.IGNORECASE)
         if sticker_match:
             sticker_mood = sticker_match.group(1).strip().lower()
+
+        # === ГИБРИДНЫЙ СЕНТИМЕНТ: интроспекция LLM > словарный фолбэк ===
+        # Парсим тег ТОЛЬКО из сгенерированного текста Арти (инъекции из ввода юзера сюда не попадают).
+        # apply_turn_sentiment: при валидном теге применяет дельты LLM, иначе fail-closed фолбэк на словарь.
+        from database.models import strip_introspection_tags
+        introspection_sticker = await ChatEmotionalState.apply_turn_sentiment(
+            chat_id, response_text, updated_state.get("keyword_mood_delta")
+        )
+        if not sticker_mood and introspection_sticker:
+            sticker_mood = introspection_sticker
+        # Вырезаем служебный тег интроспекции до любой отправки/редактирования
+        response_text = strip_introspection_tags(response_text)
 
         # Очищаем все теги стикеров из ответа
         from ai.stickers import _clean_deformed_tags

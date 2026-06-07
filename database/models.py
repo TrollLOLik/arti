@@ -3,6 +3,7 @@
 """
 import json
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Optional, List, Tuple, Dict, Any
 import asyncpg
@@ -1618,6 +1619,63 @@ async def infer_user_timezone(chat_id: int, user_id: Optional[int]) -> Optional[
     return None
 
 
+# 9 базовых эмоций — единственный whitelist для дельт настроения (и LLM-тега, и словаря).
+SUPPORTED_MOODS = {"happy", "sad", "angry", "love", "teasing", "shock", "blush", "bored", "thinking"}
+
+# Скрытый служебный тег интроспекции, который модель дописывает в КОНЕЦ ответа:
+# <!-- emotional_introspection: {"mood_delta": {"love": 0.15}, "sticker_mood_suggest": "love"} -->
+_INTROSPECTION_RE = re.compile(r"<!--\s*emotional_introspection\s*:\s*(\{.*?\})\s*-->", re.DOTALL | re.IGNORECASE)
+# Незакрытый/обрезанный хвост тега (на случай, если модель не дописала комментарий).
+_INTROSPECTION_PARTIAL_RE = re.compile(r"<!--\s*emotional_introspection\b.*$", re.DOTALL | re.IGNORECASE)
+
+
+def parse_emotional_introspection(text: Optional[str]) -> Optional[dict]:
+    """Строгий fail-closed парсер тега интроспекции из СГЕНЕРИРОВАННОГО текста Арти.
+
+    Возвращает {"mood_delta": {emotion: float}, "sticker_mood_suggest": str|None}
+    либо None, если тег отсутствует, JSON битый, или в нём нет ничего пригодного.
+    Дельты клампятся в [-0.25, 0.25]; ключи вне whitelist из 9 эмоций отбрасываются.
+    """
+    if not text:
+        return None
+    match = _INTROSPECTION_RE.search(text)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group(1))
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    mood_delta: dict = {}
+    raw_delta = data.get("mood_delta", {})
+    if isinstance(raw_delta, dict):
+        for key, val in raw_delta.items():
+            if key in SUPPORTED_MOODS and isinstance(val, (int, float)) and not isinstance(val, bool):
+                mood_delta[key] = max(-0.25, min(0.25, float(val)))
+
+    suggest = data.get("sticker_mood_suggest")
+    if isinstance(suggest, str) and suggest.strip().lower() in SUPPORTED_MOODS:
+        suggest = suggest.strip().lower()
+    else:
+        suggest = None
+
+    # Тег есть, но в нём нет ни валидной дельты, ни валидного стикера -> считаем браком.
+    if not mood_delta and suggest is None:
+        return None
+    return {"mood_delta": mood_delta, "sticker_mood_suggest": suggest}
+
+
+def strip_introspection_tags(text: Optional[str]) -> str:
+    """Вырезает служебный тег интроспекции (и его незакрытый хвост) из текста."""
+    if not text:
+        return text or ""
+    text = _INTROSPECTION_RE.sub("", text)
+    text = _INTROSPECTION_PARTIAL_RE.sub("", text)
+    return text.strip()
+
+
 class ChatEmotionalState:
     @staticmethod
     async def get_or_create(chat_id: int) -> dict:
@@ -1638,7 +1696,7 @@ class ChatEmotionalState:
             return dict(row)
 
     @staticmethod
-    async def update_state(chat_id: int, user_message: str, closeness: float = 0.0, user_id: Optional[int] = None) -> dict:
+    async def update_state(chat_id: int, user_message: str, closeness: float = 0.0, user_id: Optional[int] = None, defer_sentiment: bool = False) -> dict:
         import math
         user_message = user_message or ""
         async with get_db() as conn:
@@ -1670,12 +1728,12 @@ class ChatEmotionalState:
                 # 2. Вычисляем распад (Time Decay) — дельта посчитана БД (UTC-консистентно)
                 delta_t = max(0.0, state["delta_t_seconds"] or 0.0)
                 
-                # Затухание заряда (ускорено: half-life ~23 мин) — заряд держится дольше и быстрее копится
-                lambda_c = 0.0005
+                # Затухание заряда (half-life ~60 мин) — заряд почти не «испаряется за чашку чая»
+                lambda_c = 0.00019
                 charge = state["charge"] * math.exp(-lambda_c * delta_t)
                 
-                # Затухание вектора настроения (ослаблено: half-life ~38 мин) — настроения живут дольше
-                lambda_m = 0.0003
+                # Затухание вектора настроения (half-life ~77 мин) — эмоциональный шлейф живёт до ~2 ч
+                lambda_m = 0.00015
                 mood_dict = json.loads(state["mood_state"]) if isinstance(state["mood_state"], str) else state["mood_state"]
                 for emotion in mood_dict:
                     decayed = mood_dict[emotion] * math.exp(-lambda_m * delta_t)
@@ -1684,7 +1742,7 @@ class ChatEmotionalState:
                 
                 # 3. Анализируем интенсивность реплики пользователя
                 clean_msg = user_message.strip()
-                delta_charge = min(len(clean_msg) * 0.0015, 0.12)
+                delta_charge = min(len(clean_msg) * 0.002, 0.18)
                 
                 # Капс
                 if clean_msg.isupper() and len(clean_msg) > 4:
@@ -1734,60 +1792,76 @@ class ChatEmotionalState:
 
                 closeness_mult = 1.5 if closeness > 0.6 else 1.0
 
+                # Словарный сентимент копим в keyword_mood_delta (ОТДЕЛЬНО от mood_dict).
+                # При defer_sentiment=True его НЕ применяем здесь, а отдаём наружу как ФОЛБЭК:
+                # приоритетный источник сдвига настроения теперь интроспекция самой LLM
+                # (тег <!-- emotional_introspection -->), применяемая пост-генерации.
+                keyword_mood_delta: dict = {}
+                def _kd(emotion: str, d: float):
+                    keyword_mood_delta[emotion] = keyword_mood_delta.get(emotion, 0.0) + d
+
                 if matched_love:
                     word = matched_love[0]
                     if check_negation(word):
                         # Не люблю -> bored/sad
                         delta_charge += 0.05
-                        mood_dict["bored"] = min(mood_dict["bored"] + 0.08, 1.0)
-                        mood_dict["sad"] = min(mood_dict["sad"] + 0.08, 1.0)
+                        _kd("bored", 0.08)
+                        _kd("sad", 0.08)
                     else:
                         delta_charge += 0.1 * closeness_mult
-                        mood_dict["love"] = min(mood_dict["love"] + 0.15, 1.0)
-                        mood_dict["blush"] = min(mood_dict["blush"] + 0.1, 1.0)
+                        _kd("love", 0.15)
+                        _kd("blush", 0.1)
                         
                 elif matched_happy:
                     word = matched_happy[0]
                     if check_negation(word):
                         # Не рад -> sad/bored
                         delta_charge += 0.05
-                        mood_dict["sad"] = min(mood_dict["sad"] + 0.08, 1.0)
-                        mood_dict["bored"] = min(mood_dict["bored"] + 0.08, 1.0)
+                        _kd("sad", 0.08)
+                        _kd("bored", 0.08)
                     else:
                         delta_charge += 0.08
-                        mood_dict["happy"] = min(mood_dict["happy"] + 0.12, 1.0)
-                        mood_dict["teasing"] = min(mood_dict["teasing"] + 0.05, 1.0)
+                        _kd("happy", 0.12)
+                        _kd("teasing", 0.05)
                         
                 elif matched_sad:
                     word = matched_sad[0]
                     if check_negation(word):
                         # Не грусти / не плачь -> happy/love
                         delta_charge += 0.08
-                        mood_dict["happy"] = min(mood_dict["happy"] + 0.06, 1.0)
-                        mood_dict["love"] = min(mood_dict["love"] + 0.04, 1.0)
+                        _kd("happy", 0.06)
+                        _kd("love", 0.04)
                     else:
                         delta_charge += 0.06
-                        mood_dict["sad"] = min(mood_dict["sad"] + 0.15, 1.0)
-                        mood_dict["love"] = min(mood_dict["love"] + 0.10, 1.0)
+                        _kd("sad", 0.15)
+                        _kd("love", 0.10)
                         # Сопереживание: гасим игривость/радость, чтобы не «веселиться» в ответ на боль
-                        mood_dict["happy"] = max(mood_dict["happy"] - 0.10, 0.0)
-                        mood_dict["teasing"] = max(mood_dict["teasing"] - 0.10, 0.0)
+                        _kd("happy", -0.10)
+                        _kd("teasing", -0.10)
                         
                 elif matched_angry:
                     word = matched_angry[0]
                     if check_negation(word):
                         # Без обид / не злись -> happy/love
                         delta_charge += 0.08
-                        mood_dict["happy"] = min(mood_dict["happy"] + 0.06, 1.0)
-                        mood_dict["love"] = min(mood_dict["love"] + 0.04, 1.0)
+                        _kd("happy", 0.06)
+                        _kd("love", 0.04)
                     else:
                         delta_charge += 0.12
                         # Предохранитель агрессии
                         if closeness >= 0.4:
-                            mood_dict["angry"] = min(mood_dict["angry"] + 0.2, 1.0)
+                            _kd("angry", 0.2)
                         else:
-                            mood_dict["bored"] = min(mood_dict["bored"] + 0.15, 1.0)
-                            mood_dict["thinking"] = min(mood_dict["thinking"] + 0.05, 1.0)
+                            _kd("bored", 0.15)
+                            _kd("thinking", 0.05)
+
+                # Применяем словарный сдвиг сразу ТОЛЬКО в legacy-режиме (defer_sentiment=False).
+                # В гибридном пути (defer_sentiment=True) дельту применяет apply_turn_sentiment
+                # пост-генерации — либо из интроспекции LLM, либо этим же keyword_mood_delta (фолбэк).
+                if not defer_sentiment:
+                    for _em, _d in keyword_mood_delta.items():
+                        if _em in mood_dict:
+                            mood_dict[_em] = min(max(mood_dict[_em] + _d, 0.0), 1.0)
 
                 # Применяем циркадный сдвиг к вектору
                 if user_tz is not None:
@@ -1847,7 +1921,73 @@ class ChatEmotionalState:
                 """, chat_id, charge, mood_json, user_tz)
                 result = dict(row)
                 result["was_proactive_reply"] = was_proactive_reply
+                # Словарный сдвиг отдаём наружу как fail-closed фолбэк для apply_turn_sentiment.
+                result["keyword_mood_delta"] = keyword_mood_delta
                 return result
+
+    @staticmethod
+    async def apply_mood_delta(chat_id: int, mood_delta: dict, source: str = "llm") -> None:
+        """Применяет ограниченные дельты к вектору настроения (БЕЗ распада/заряда/времени).
+
+        Используется пост-генерации: приоритетный источник — интроспекция LLM (source="llm"),
+        иначе fail-closed фолбэк на словарь (source="keyword"). Каждая дельта клампится в
+        [-0.25, 0.25], итоговое значение — в [0, 1]; ключи вне whitelist из 9 эмоций игнорируются.
+        """
+        if not mood_delta:
+            return
+        applied: dict = {}
+        async with get_db() as conn:
+            async with conn.transaction():
+                state = await conn.fetchrow(
+                    "SELECT mood_state FROM chat_emotional_states WHERE chat_id = $1 FOR UPDATE",
+                    chat_id,
+                )
+                if not state:
+                    return
+                mood_dict = json.loads(state["mood_state"]) if isinstance(state["mood_state"], str) else state["mood_state"]
+                for emotion, d in mood_delta.items():
+                    if emotion not in SUPPORTED_MOODS or emotion not in mood_dict:
+                        continue
+                    if not isinstance(d, (int, float)) or isinstance(d, bool):
+                        continue
+                    d = max(-0.25, min(0.25, float(d)))
+                    new_val = min(max(mood_dict[emotion] + d, 0.0), 1.0)
+                    # Обнуляем денормализованные «хвосты», чтобы /charge не пестрел мусором 3e-175
+                    new_val = new_val if new_val >= 0.0005 else 0.0
+                    applied[emotion] = round(new_val - mood_dict[emotion], 4)
+                    mood_dict[emotion] = new_val
+                if not applied:
+                    return
+                mood_json = json.dumps(mood_dict, ensure_ascii=False)
+                await conn.execute(
+                    "UPDATE chat_emotional_states SET mood_state = $2::jsonb WHERE chat_id = $1",
+                    chat_id, mood_json,
+                )
+        logger.info(f"🔮 [MOOD_DELTA:{source}] chat_id={chat_id} | applied={applied}")
+        emotional_logger.info(f"[MOOD_DELTA] chat_id={chat_id} | source={source} | applied={applied}")
+
+    @staticmethod
+    async def apply_turn_sentiment(chat_id: int, arti_response_text: str, keyword_mood_delta: Optional[dict] = None) -> Optional[str]:
+        """Гибридный сентимент пост-генерации.
+
+        Приоритет — интроспекция самой LLM (тег <!-- emotional_introspection --> из ответа Арти).
+        Если тег отсутствует/битый/вне диапазона — fail-closed фолбэк на словарный
+        keyword_mood_delta (посчитанный в update_state). Возвращает предложенный моод стикера
+        (sticker_mood_suggest) или None.
+        """
+        parsed = parse_emotional_introspection(arti_response_text)
+        if parsed is not None:
+            if parsed["mood_delta"]:
+                await ChatEmotionalState.apply_mood_delta(chat_id, parsed["mood_delta"], source="llm")
+            else:
+                emotional_logger.info(
+                    f"[INTROSPECTION] chat_id={chat_id} | mood_delta пуст, sticker_suggest={parsed['sticker_mood_suggest']}"
+                )
+            return parsed["sticker_mood_suggest"]
+        # Тег отсутствует/битый -> словарный фолбэк (fail-closed)
+        if keyword_mood_delta:
+            await ChatEmotionalState.apply_mood_delta(chat_id, keyword_mood_delta, source="keyword")
+        return None
 
     @staticmethod
     async def record_sticker_sent(chat_id: int, file_id: str, mood: str):
