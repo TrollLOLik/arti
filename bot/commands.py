@@ -3311,30 +3311,33 @@ async def handle_charge_command(update: Update, context: ContextTypes.DEFAULT_TY
     # Строим прогресс-бары для вектора настроения
     mood_dict = json.loads(state["mood_state"]) if isinstance(state["mood_state"], str) else state["mood_state"]
     
+    # Эмодзи вынесены ИЗ <code>, чтобы их переменная ширина не ломала моноширинную сетку.
+    # Текст метки внутри <code> выравнивается ljust по самой длинной ("Игривость" = 9).
     mood_names_ru = {
-        "happy": "😊 Радость   ",
-        "sad": "😢 Грусть    ",
-        "angry": "😡 Злость    ",
-        "love": "❤️ Любовь    ",
-        "teasing": "😏 Игривость ",
-        "shock": "😱 Шок       ",
-        "blush": "😳 Смущение  ",
-        "bored": "🥱 Скука     ",
-        "thinking": "🤔 Думы      ",
+        "happy": ("😊", "Радость"),
+        "sad": ("😢", "Грусть"),
+        "angry": ("😡", "Злость"),
+        "love": ("❤️", "Любовь"),
+        "teasing": ("😏", "Игривость"),
+        "shock": ("😱", "Шок"),
+        "blush": ("😳", "Смущение"),
+        "bored": ("🥱", "Скука"),
+        "thinking": ("🤔", "Думы"),
     }
     
     mood_lines = []
-    for emotion, name in mood_names_ru.items():
+    for emotion, (emoji, label) in mood_names_ru.items():
         val = mood_dict.get(emotion, 0.0)
         bars = int(val * 10)
-        progress = "█" * bars + "░" * (10 - bars)
-        mood_lines.append(f"<code>{name} [{progress}] {val:.3f}</code>")
+        # «·» (U+00B7) вместо нестабильного «░»: одинаковая ширина с «█» во всех шрифтах.
+        progress = "█" * bars + "·" * (10 - bars)
+        mood_lines.append(f"{emoji} <code>{label.ljust(9)} [{progress}] {val:.3f}</code>")
         
     mood_vector_str = "\n".join(mood_lines)
     
     # Отрисовка заряда с прогресс-баром
     charge_bars = int(charge * 20)
-    charge_progress = "█" * charge_bars + "░" * (20 - charge_bars)
+    charge_progress = "█" * charge_bars + "·" * (20 - charge_bars)
     
     last_sticker = state.get("last_sticker_time")
     last_sticker_str = last_sticker.strftime("%Y-%m-%d %H:%M:%S") if last_sticker else "Никогда"
