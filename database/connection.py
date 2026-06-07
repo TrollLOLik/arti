@@ -439,6 +439,7 @@ async def _create_tables_internal(conn):
             category VARCHAR(64) NOT NULL,
             importance DOUBLE PRECISION DEFAULT 0.5,
             is_verified BOOLEAN DEFAULT TRUE,
+            is_default BOOLEAN NOT NULL DEFAULT FALSE,
             last_verified_at TIMESTAMP DEFAULT NOW(),
             created_at TIMESTAMP DEFAULT NOW(),
             UNIQUE(chat_id, mode, page_key)
@@ -688,7 +689,7 @@ async def _create_tables_internal(conn):
             SET is_maintenance = TRUE 
             WHERE key IN ('sonnet', 'opus', 'geminipro')
         """)
-
+    
     logger.info("Таблицы базы данных созданы/проверены")
 
 

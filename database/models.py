@@ -1415,6 +1415,7 @@ class MemoryWikiPage:
         mode: str = "default",
         importance: float = 0.5,
         is_verified: bool = True,
+        is_default: bool = False,
     ) -> Optional[int]:
         page_key = (page_key or "").strip()
         title = (title or "").strip()
@@ -1423,22 +1424,42 @@ class MemoryWikiPage:
             return None
 
         async with get_db() as conn:
-            row = await conn.fetchrow("""
-                INSERT INTO memory_wiki_pages (
-                    chat_id, mode, page_key, title, content, category,
-                    importance, is_verified, last_verified_at, created_at
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
-                ON CONFLICT (chat_id, mode, page_key)
-                DO UPDATE SET
-                    title = EXCLUDED.title,
-                    content = EXCLUDED.content,
-                    category = EXCLUDED.category,
-                    importance = EXCLUDED.importance,
-                    is_verified = EXCLUDED.is_verified,
-                    last_verified_at = NOW()
-                RETURNING id
-            """, chat_id, mode, page_key, title, content, category, float(importance or 0.5), is_verified)
+            if chat_id is None:
+                row = await conn.fetchrow("""
+                    INSERT INTO memory_wiki_pages (
+                        chat_id, mode, page_key, title, content, category,
+                        importance, is_verified, is_default, last_verified_at, created_at
+                    )
+                    VALUES (NULL, $1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+                    ON CONFLICT (mode, page_key) WHERE chat_id IS NULL
+                    DO UPDATE SET
+                        title = EXCLUDED.title,
+                        content = EXCLUDED.content,
+                        category = EXCLUDED.category,
+                        importance = EXCLUDED.importance,
+                        is_verified = EXCLUDED.is_verified,
+                        is_default = EXCLUDED.is_default,
+                        last_verified_at = NOW()
+                    RETURNING id
+                """, mode, page_key, title, content, category, float(importance or 0.5), is_verified, is_default)
+            else:
+                row = await conn.fetchrow("""
+                    INSERT INTO memory_wiki_pages (
+                        chat_id, mode, page_key, title, content, category,
+                        importance, is_verified, is_default, last_verified_at, created_at
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+                    ON CONFLICT (chat_id, mode, page_key)
+                    DO UPDATE SET
+                        title = EXCLUDED.title,
+                        content = EXCLUDED.content,
+                        category = EXCLUDED.category,
+                        importance = EXCLUDED.importance,
+                        is_verified = EXCLUDED.is_verified,
+                        is_default = EXCLUDED.is_default,
+                        last_verified_at = NOW()
+                    RETURNING id
+                """, chat_id, mode, page_key, title, content, category, float(importance or 0.5), is_verified, is_default)
             return row["id"] if row else None
 
     @staticmethod

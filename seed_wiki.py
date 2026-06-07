@@ -77,7 +77,8 @@ async def seed():
                 chat_id=None,  # Глобальная страница
                 mode=item["mode"],
                 importance=0.9,  # Базовый лор имеет высокую важность
-                is_verified=True
+                is_verified=True,
+                is_default=True
             )
             
             if page_id:
