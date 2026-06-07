@@ -297,6 +297,38 @@ async def run_tests():
     assert events[0]["event_type"] == "exam", f"Expected exam event, got {events[0]['event_type']}"
     logger.info("[OK] Event extractor runs and persists events even when user_tz falls back to 0")
 
+    # =========================================================================
+    # TEST 9: Grief/Loss Sentiment (empathetic mood shift)
+    # =========================================================================
+    logger.info("\n--- TEST 9: Grief/Loss Sentiment ---")
+    import json
+
+    # Сбрасываем состояние и предварительно заряжаем игривое/радостное настроение,
+    # чтобы проверить, что эмоциональное сообщение про потерю смещает в сопереживание,
+    # а не оставляет прежнюю игривость (баг из живого теста).
+    async with get_db() as conn:
+        await conn.execute("DELETE FROM chat_emotional_states WHERE chat_id = $1", chat_id)
+        await ChatEmotionalState.get_or_create(chat_id)
+        await conn.execute(
+            "UPDATE chat_emotional_states SET mood_state = $2::jsonb WHERE chat_id = $1",
+            chat_id,
+            json.dumps({"happy": 0.5, "teasing": 0.4, "love": 0.0, "sad": 0.0,
+                        "angry": 0.0, "blush": 0.0, "shock": 0.0, "bored": 0.0, "thinking": 0.0}),
+        )
+
+    # user_id=None: не инферим tz и не пишем циркадный сдвиг через сохранённую зону;
+    # циркадный сдвиг по серверному часу никогда не добавляет sad, поэтому ассерты ниже от него не зависят.
+    loss_msg = "Если бы ты существовала всего 10 лет, то было бы очень больно тебя терять"
+    state = await ChatEmotionalState.update_state(chat_id, loss_msg, closeness=0.6, user_id=None)
+    mood_dict = json.loads(state["mood_state"]) if isinstance(state["mood_state"], str) else state["mood_state"]
+    logger.info(f"Loss message mood: {mood_dict}")
+    # Раньше («больно/терять/всплакнул» не были в словаре) sad оставался 0.0 — теперь распознаётся.
+    assert mood_dict["sad"] > 0.1, f"Expected loss message to trigger sad, got {mood_dict['sad']}"
+    assert mood_dict["love"] > 0.0, f"Expected loss message to trigger empathetic love, got {mood_dict['love']}"
+    # Сопереживание гасит игривость (предзаряд teasing=0.4), а не «веселится» в ответ на боль.
+    assert mood_dict["teasing"] < 0.4, f"Expected teasing to be dampened from 0.4, got {mood_dict['teasing']}"
+    logger.info("[OK] Emotional loss message ('больно тебя терять') correctly triggered empathetic sad/love shift")
+
     logger.info("\n[SUCCESS] All Premium Proactive & Emotional improvements verified perfectly!")
 
 if __name__ == "__main__":
