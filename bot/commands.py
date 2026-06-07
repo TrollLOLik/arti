@@ -3050,6 +3050,301 @@ async def saved_voice_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
 
+def get_profile_keyboard(user_id: int, current_tab: str, mode: str) -> InlineKeyboardMarkup:
+    def btn(text: str, tab: str) -> InlineKeyboardButton:
+        active_text = f"• {text} •" if tab == current_tab else text
+        return InlineKeyboardButton(active_text, callback_data=f"prof_{tab}:{user_id}")
+
+    if mode == "rp":
+        keyboard = [
+            [btn("📜 Сюжет", "main"), btn("📊 Синхро", "affect")],
+            [btn("📌 Вехи", "facts"), btn("🎭 Склонности", "pref")],
+            [btn("🗣️ Поведение", "style"), btn("⚔️ Связи", "rel")]
+        ]
+    else:
+        keyboard = [
+            [btn("📜 Анализ", "main"), btn("📊 Показатели", "affect")],
+            [btn("📌 Факты", "facts"), btn("🎭 Интересы", "pref")],
+            [btn("🗣️ Стиль", "style"), btn("🤝 Связь", "rel")]
+        ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def format_profile_caption(profile: dict, tab: str, user_id: int, user_name: str, mode: str) -> str:
+    import html as _html
+    import json
+    from config import PRIVILEGED_USER_IDS
+    is_privileged = user_id in PRIVILEGED_USER_IDS
+    
+    prof_json = profile.get("profile_json") or {}
+    if isinstance(prof_json, str):
+        try:
+            prof_json = json.loads(prof_json)
+        except Exception:
+            prof_json = {}
+            
+    affective = prof_json.get("affective", {})
+    closeness = affective.get("closeness", 0.1)
+    receptivity = affective.get("sticker_receptivity", 0.5)
+    
+    if mode == "rp":
+        status_rp = "Создатель (Волков)" if is_privileged else "Выживший / Пленник комплекса"
+        header = (
+            f"🔮 <b>TELEMA NUTRISCU: CHARACTER SHEET</b>\n"
+            f"──────────────────────────────\n"
+            f"👤 <b>Имя:</b> {_html.escape(user_name)}\n"
+            f"🎭 <b>Роль:</b> {status_rp}\n"
+            f"⚔️ <b>Связь:</b> Напряжённая (Пленник)\n"
+            f"──────────────────────────────\n"
+        )
+    else:
+        status = "Создатель / Приоритетный субъект 👑" if is_privileged else "Собеседник / Внешний наблюдатель 👤"
+        header = (
+            f"📁 <b>СЕКРЕТНОЕ ДОСЬЕ АНДРОИДА АРТИ</b>\n"
+            f"──────────────────────────────\n"
+            f"👤 <b>Субъект:</b> {_html.escape(user_name)}\n"
+            f"🆔 <b>ID в сети:</b> <code>{user_id}</code>\n"
+            f"🧬 <b>Статус:</b> {status}\n"
+            f"──────────────────────────────\n"
+        )
+        
+    body = ""
+    if tab == "main":
+        profile_text = profile.get("profile_text", "").strip()
+        limit = 700
+        if len(profile_text) > limit:
+            truncated_text = profile_text[:limit].strip() + "..."
+            note = f"\n\n<i>[Досье имеет большой объём. Используйте вкладки ниже для просмотра деталей]</i>"
+        else:
+            truncated_text = profile_text
+            note = ""
+            
+        if mode == "rp":
+            body = f"📜 <b>Характеристики и сюжетный выбор:</b>\n<i>{_html.escape(truncated_text)}</i>{note}"
+        else:
+            body = f"🧠 <b>Данные анализа:</b>\n<i>{_html.escape(truncated_text)}</i>{note}"
+            
+    elif tab == "facts":
+        facts = prof_json.get("important_facts", [])
+        if not facts:
+            body_text = "<i>Нет сохраненных фактов.</i>"
+        else:
+            body_text = "\n".join(f"• {_html.escape(str(f))}" for f in facts)
+            
+        if mode == "rp":
+            body = f"📌 <b>Ключевые сюжетные вехи:</b>\n{body_text}"
+        else:
+            body = f"📌 <b>Важные факты о субъекте:</b>\n{body_text}"
+            
+    elif tab == "pref":
+        prefs = prof_json.get("stable_preferences", [])
+        if not prefs:
+            body_text = "<i>Нет выявленных интересов.</i>"
+        else:
+            body_text = "\n".join(f"• {_html.escape(str(p))}" for p in prefs)
+            
+        if mode == "rp":
+            body = f"🎭 <b>Склонности и предпочтения:</b>\n{body_text}"
+        else:
+            body = f"🎭 <b>Стабильные предпочтения:</b>\n{body_text}"
+            
+    elif tab == "style":
+        styles = prof_json.get("communication_style", [])
+        if not styles:
+            body_text = "<i>Стиль общения анализируется.</i>"
+        else:
+            body_text = "\n".join(f"• {_html.escape(str(s))}" for s in styles)
+            
+        if mode == "rp":
+            body = f"🗣️ <b>Модель поведения субъекта:</b>\n{body_text}"
+        else:
+            body = f"🗣️ <b>Особенности коммуникации:</b>\n{body_text}"
+            
+    elif tab == "rel":
+        relations = prof_json.get("relationship_to_arti", [])
+        if not relations:
+            body_text = "<i>Нет зафиксированных связей.</i>"
+        else:
+            body_text = "\n".join(f"• {_html.escape(str(r))}" for r in relations)
+            
+        if mode == "rp":
+            body = f"⚔️ <b>Отношения с комплексом:</b>\n{body_text}"
+        else:
+            body = f"🤝 <b>Связь с Арти:</b>\n{body_text}"
+            
+    elif tab == "affect":
+        def make_bar(v: float) -> str:
+            bars = int(v * 10)
+            return "█" * bars + "·" * (10 - bars)
+            
+        closeness_bar = make_bar(closeness)
+        receptivity_bar = make_bar(receptivity)
+        
+        if mode == "rp":
+            body = (
+                f"📊 <b>Аффективная синхронизация:</b>\n\n"
+                f"❤️ <b>Синхронизация с ИИ:</b> {closeness:.2f}\n"
+                f"<code>[{closeness_bar}]</code>\n\n"
+                f"✨ <b>Реакция на стимулы:</b> {receptivity:.2f}\n"
+                f"<code>[{receptivity_bar}]</code>"
+            )
+        else:
+            body = (
+                f"📊 <b>Показатели взаимодействия:</b>\n\n"
+                f"❤️ <b>Близость:</b> {closeness:.2f}\n"
+                f"<code>[{closeness_bar}]</code>\n\n"
+                f"✨ <b>Восприимчивость к стикерам:</b> {receptivity:.2f}\n"
+                f"<code>[{receptivity_bar}]</code>"
+            )
+            
+    return header + body
+
+
+async def _maybe_send_profile_document(bot, chat_id, user_id, user_name, mode, profile, message_id, context):
+    """Отправляет полное досье в формате Markdown, если оно длинное (не спамит на одно сообщение)."""
+    import io
+    profile_text = profile.get("profile_text", "").strip()
+    if len(profile_text) <= 700:
+        return
+        
+    if "profile_sent_files" not in context.user_data:
+        context.user_data["profile_sent_files"] = set()
+    sent_files = context.user_data["profile_sent_files"]
+    
+    if message_id in sent_files:
+        return
+        
+    md_content = generate_profile_markdown(profile, user_id, user_name, mode)
+    bio = io.BytesIO(md_content.encode('utf-8'))
+    
+    if mode == "rp":
+        filename = f"character_sheet_{user_id}.md"
+        caption = "🔮 Полный Character Sheet в формате Markdown"
+    else:
+        filename = f"dossier_{user_id}.md"
+        caption = "📂 Полное секретное досье в формате Markdown"
+        
+    bio.name = filename
+    
+    try:
+        await bot.send_document(
+            chat_id=chat_id,
+            document=bio,
+            filename=filename,
+            caption=caption,
+            reply_to_message_id=message_id
+        )
+        sent_files.add(message_id)
+    except Exception as e:
+        logger.error(f"Не удалось отправить файл досье: {e}")
+
+
+def generate_profile_markdown(profile: dict, user_id: int, user_name: str, mode: str) -> str:
+    """Форматирует все разделы досье/характеристик пользователя в единый Markdown-файл."""
+    import json
+    from config import PRIVILEGED_USER_IDS
+    is_privileged = user_id in PRIVILEGED_USER_IDS
+    
+    prof_json = profile.get("profile_json") or {}
+    if isinstance(prof_json, str):
+        try:
+            prof_json = json.loads(prof_json)
+        except Exception:
+            prof_json = {}
+            
+    affective = prof_json.get("affective", {})
+    closeness = affective.get("closeness", 0.1)
+    receptivity = affective.get("sticker_receptivity", 0.5)
+    
+    profile_text = profile.get("profile_text", "").strip()
+    
+    def format_list(items):
+        if not items:
+            return "_Нет данных_"
+        return "\n".join(f"- {i}" for i in items)
+        
+    facts = format_list(prof_json.get("important_facts", []))
+    prefs = format_list(prof_json.get("stable_preferences", []))
+    styles = format_list(prof_json.get("communication_style", []))
+    relations = format_list(prof_json.get("relationship_to_arti", []))
+    
+    if mode == "rp":
+        status_rp = "Создатель (Волков)" if is_privileged else "Выживший / Пленник комплекса"
+        md = f"""# 🔮 TELEMA NUTRISCU: CHARACTER SHEET
+## Выживший: {user_name}
+
+| Характеристика | Значение |
+| :--- | :--- |
+| **Роль** | {status_rp} |
+| **Связь** | Напряжённая (Пленник) |
+| **Синхронизация с ИИ** | {closeness:.3f} / 1.000 |
+| **Реакция на стимулы** | {receptivity:.3f} / 1.000 |
+
+---
+
+## 📜 Характеристики и сюжетный выбор
+{profile_text}
+
+---
+
+## 📌 Ключевые сюжетные вехи
+{facts}
+
+---
+
+## 🎭 Склонности и предпочтения
+{prefs}
+
+---
+
+## 🗣️ Модель поведения субъекта
+{styles}
+
+---
+
+## ⚔️ Отношения с комплексом
+{relations}
+"""
+    else:
+        status = "Создатель / Приоритетный субъект 👑" if is_privileged else "Собеседник / Внешний наблюдатель 👤"
+        md = f"""# 📂 СЕКРЕТНОЕ ДОСЬЕ АНДРОИДА АРТИ
+## Субъект: {user_name}
+
+| Параметр | Значение |
+| :--- | :--- |
+| **ID в сети** | `{user_id}` |
+| **Статус** | {status} |
+| **Близость (Closeness)** | {closeness:.3f} / 1.000 |
+| **Восприимчивость к стикерам** | {receptivity:.3f} / 1.000 |
+
+---
+
+## 🧠 Данные анализа
+{profile_text}
+
+---
+
+## 📌 Важные факты о субъекте
+{facts}
+
+---
+
+## 🎭 Стабильные предпочтения
+{prefs}
+
+---
+
+## 🗣️ Особенности коммуникации
+{styles}
+
+---
+
+## 🤝 Связь с Арти
+{relations}
+"""
+    return md.strip()
+
+
 async def handle_my_profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/my_profile — отправляет карточку досье или лист персонажа с аватаром"""
     chat_id = update.effective_chat.id
@@ -3081,8 +3376,6 @@ async def handle_my_profile_command(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_text(msg, parse_mode='HTML')
         return
 
-    profile_text = profile["profile_text"].strip()
-    
     # 2. Получение аватарки пользователя
     photo_file = None
     try:
@@ -3093,7 +3386,6 @@ async def handle_my_profile_command(update: Update, context: ContextTypes.DEFAUL
         logger.warning(f"Не удалось получить аватарку пользователя в TG: {e}")
         
     if not photo_file:
-        # Проверяем и инициализируем локальную заглушку
         import os as _sys_os
         import requests as _requests
         fallback_path = _sys_os.path.join(_sys_os.path.dirname(__file__), "..", "outputs", "profile_fallback.jpg")
@@ -3113,50 +3405,109 @@ async def handle_my_profile_command(update: Update, context: ContextTypes.DEFAUL
             with open(fallback_path, "rb") as f:
                 photo_file = f.read()
 
-    # 3. Форматирование описания
-    from config import PRIVILEGED_USER_IDS
-    is_privileged = user_id in PRIVILEGED_USER_IDS
+    # 3. Форматирование описания и клавиатуры
+    caption = format_profile_caption(profile, "main", user_id, user_name, mode)
+    reply_markup = get_profile_keyboard(user_id, "main", mode)
     
-    if mode == "default":
-        status = "Создатель / Приоритетный субъект 👑" if is_privileged else "Собеседник / Внешний наблюдатель 👤"
-        caption = (
-            f"📁 <b>СЕКРЕТНОЕ ДОСЬЕ АНДРОИДА АРТИ</b>\n"
-            f"──────────────────────────────\n"
-            f"👤 <b>Субъект:</b> {_html.escape(user_name)}\n"
-            f"🆔 <b>ID в сети:</b> <code>{user_id}</code>\n"
-            f"🧬 <b>Статус:</b> {status}\n"
-            f"──────────────────────────────\n"
-            f"🧠 <b>Данные анализа:</b>\n"
-            f"<i>{_html.escape(profile_text[:800])}</i>"
-        )
-    else:
-        status_rp = "Создатель (Волков)" if is_privileged else "Выживший / Пленник комплекса"
-        caption = (
-            f"🔮 <b>TELEMA NUTRISCU: CHARACTER SHEET</b>\n"
-            f"──────────────────────────────\n"
-            f"👤 <b>Имя:</b> {_html.escape(user_name)}\n"
-            f"🎭 <b>Роль:</b> {status_rp}\n"
-            f"⚔️ <b>Отношения с Телемой:</b> Напряжённые (Пленник)\n"
-            f"──────────────────────────────\n"
-            f"📜 <b>Характеристики и сюжетный выбор:</b>\n"
-            f"<i>{_html.escape(profile_text[:800])}</i>"
-        )
-        
+    sent_msg = None
     if photo_file:
         try:
-            await context.bot.send_photo(
+            sent_msg = await context.bot.send_photo(
                 chat_id=chat_id,
                 photo=photo_file,
                 caption=caption,
+                reply_markup=reply_markup,
                 parse_mode='HTML',
                 reply_to_message_id=update.message.message_id
             )
-            return
         except Exception as e:
             logger.error(f"Не удалось отправить фото профиля: {e}")
             
-    # Запасной вариант — отправка просто текстом, если фото не ушло
-    await update.message.reply_text(caption, parse_mode='HTML')
+    if not sent_msg:
+        # Запасной вариант — отправка просто текстом, если фото не ушло
+        sent_msg = await update.message.reply_text(caption, reply_markup=reply_markup, parse_mode='HTML')
+
+    # Отправляем файл, если досье длинное
+    if sent_msg:
+        await _maybe_send_profile_document(
+            bot=context.bot,
+            chat_id=chat_id,
+            user_id=user_id,
+            user_name=user_name,
+            mode=mode,
+            profile=profile,
+            message_id=sent_msg.message_id,
+            context=context
+        )
+
+
+async def profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик интерактивных вкладок в досье пользователя."""
+    query = update.callback_query
+    data = query.data
+    
+    parts = data.split(":")
+    if len(parts) < 2:
+        return
+        
+    tab_part = parts[0]
+    tab = tab_part.replace("prof_", "")
+    target_user_id = int(parts[1])
+    
+    user_id = query.from_user.id
+    chat_id = query.message.chat_id
+    
+    if user_id != target_user_id:
+        await query.answer("❌ Это чужое досье. Напишите /my_profile, чтобы открыть своё.", show_alert=True)
+        return
+        
+    await query.answer()
+    
+    mode = "rp" if rp_mode_state.get(chat_id) else "default"
+    
+    profile = await MemoryUserProfile.get(chat_id, target_user_id, mode)
+    if not profile:
+        await query.edit_message_caption("❌ Ошибка: профиль не найден.", reply_markup=None)
+        return
+        
+    user_name = query.from_user.first_name or query.from_user.username or "Пользователь"
+    
+    caption = format_profile_caption(profile, tab, target_user_id, user_name, mode)
+    reply_markup = get_profile_keyboard(target_user_id, tab, mode)
+    
+    is_media = bool(query.message.photo)
+    try:
+        if is_media:
+            await query.edit_message_caption(
+                caption=caption,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+        else:
+            await query.edit_message_text(
+                text=caption,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+    except Exception as e:
+        err_msg = str(e).lower()
+        if "message is not modified" in err_msg or "exactly the same" in err_msg:
+            logger.info("Profile menu update ignored: content is identical.")
+        else:
+            logger.error(f"Ошибка при обновлении профиля в callback: {e}")
+            
+    # Если переключились на вкладку "main" (Анализ), отправляем файл, если он длинный и еще не отправлялся
+    if tab == "main":
+        await _maybe_send_profile_document(
+            bot=context.bot,
+            chat_id=chat_id,
+            user_id=target_user_id,
+            user_name=user_name,
+            mode=mode,
+            profile=profile,
+            message_id=query.message.message_id,
+            context=context
+        )
 
 
 async def handle_forget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):

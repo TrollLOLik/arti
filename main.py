@@ -46,7 +46,7 @@ from bot.commands import (
     handle_voices_command, handle_voice_save_command, handle_voice_delete_command,
     vclone_save_callback, saved_voice_callback,
     handle_my_profile_command, handle_forget_command, forget_callback,
-    handle_charge_command,
+    handle_charge_command, profile_callback,
 )
 from bot.queue import (
     generation_worker, dubbing_worker, vclone_worker, 
@@ -158,6 +158,7 @@ def run_with_restart():
             application.add_handler(CallbackQueryHandler(vclone_save_callback, pattern="^vsave:"))
             application.add_handler(CallbackQueryHandler(saved_voice_callback, pattern="^(vsel|vdel):"))
             application.add_handler(CallbackQueryHandler(forget_callback, pattern="^forget_fact:"))
+            application.add_handler(CallbackQueryHandler(profile_callback, pattern="^prof_"))
 
             # Обработчики сообщений
             application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_all_messages))
