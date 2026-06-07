@@ -38,8 +38,6 @@ async def save_chat_message(chat_id: int, user_name: str, message_text: str, use
     Унифицированная функция, которая:
     1) Сохраняет сообщение (с датой) в chat_history (до 30 сообщений).
     2) Инвалидирует кеш для этого чата.
-    
-    Примечание: dialog_history больше не используется - всё хранится в chat_history
     """
     try:
         timestamp = datetime.now()
@@ -227,7 +225,7 @@ def get_recent_messages_sync(chat_id, timeout) -> list:
 async def get_dialog_history_as_text(chat_id, limit=20) -> str:
     """
     Возвращает историю диалога (без дат) для данного chat_id в виде строки.
-    Использует chat_history вместо отдельной таблицы dialog_history.
+    Использует chat_history.
     """
     try:
         now = datetime.now()

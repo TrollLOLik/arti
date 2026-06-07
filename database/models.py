@@ -281,64 +281,6 @@ class ResponseStatus:
             """, chat_id, enabled)
 
 
-class LastMessage:
-    """Последние сообщения Арти пользователю"""
-    
-    @staticmethod
-    async def set(chat_id: int, user_id: int):
-        """Установить время последнего сообщения"""
-        async with get_db() as conn:
-            await conn.execute("""
-                INSERT INTO last_artis_messages (chat_id, user_id, message_time)
-                VALUES ($1, $2, NOW())
-                ON CONFLICT (chat_id, user_id)
-                DO UPDATE SET message_time = NOW()
-            """, chat_id, user_id)
-    
-    @staticmethod
-    async def get(chat_id: int, user_id: int) -> Optional[datetime]:
-        """Получить время последнего сообщения"""
-        async with get_db() as conn:
-            row = await conn.fetchrow("""
-                SELECT message_time
-                FROM last_artis_messages
-                WHERE chat_id = $1 AND user_id = $2
-            """, chat_id, user_id)
-            
-            return row['message_time'] if row else None
-
-
-class ImagePrompt:
-    """Ожидание промпта для изображения"""
-    
-    @staticmethod
-    async def set_waiting(chat_id: int, user_id: int, waiting: bool):
-        """Установить статус ожидания промпта"""
-        async with get_db() as conn:
-            if waiting:
-                await conn.execute("""
-                    INSERT INTO image_prompts (chat_id, user_id, waiting)
-                    VALUES ($1, $2, TRUE)
-                    ON CONFLICT (chat_id, user_id)
-                    DO UPDATE SET waiting = TRUE
-                """, chat_id, user_id)
-            else:
-                await conn.execute("""
-                    DELETE FROM image_prompts
-                    WHERE chat_id = $1 AND user_id = $2
-                """, chat_id, user_id)
-    
-    @staticmethod
-    async def is_waiting(chat_id: int, user_id: int) -> bool:
-        """Проверить, ожидается ли промпт"""
-        async with get_db() as conn:
-            row = await conn.fetchrow("""
-                SELECT waiting FROM image_prompts
-                WHERE chat_id = $1 AND user_id = $2
-            """, chat_id, user_id)
-            
-            return row['waiting'] if row else False
-
 
 class ChatModel:
     """Выбор модели ИИ для чата"""

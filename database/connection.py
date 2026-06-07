@@ -105,20 +105,7 @@ async def _create_tables_internal(conn):
         ON chat_history_rp(chat_id, timestamp DESC)
     """)
 
-    # Диалоговая история (без дат, для контекста)
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS dialog_history (
-            id SERIAL PRIMARY KEY,
-            chat_id BIGINT NOT NULL,
-            message_text TEXT NOT NULL,
-            created_at TIMESTAMP NOT NULL DEFAULT NOW()
-        )
-    """)
-    
-    await conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_dialog_history_chat_id 
-        ON dialog_history(chat_id)
-    """)
+
     
     # Активные пользователи
     await conn.execute("""
@@ -185,36 +172,7 @@ async def _create_tables_internal(conn):
         )
     """)
     
-    # Последние сообщения Арти
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS last_artis_messages (
-            id SERIAL PRIMARY KEY,
-            chat_id BIGINT NOT NULL,
-            user_id BIGINT NOT NULL,
-            message_time TIMESTAMP NOT NULL DEFAULT NOW(),
-            UNIQUE(chat_id, user_id)
-        )
-    """)
-    
-    await conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_last_artis_chat_user 
-        ON last_artis_messages(chat_id, user_id)
-    """)
-    
-    # Ожидание промпта для изображения
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS image_prompts (
-            chat_id BIGINT NOT NULL,
-            user_id BIGINT NOT NULL,
-            waiting BOOLEAN DEFAULT FALSE,
-            UNIQUE(chat_id, user_id)
-        )
-    """)
-    
-    await conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_image_prompts_chat_user 
-        ON image_prompts(chat_id, user_id)
-    """)
+
     
     # Выбор модели ИИ для чата
     await conn.execute("""
