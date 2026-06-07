@@ -432,6 +432,93 @@ async def run_tests():
     assert "emotional_introspection" not in strip_introspection_tags(user_injection)
     logger.info("[OK] User-supplied introspection tag stripped from input (injection blocked)")
 
+    # =========================================================================
+    # TEST 12: Авто-наполнение смыслового профиля пользователя
+    # =========================================================================
+    logger.info("\n--- TEST 12: Auto-populate user profile ---")
+    from database.models import MemoryUserProfile, MemoryFact
+    import memory.profiles as profiles_mod
+    from memory.profiles import maybe_refresh_user_profile, PROFILE_PLACEHOLDER
+
+    p_chat = chat_id + 7  # отдельные id, чтобы не пересекаться с предыдущими тестами
+    p_user = user_id + 7
+    p_empty = p_chat + 1
+
+    async with get_db() as conn:
+        await conn.execute("DELETE FROM memory_user_profiles WHERE chat_id = ANY($1::bigint[])", [p_chat, p_empty])
+        await conn.execute("DELETE FROM memory_facts WHERE chat_id = ANY($1::bigint[])", [p_chat, p_empty])
+
+    # Сидируем аффективный профиль-плейсхолдер (как его кладёт grow_closeness/apply_reinforcement)
+    seeded_aff = {"closeness": 0.42, "sticker_receptivity": 0.9, "dominant_sentiment": "neutral",
+                  "emotional_triggers": {}, "last_reinforcement_time": None}
+    await MemoryUserProfile.upsert(
+        chat_id=p_chat, user_id=p_user, mode=mode,
+        profile_json={"affective": seeded_aff}, profile_text=PROFILE_PLACEHOLDER,
+    )
+    # Сидируем факт, чтобы было из чего строить смысловой профиль
+    await MemoryFact.create(
+        chat_id=p_chat, user_id=p_user, mode=mode,
+        fact_text="Александр — создатель Арти, любит котов и чёрный юмор.", importance=0.8,
+    )
+
+    # Мокаем LLM-вызов профиля, чтобы тест не ходил в сеть и был детерминирован
+    calls = {"n": 0}
+
+    class _FakeResp:
+        def __init__(self, text):
+            self.text = text
+
+    canned = json.dumps({
+        "display_name": "Александр",
+        "stable_preferences": ["коты", "чёрный юмор"],
+        "communication_style": ["ирония"],
+        "important_facts": ["создатель Арти"],
+        "relationship_to_arti": ["создатель"],
+        "profile_text": "Александр — создатель Арти. Любит котов и чёрный юмор, общается с иронией.",
+    }, ensure_ascii=False)
+
+    def _fake_gen(*args, **kwargs):
+        calls["n"] += 1
+        return _FakeResp(canned)
+
+    orig_gen = profiles_mod.genai_client.models.generate_content
+    profiles_mod.genai_client.models.generate_content = _fake_gen
+    try:
+        # (a) Плейсхолдер -> профиль строится сразу, affective-блок сохраняется (не затирается)
+        rep = await maybe_refresh_user_profile(p_chat, p_user, mode, min_interval_sec=1800)
+        assert rep.get("status") == "applied", rep
+        prof = await MemoryUserProfile.get(p_chat, p_user, mode)
+        assert prof["profile_text"] and prof["profile_text"] != PROFILE_PLACEHOLDER, prof["profile_text"]
+        assert "создатель Арти" in prof["profile_text"], prof["profile_text"]
+        pj = json.loads(prof["profile_json"]) if isinstance(prof["profile_json"], str) else prof["profile_json"]
+        assert abs(pj.get("affective", {}).get("closeness", 0) - 0.42) < 1e-9, pj.get("affective")
+        assert abs(pj.get("affective", {}).get("sticker_receptivity", 0) - 0.9) < 1e-9, pj.get("affective")
+        assert pj.get("meta", {}).get("refreshed_at"), "meta.refreshed_at must be set"
+        assert calls["n"] == 1, calls
+        logger.info("[OK] Профиль построен из фактов; affective-блок (closeness/receptivity) сохранён")
+
+        # (b) Троттлинг: свежий профиль не перестраивается, LLM повторно не дёргается
+        rep2 = await maybe_refresh_user_profile(p_chat, p_user, mode, min_interval_sec=1800)
+        assert rep2.get("status") == "skipped" and rep2.get("reason") == "fresh", rep2
+        assert calls["n"] == 1, "LLM must NOT be called again while profile is fresh"
+        logger.info("[OK] Свежий профиль не перестраивается (троттлинг, без лишних LLM-вызовов)")
+
+        # (c) Интервал истёк (min_interval_sec=0) -> профиль перестраивается заново
+        rep3 = await maybe_refresh_user_profile(p_chat, p_user, mode, min_interval_sec=0)
+        assert rep3.get("status") == "applied", rep3
+        assert calls["n"] == 2, calls
+        logger.info("[OK] По истечении интервала профиль перестраивается заново")
+
+        # (d) Нет исходного материала -> skipped empty_source (фолбэк, без падения)
+        rep4 = await maybe_refresh_user_profile(p_empty, p_user, mode, min_interval_sec=0)
+        assert rep4.get("status") == "skipped" and rep4.get("reason") == "empty_source", rep4
+        logger.info("[OK] Без фактов профиль не строится (empty_source), без ошибок")
+    finally:
+        profiles_mod.genai_client.models.generate_content = orig_gen
+        async with get_db() as conn:
+            await conn.execute("DELETE FROM memory_user_profiles WHERE chat_id = ANY($1::bigint[])", [p_chat, p_empty])
+            await conn.execute("DELETE FROM memory_facts WHERE chat_id = ANY($1::bigint[])", [p_chat, p_empty])
+
     logger.info("\n[SUCCESS] All Premium Proactive & Emotional improvements verified perfectly!")
 
 if __name__ == "__main__":

@@ -7,6 +7,8 @@ from config import (
     MEMORY_CONSOLIDATION_APPLY,
     MEMORY_CONSOLIDATION_AUTO,
     MEMORY_CONSOLIDATION_INTERVAL,
+    MEMORY_PROFILE_AUTO,
+    MEMORY_PROFILE_MIN_INTERVAL_SEC,
     MEMORY_PROFILES_ENABLED,
     MEMORY_TIMELINE_ENABLED,
 )
@@ -16,7 +18,7 @@ from memory.consolidator import maybe_consolidate
 from memory.embeddings import EMBEDDING_MODEL, embed_document, embed_query
 from memory.extractor import extract_memory
 from memory.normalizer import compact_text, keyword_query, normalize_entity_name
-from memory.profiles import get_profile_context
+from memory.profiles import get_profile_context, maybe_refresh_user_profile
 from memory.timeline import get_timeline_context
 
 logger = logging.getLogger(__name__)
@@ -375,5 +377,31 @@ async def remember_exchange(
                 logger.exception("Ошибка фоновой консолидации памяти")
 
         consolidation_task.add_done_callback(_log_consolidation_error)
+
+    # Авто-перестроение смыслового профиля пользователя из накопленных фактов.
+    # Без этого profile_json содержит только аффективный блок, а /my_profile показывает
+    # плейсхолдер «Новый субъект общения.». Троттлинг — внутри maybe_refresh_user_profile.
+    if (
+        MEMORY_PROFILES_ENABLED
+        and MEMORY_PROFILE_AUTO
+        and user_id
+        and (created_facts > 0 or summary or entity_by_name)
+    ):
+        profile_task = asyncio.create_task(
+            maybe_refresh_user_profile(
+                chat_id=chat_id,
+                user_id=user_id,
+                mode=mode,
+                min_interval_sec=MEMORY_PROFILE_MIN_INTERVAL_SEC,
+            )
+        )
+
+        def _log_profile_error(task):
+            try:
+                task.result()
+            except Exception:
+                logger.exception("Ошибка фонового перестроения профиля пользователя")
+
+        profile_task.add_done_callback(_log_profile_error)
 
     logger.info(f"Память обновлена: chat={chat_id}, facts={created_facts}, entities={len(entity_by_name)}")
