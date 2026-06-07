@@ -616,7 +616,11 @@ async def run_tests():
     assert len(REACTION_EFFECTS) >= 60, len(REACTION_EFFECTS)
     bad_moods = [(k, m) for k, v in REACTION_EFFECTS.items() for m in v["mood"] if m not in _SUPPORTED]
     assert not bad_moods, bad_moods
-    logger.info(f"[OK] Покрыто {len(REACTION_EFFECTS)} реакций; все настроения из whitelist")
+    # Калибровка: одна реакция нудит настроение мягко (не более 0.10 на эмоцию),
+    # иначе единичная реакция перебивает живой диалог.
+    too_strong = [(k, m, d) for k, v in REACTION_EFFECTS.items() for m, d in v["mood"].items() if d > 0.10]
+    assert not too_strong, too_strong
+    logger.info(f"[OK] Покрыто {len(REACTION_EFFECTS)} реакций; настроения из whitelist, дельты ≤ 0.10")
 
     # (b) Нормализация VS16: сердечко с/без U+FE0F матчится в один эффект
     assert classify_reactions(["\u2764\ufe0f"]) == classify_reactions(["\u2764"]) is not None
@@ -624,17 +628,17 @@ async def run_tests():
 
     # (c) Разбитое сердце → грусть + негатив + нежный авто-ответ
     hb = classify_reactions(["\U0001f494"])
-    assert hb["mood"].get("sad") == 0.20 and hb["reinforcement"] == "negative" and hb["reply_mood"] == "tender", hb
+    assert hb["mood"].get("sad") == 0.09 and hb["reinforcement"] == "negative" and hb["reply_mood"] == "tender", hb
     # огонь → азарт (teasing) с авто-ответом; зевок → скука без ответа
     assert classify_reactions(["\U0001f525"])["reply_mood"] == "teasing"
     yawn = classify_reactions(["\U0001f971"])
-    assert yawn["reply_mood"] is None and yawn["reinforcement"] == "negative" and yawn["mood"].get("bored") == 0.16, yawn
+    assert yawn["reply_mood"] is None and yawn["reinforcement"] == "negative" and yawn["mood"].get("bored") == 0.07, yawn
     logger.info("[OK] 💔→sad/tender, 🔥→teasing, 🥱→bored корректны")
 
     # (d) Агрегация нескольких реакций: негатив приоритетнее, настроения суммируются
     mix = classify_reactions(["\U0001f44d", "\U0001f44e"])
-    assert mix["reinforcement"] == "negative" and mix["mood"].get("angry") == 0.12, mix
-    assert round(mix["mood"].get("happy", 0), 3) == 0.08, mix
+    assert mix["reinforcement"] == "negative" and mix["mood"].get("angry") == 0.05, mix
+    assert round(mix["mood"].get("happy", 0), 3) == 0.04, mix
     logger.info("[OK] Агрегация: negative приоритетнее positive, дельты суммируются")
 
     # (e) Неизвестная (нереакционная) эмодзи игнорируется

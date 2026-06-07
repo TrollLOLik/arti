@@ -1772,6 +1772,12 @@ _last_reaction_reply: dict = {}
 REACTION_REPLY_MIN_INTERVAL = 150.0
 REACTION_REPLY_PROB = 0.5
 
+# Анти-спам сдвига настроения от реакций: первая реакция нудит вектор настроения,
+# повторные в пределах окна игнорируются — иначе спам реакциями копит настроение
+# до максимума (у настроения, в отличие от подкрепления профиля, своего кулдауна нет).
+_last_reaction_mood: dict = {}
+REACTION_MOOD_COOLDOWN = 60.0
+
 
 async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -1823,9 +1829,19 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
     if effect["reinforcement"]:
         await MemoryUserProfile.apply_reinforcement(chat_id, user_id, mode, effect["reinforcement"])
 
-    # 2) Сдвиг вектора настроения Арти
+    # 2) Сдвиг вектора настроения Арти (с анти-спам кулдауном на чат)
     if effect["mood"]:
-        await ChatEmotionalState.apply_mood_delta(chat_id, effect["mood"], source="reaction")
+        import time as _t
+        now_mood = _t.monotonic()
+        last_mood = _last_reaction_mood.get(chat_id)
+        if last_mood is not None and (now_mood - last_mood) < REACTION_MOOD_COOLDOWN:
+            logger.info(
+                f"Сдвиг настроения от реакции пропущен (cooldown) в чате {chat_id}: "
+                f"{REACTION_MOOD_COOLDOWN - (now_mood - last_mood):.0f}с осталось"
+            )
+        else:
+            _last_reaction_mood[chat_id] = now_mood
+            await ChatEmotionalState.apply_mood_delta(chat_id, effect["mood"], source="reaction")
 
     # 3) Ненавязчивый ответ на сильную реакцию
     await _maybe_reply_to_reaction(context, chat_id, user_id, message_id, mode, effect["reply_mood"])
