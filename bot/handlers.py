@@ -46,6 +46,27 @@ from bot.commands import (
 
 logger = logging.getLogger(__name__)
 
+# Per-user rate limiter for LLM text generation (S-04).
+# Ограничивает число текстовых сообщений, запускающих LLM, до _TEXT_RATE_LIMIT за _TEXT_RATE_WINDOW секунд.
+_TEXT_RATE_LIMIT = 30
+_TEXT_RATE_WINDOW = 60  # seconds
+_user_text_timestamps: dict[int, list[float]] = {}
+
+
+def _is_text_rate_limited(user_id: int) -> bool:
+    """Возвращает True, если пользователь превысил лимит текстовых LLM-запросов."""
+    import time
+    now = time.monotonic()
+    timestamps = _user_text_timestamps.get(user_id, [])
+    # Удаляем старые записи за пределами окна
+    timestamps = [t for t in timestamps if now - t < _TEXT_RATE_WINDOW]
+    if len(timestamps) >= _TEXT_RATE_LIMIT:
+        _user_text_timestamps[user_id] = timestamps
+        return True
+    timestamps.append(now)
+    _user_text_timestamps[user_id] = timestamps
+    return False
+
 
 async def _save_message(chat_id: int, user_name: str, message_text: str, user_id: int = None):
     """Сохраняет сообщение в обычную или RP-историю в зависимости от режима."""
@@ -82,6 +103,11 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     message_id = update.message.message_id
 
     if not await is_responses_enabled(chat_id):
+        return
+
+    # Per-user rate limit для LLM-вызовов (S-04: cost abuse protection)
+    if _is_text_rate_limited(user_id):
+        logger.warning(f"Rate limit: user {user_id} в чате {chat_id} превысил лимит текстовых запросов")
         return
 
     user_text = update.message.text or ""
@@ -224,7 +250,12 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # Обычное текстовое сообщение
     user_message = update.message.text or ""
-    
+
+    # Ограничение длины пользовательского ввода (S-08: защита от cost abuse)
+    _MAX_USER_MESSAGE_LEN = 8000
+    if len(user_message) > _MAX_USER_MESSAGE_LEN:
+        user_message = user_message[:_MAX_USER_MESSAGE_LEN] + "…[обрезано]"
+
     # --- БЛОК ЛОГИКИ REPLY ---
     base64_image_reply = None
     document_text_reply = None
