@@ -158,11 +158,15 @@ async def build_memory_context(
         if relevant_wiki:
             lines.append(f"[Релевантный лор вселенной ({relevant_wiki.get('title')})]:\n{compact_text(relevant_wiki.get('content') or '', 1500)}")
 
+        # --- Пользовательские данные (профиль, сущности, факты, фрагменты) ---
+        # Оборачиваем в <user_memory> fencing (S-02: prompt injection protection).
+        user_data_lines: list[str] = []
+
         if profile_context:
-            lines.append(profile_context)
+            user_data_lines.append(profile_context)
 
         if timeline_context:
-            lines.append(timeline_context)
+            user_data_lines.append(timeline_context)
 
         if all_related_entities:
             # Разделяем на непосредственно упомянутые (score >= 10.0) и связанные (score < 10.0)
@@ -181,50 +185,56 @@ async def build_memory_context(
                         related_names.append(name)
             
             if direct_names:
-                lines.append("Сущности в текущем контексте: " + ", ".join(direct_names))
+                user_data_lines.append("Сущности в текущем контексте: " + ", ".join(direct_names))
             if related_names:
-                lines.append("Связанные сущности: " + ", ".join(related_names))
+                user_data_lines.append("Связанные сущности: " + ", ".join(related_names))
 
         if graph_relations:
-            lines.append("Связи в текущем контексте:")
+            user_data_lines.append("Связи в текущем контексте:")
             seen_relations = set()
             for relation in graph_relations[:8]:
                 text = _format_relation(relation)
                 if not text or text in seen_relations:
                     continue
                 seen_relations.add(text)
-                lines.append(f"- {text}")
+                user_data_lines.append(f"- {text}")
 
         fact_ids = []
         if facts:
-            lines.append("Ассоциации:")
+            user_data_lines.append("Ассоциации:")
             for fact in facts:
                 fact_ids.append(fact.get("id"))
                 text = compact_text(fact.get("fact_text") or fact.get("summary") or "", 320)
                 if text:
-                    lines.append(f"- {text}")
+                    user_data_lines.append(f"- {text}")
 
         if chunks:
-            lines.append("Семантически похожие фрагменты истории:")
+            user_data_lines.append("Семантически похожие фрагменты истории:")
             for chunk in chunks:
                 text = compact_text(chunk.get("chunk_text") or "", 420)
                 if text:
                     similarity = chunk.get("similarity")
                     suffix = f" (similarity={similarity:.3f})" if isinstance(similarity, float) else ""
-                    lines.append(f"- {text}{suffix}")
+                    user_data_lines.append(f"- {text}{suffix}")
 
         if messages:
-            lines.append("Похожие прошлые сообщения:")
+            user_data_lines.append("Похожие прошлые сообщения:")
             for message in messages:
                 user_name = message.get("user_name") or "Участник"
                 text = compact_text(message.get("message_text") or "", 240)
                 if text:
-                    lines.append(f"- {user_name}: {text}")
+                    user_data_lines.append(f"- {user_name}: {text}")
+
+        # Fence user-sourced data to prevent prompt injection
+        if user_data_lines:
+            lines.append("<user_memory>")
+            lines.extend(user_data_lines[:10])
+            lines.append("</user_memory>")
 
         if fact_ids:
             await MemoryFact.mark_used(fact_ids)
 
-        return "\n".join(lines[:14])
+        return "\n".join(lines)
     except Exception as e:
         logger.warning(f"Ошибка чтения памяти: {e}")
         return ""
