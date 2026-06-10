@@ -140,7 +140,7 @@ async def download_file(url: str, target_path: Path | str) -> Path:
         import aiohttp
         timeout = aiohttp.ClientTimeout(total=CATBOX_TIMEOUT)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, ssl=False) as response:
+            async with session.get(url) as response:
                 response.raise_for_status()
                 content = await response.read()
                 await asyncio.to_thread(path.write_bytes, content)

@@ -34,7 +34,10 @@ async def init_db():
     db_password = os.getenv("DB_PASSWORD", "")
     
     if not db_password:
-        logger.warning("DB_PASSWORD не установлен, используем пустой пароль")
+        logger.warning(
+            "DB_PASSWORD не установлен — подключение к БД с пустым паролем. "
+            "Установите переменную окружения DB_PASSWORD для продакшен-среды."
+        )
     
     try:
         logger.info(f"Подключение к PostgreSQL: {db_host}:{db_port}/{db_name}")

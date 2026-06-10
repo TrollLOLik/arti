@@ -9,12 +9,25 @@ from pathlib import Path
 from typing import Optional, Union
 
 import requests
+from urllib.parse import urlparse
 from PIL import Image
 from dotenv import dotenv_values
 
 from config import YEPAPI_API_KEY
 
 logger = logging.getLogger(__name__)
+
+# Разрешённые хосты для загрузки изображений (S-12: SSRF protection)
+_ALLOWED_IMAGE_HOSTS = {"api.telegram.org", "files.catbox.moe", "litter.catbox.moe"}
+
+
+def _is_safe_image_url(url: str) -> bool:
+    """Проверяет, что URL ведёт на доверенный хост."""
+    try:
+        parsed = urlparse(url)
+        return parsed.scheme in ("https", "http") and parsed.hostname in _ALLOWED_IMAGE_HOSTS
+    except Exception:
+        return False
 
 YEPAPI_BASE_URL = "https://api.yepapi.com/v1"
 IMAGE_MODEL = "google/nano-banana-3-flash"
@@ -143,6 +156,8 @@ def _to_data_url(image: Union[str, bytes]) -> str:
         content_type = _detect_image_mime(image, "image/png")
         return f"data:{content_type};base64,{base64.b64encode(image).decode('utf-8')}"
 
+    if not _is_safe_image_url(image):
+        raise ValueError(f"Blocked image URL from untrusted host: {urlparse(image).hostname}")
     response = requests.get(image, timeout=60)
     response.raise_for_status()
     content_type = response.headers.get("Content-Type", "image/jpeg").split(";")[0].lower()
@@ -174,6 +189,8 @@ def _load_image_bytes(image: Union[str, bytes]) -> bytes:
         return image
     if isinstance(image, str) and image.startswith("data:image/"):
         return base64.b64decode(image.split(",", 1)[1])
+    if not _is_safe_image_url(image):
+        raise ValueError(f"Blocked image URL from untrusted host: {urlparse(image).hostname}")
     response = requests.get(image, timeout=60)
     response.raise_for_status()
     return response.content
@@ -261,6 +278,8 @@ def _to_sora_image_data(image: Union[str, bytes], aspect_ratio: str = "16:9") ->
     elif isinstance(image, str) and image.startswith("data:image/"):
         image_bytes = base64.b64decode(image.split(",", 1)[1])
     else:
+        if not _is_safe_image_url(image):
+            raise ValueError(f"Blocked image URL from untrusted host: {urlparse(image).hostname}")
         response = requests.get(image, timeout=60)
         response.raise_for_status()
         image_bytes = response.content

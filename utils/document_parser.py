@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-import PyPDF2
+import pypdf
 from docx import Document
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,7 @@ async def extract_text_from_file(file_path: Path, file_name: str) -> str:
                 extracted_text = f.read()
         elif file_name.lower().endswith('.pdf'):
             with open(file_path, 'rb') as f:
-                reader = PyPDF2.PdfReader(f)
+                reader = pypdf.PdfReader(f)
                 for page in reader.pages:
                     text = page.extract_text()
                     if text:
@@ -50,7 +50,7 @@ async def extract_document_text(context, doc) -> Optional[str]:
                 extracted_text = f.read()
         elif doc.file_name.lower().endswith('.pdf'):
             with open(file_path, 'rb') as f:
-                reader = PyPDF2.PdfReader(f)
+                reader = pypdf.PdfReader(f)
                 for page in reader.pages:
                     text = page.extract_text()
                     if text: extracted_text += text + "\n"
