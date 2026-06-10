@@ -1,6 +1,7 @@
 """
 Генерация текстовых ответов: гибридный роутинг (Google AI Studio + OmniRoute для Qwen)
 """
+import os
 import re
 import json
 import random
@@ -464,7 +465,7 @@ async def generate_response_stream(
     if not model.lower().startswith("gemini"):
         client = AsyncOpenAI(
             base_url="http://localhost:20128/v1",
-            api_key="sk-5d8d8294f9d6911b-3eb135-8f0e8f4f"
+            api_key=os.getenv("OMNIROUTE_API_KEY", "")
         )
 
         # Если есть координаты — добавляем в промпт для non-Gemini моделей

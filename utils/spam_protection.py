@@ -43,62 +43,105 @@ SPAM_UNBLOCK_REPLIES = [
 
 
 async def check_spam(chat_id, user_id, command_name):
-    """Проверка спама командами"""
+    """Проверка спама командами.
+
+    Использует SELECT ... FOR UPDATE внутри транзакции для предотвращения
+    race condition при параллельных запросах (S-06).
+    При ошибке возвращает 'blocked' (fail-closed, S-07).
+    """
     try:
+        import json as _json
+        from database.connection import get_db
+
         now = datetime.now()
-        data = await SpamProtection.get_or_create(chat_id, user_id)
-
-        # Проверяем блокировку
-        if data['blocked_until'] and now < data['blocked_until']:
-            return 'blocked'
-
-        # Очищаем старые времена команд (старше SPAM_INTERVAL)
         interval_delta = SPAM_INTERVAL if isinstance(SPAM_INTERVAL, timedelta) else timedelta(seconds=SPAM_INTERVAL)
-        command_timestamps = []
-        for ts in data['command_timestamps']:
-            if isinstance(ts, str):
-                try:
-                    ts = datetime.fromisoformat(ts)
-                except:
-                    continue
-            if isinstance(ts, datetime) and (now - ts) <= interval_delta:
-                command_timestamps.append(ts)
-        
-        # Добавляем текущее время
-        command_timestamps.append(now)
 
-        # Проверяем порог спама
-        if len(command_timestamps) == SPAM_THRESHOLD and not data['warnings_sent']:
-            await SpamProtection.update(
-                chat_id, user_id,
-                command_timestamps=command_timestamps,
-                command_count=len(command_timestamps),
-                warnings_sent=True,
-                last_command_time=now
-            )
-            return 'spam_warning'
-        elif len(command_timestamps) > SPAM_THRESHOLD:
-            await SpamProtection.update(
-                chat_id, user_id,
-                blocked_until=now + BLOCK_DURATION,
-                command_timestamps=[],
-                command_count=0,
-                last_command_time=now
-            )
-            return 'blocked_now'
-        
-        # Обновляем в БД (одним запросом)
-        await SpamProtection.update(
-            chat_id, user_id,
-            command_timestamps=command_timestamps,
-            command_count=len(command_timestamps),
-            last_command_time=now
-        )
-        
-        return 'ok'
+        async with get_db() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow("""
+                    SELECT blocked_until, warnings_sent, last_command_time,
+                           command_count, command_timestamps
+                    FROM spam_protection
+                    WHERE chat_id = $1 AND user_id = $2
+                    FOR UPDATE
+                """, chat_id, user_id)
+
+                if row is None:
+                    await conn.execute("""
+                        INSERT INTO spam_protection (chat_id, user_id)
+                        VALUES ($1, $2)
+                    """, chat_id, user_id)
+                    row = await conn.fetchrow("""
+                        SELECT blocked_until, warnings_sent, last_command_time,
+                               command_count, command_timestamps
+                        FROM spam_protection
+                        WHERE chat_id = $1 AND user_id = $2
+                        FOR UPDATE
+                    """, chat_id, user_id)
+
+                # Проверяем блокировку
+                if row['blocked_until'] and now < row['blocked_until']:
+                    return 'blocked'
+
+                # Парсим timestamps
+                timestamps_json = row['command_timestamps'] or []
+                if isinstance(timestamps_json, str):
+                    try:
+                        timestamps_json = _json.loads(timestamps_json)
+                    except (ValueError, TypeError):
+                        timestamps_json = []
+
+                command_timestamps = []
+                for ts in timestamps_json:
+                    if isinstance(ts, str):
+                        try:
+                            ts = datetime.fromisoformat(ts)
+                        except (ValueError, TypeError):
+                            continue
+                    if isinstance(ts, datetime) and (now - ts) <= interval_delta:
+                        command_timestamps.append(ts)
+
+                command_timestamps.append(now)
+
+                # Проверяем порог спама
+                if len(command_timestamps) == SPAM_THRESHOLD and not row['warnings_sent']:
+                    ts_str = _json.dumps([t.isoformat() for t in command_timestamps])
+                    await conn.execute("""
+                        UPDATE spam_protection
+                        SET command_timestamps = $3::jsonb,
+                            command_count = $4,
+                            warnings_sent = TRUE,
+                            last_command_time = $5
+                        WHERE chat_id = $1 AND user_id = $2
+                    """, chat_id, user_id, ts_str, len(command_timestamps), now)
+                    return 'spam_warning'
+
+                elif len(command_timestamps) > SPAM_THRESHOLD:
+                    await conn.execute("""
+                        UPDATE spam_protection
+                        SET blocked_until = $3,
+                            command_timestamps = '[]'::jsonb,
+                            command_count = 0,
+                            last_command_time = $4
+                        WHERE chat_id = $1 AND user_id = $2
+                    """, chat_id, user_id, now + BLOCK_DURATION, now)
+                    return 'blocked_now'
+
+                # Обычное обновление
+                ts_str = _json.dumps([t.isoformat() for t in command_timestamps])
+                await conn.execute("""
+                    UPDATE spam_protection
+                    SET command_timestamps = $3::jsonb,
+                        command_count = $4,
+                        last_command_time = $5
+                    WHERE chat_id = $1 AND user_id = $2
+                """, chat_id, user_id, ts_str, len(command_timestamps), now)
+
+                return 'ok'
+
     except Exception as e:
         logger.error(f"Ошибка при проверке спама: {e}", exc_info=True)
-        return 'ok'
+        return 'blocked'
 
 
 async def handle_spam_protection(update, context, command_name) -> bool:

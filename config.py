@@ -125,7 +125,10 @@ ARTI_STICKER_SET = os.getenv("ARTI_STICKER_SET", "arti_stickers").strip()
 privileged_ids_env = os.getenv("PRIVILEGED_USER_IDS", "")
 PRIVILEGED_USER_IDS = [int(x.strip()) for x in privileged_ids_env.split(",") if x.strip().isdigit()]
 if not PRIVILEGED_USER_IDS:
-    PRIVILEGED_USER_IDS = [1883131998]
+    logging.warning(
+        "PRIVILEGED_USER_IDS не задан — список привилегированных пользователей пуст. "
+        "Установите переменную окружения PRIVILEGED_USER_IDS для назначения администраторов."
+    )
 
 # ============================================================================
 # ГЛОБАЛЬНЫЕ СОСТОЯНИЯ (in-memory, для быстрого доступа)

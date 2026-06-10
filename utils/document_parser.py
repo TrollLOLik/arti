@@ -37,7 +37,9 @@ async def extract_text_from_file(file_path: Path, file_name: str) -> str:
 
 async def extract_document_text(context, doc) -> Optional[str]:
     """Скачивает и извлекает текст из документа для reply-анализа."""
-    file_path = Path(f"temp_extract_{os.urandom(4).hex()}_{doc.file_name}")
+    safe_name = Path(doc.file_name).name if doc.file_name else "unknown"
+    file_path = Path("temp") / f"temp_extract_{os.urandom(4).hex()}_{safe_name}"
+    file_path.parent.mkdir(exist_ok=True)
     try:
         file = await context.bot.get_file(doc.file_id)
         await file.download_to_drive(file_path)
