@@ -4,6 +4,7 @@
 import re
 import random
 import logging
+import asyncio
 from typing import Optional, List, Tuple, Dict, Any
 
 import telegram
@@ -33,10 +34,11 @@ logger = logging.getLogger(__name__)
 
 IMAGE_ASPECT_OPTIONS = ["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9"]
 IMAGE_RESOLUTION_OPTIONS = ["512", "1K", "2K", "4K"]
+IMAGE_NUM_OPTIONS = ["1", "2", "3", "4"]
 
 
 def _image_default_flow(image_urls=None):
-    return {"aspect_ratio": "1:1", "resolution": "1K", "image_urls": image_urls or []}
+    return {"aspect_ratio": "1:1", "resolution": "1K", "num_images": 1, "image_urls": image_urls or []}
 
 
 def _image_reply_keyboard(options, columns=2):
@@ -54,7 +56,8 @@ def _image_task(chat_id, prompt, context, message_id, image_urls, user_name, flo
         'image_urls': image_urls,
         'user_name': user_name,
         'image_aspect_ratio': flow.get("aspect_ratio", "1:1"),
-        'image_resolution': flow.get("resolution", "1K")
+        'image_resolution': flow.get("resolution", "1K"),
+        'image_num_images': flow.get("num_images", 1)
     }
 
 
@@ -69,7 +72,7 @@ async def _start_image_settings_flow(update: Update, context: ContextTypes.DEFAU
         "image_urls": image_urls or []
     }
     await update.message.reply_text(
-        "🎨 <b>Генерация изображения: шаг 1/3</b>\n\nВыбери ориентацию:",
+        "🎨 <b>Генерация изображения: шаг 1/4</b>\n\nВыбери ориентацию:",
         reply_markup=_image_reply_keyboard(IMAGE_ASPECT_OPTIONS, columns=3),
         parse_mode='HTML'
     )
@@ -111,7 +114,7 @@ async def handle_image_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         flow["step"] = "resolution"
         context.user_data["image_flow"] = flow
         await update.message.reply_text(
-            "🖼 <b>Генерация изображения: шаг 2/3</b>\n\nВыбери выходное разрешение:",
+            "🖼 <b>Генерация изображения: шаг 2/4</b>\n\nВыбери выходное разрешение:",
             reply_markup=_image_reply_keyboard(IMAGE_RESOLUTION_OPTIONS, columns=2),
             parse_mode='HTML'
         )
@@ -123,12 +126,27 @@ async def handle_image_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             return True
         resolution = text
         flow["resolution"] = resolution
+        flow["step"] = "num_images"
+        context.user_data["image_flow"] = flow
+        await update.message.reply_text(
+            "🔢 <b>Генерация изображения: шаг 3/4</b>\n\nВыбери количество изображений для генерации:",
+            reply_markup=_image_reply_keyboard(IMAGE_NUM_OPTIONS, columns=4),
+            parse_mode='HTML'
+        )
+        return True
+
+    if step == "num_images":
+        if text not in IMAGE_NUM_OPTIONS:
+            await update.message.reply_text("Выбери количество кнопкой ниже (1-4).", reply_markup=_image_reply_keyboard(IMAGE_NUM_OPTIONS, columns=4))
+            return True
+        num_images = int(text)
+        flow["num_images"] = num_images
         flow["step"] = "prompt"
         flow["waiting"] = True
         context.user_data["image_flow"] = flow
         waiting_for_image_prompt[chat_id][user_id] = True
         await update.message.reply_text(
-            "✍️ <b>Генерация изображения: шаг 3/3</b>\n\nТеперь отправь prompt текстом или картинку с caption.\n\n"
+            "✍️ <b>Генерация изображения: шаг 4/4</b>\n\nТеперь отправь prompt текстом или картинку с caption.\n\n"
             "💡 <i>Для отмены введи /cancel</i>",
             reply_markup=telegram.ReplyKeyboardRemove(),
             parse_mode='HTML'
@@ -518,10 +536,25 @@ async def handle_image_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await _start_image_settings_flow(update, context, image_urls)
         return
     prompt = " ".join(context.args)
+    num_images = 1
+    match = re.search(r'\b(?:-n|--num)\s+(\d+)\b', prompt)
+    if match:
+        try:
+            num_images = int(match.group(1))
+            num_images = max(1, min(4, num_images))
+        except (ValueError, TypeError):
+            num_images = 1
+        prompt = re.sub(r'\b(?:-n|--num)\s+(\d+)\b', '', prompt).strip()
+        prompt = re.sub(r'\s+', ' ', prompt)
+
+    flow = _image_default_flow(image_urls)
+    flow["num_images"] = num_images
+
     await enqueue_generation(
         _image_task(
             chat_id, prompt, context, update.message.message_id,
-            image_urls, user.first_name or user.username or "Пользователь"
+            image_urls, user.first_name or user.username or "Пользователь",
+            flow=flow
         ),
         context.bot,
         chat_id
@@ -758,9 +791,78 @@ async def rps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ============================================================================
-# /model (Выбор модели ИИ)
-# ============================================================================
+
+async def _ping_single_model(model_info: dict, sem: asyncio.Semaphore) -> Tuple[str, Any]:
+    """Вспомогательная функция для пинга одной модели.
+    Возвращает (model_id, результат). Результат может быть float (секунды) или str (ошибка).
+    """
+    import asyncio
+    import time
+    from openai import AsyncOpenAI
+    from google.genai import types
+    from config import genai_client
+
+    model_id = model_info["model"]
+    
+    async with sem:
+        start_time = time.monotonic()
+        # Задаем таймаут 5 секунд
+        timeout_sec = 5.0
+        
+        try:
+            if model_id.lower().startswith("gemini"):
+                # Запускаем в потоке, так как клиент google-genai синхронный
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        genai_client.models.generate_content,
+                        model=model_id,
+                        contents="1",
+                        config=types.GenerateContentConfig(
+                            max_output_tokens=5, # Увеличили до 5, чтобы избежать валидационных ошибок у некоторых провайдеров
+                            temperature=0.0
+                        )
+                    ),
+                    timeout=timeout_sec
+                )
+                if response and response.text:
+                    return model_id, time.monotonic() - start_time
+                return model_id, "empty"
+            else:
+                client = AsyncOpenAI(
+                    base_url="http://localhost:20128/v1",
+                    api_key="sk-5d8d8294f9d6911b-3eb135-8f0e8f4f",
+                    max_retries=0 # Отключаем ретраи, чтобы не копить таймауты при перегрузке
+                )
+                response = await asyncio.wait_for(
+                    client.chat.completions.create(
+                        model=model_id,
+                        messages=[{"role": "user", "content": "1"}],
+                        max_tokens=5, # Увеличили до 5, чтобы избежать валидационных ошибок у некоторых провайдеров
+                        temperature=0.0
+                    ),
+                    timeout=timeout_sec
+                )
+                if response and response.choices and response.choices[0].message.content:
+                    return model_id, time.monotonic() - start_time
+                return model_id, "empty"
+        except Exception as e:
+            logger.warning(f"Ошибка пинга модели {model_id}: {e}")
+            return model_id, "error"
+
+
+async def run_pings_for_all_active_models() -> Dict[str, Any]:
+    """Запускает параллельный пинг всех активных моделей с ограничением конкурентности."""
+    import asyncio
+    from database.models import AIModel
+    
+    # Ограничиваем конкурентность до 3 запросов, чтобы не перегружать локальный прокси
+    sem = asyncio.Semaphore(3)
+    
+    models = await AIModel.get_all_active()
+    tasks = [_ping_single_model(m, sem) for m in models]
+    results = await asyncio.gather(*tasks)
+    return dict(results)
+
 
 def get_model_display_name(model_info: dict) -> str:
     name = model_info["name"]
@@ -845,8 +947,18 @@ async def _show_model_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, e
             text += "<i>Модели не найдены по заданным критериям.</i>\n\n"
         else:
             text += f"Страница <b>{flow['page'] + 1}</b> из <b>{total_pages}</b>\n\n"
+            pings = flow.get("pings") or {}
             for m in models:
                 display_name = get_model_display_name(m)
+                
+                model_id = m["model"]
+                if model_id in pings:
+                    ping_val = pings[model_id]
+                    if isinstance(ping_val, (int, float)):
+                        display_name += f" ({ping_val:.2f}s)"
+                    else:
+                        display_name += " (❌ ошибка)"
+                
                 if m["model"] == current_model:
                     display_name = f"✅ {display_name}"
                 keyboard.append([InlineKeyboardButton(display_name, callback_data=f"model_choose_{m['key']}")])
@@ -887,6 +999,9 @@ async def _show_model_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, e
             InlineKeyboardButton("🏷️ Фильтры", callback_data="model_filter_menu")
         ]
         keyboard.append(control_row)
+        
+        # Кнопка пинга
+        keyboard.append([InlineKeyboardButton("⚡ Проверить скорость ответов", callback_data="model_ping_check")])
         
         # Сброс
         if flow["query"] or flow["provider"] or flow["speed"] or flow["intelligence"]:
@@ -974,7 +1089,7 @@ async def _show_model_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, e
 
 
 async def handle_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /model — выбор модели ИИ (только для админов)."""
+    """Команда /model или /models — выбор модели ИИ и проверка пинга (только для админов)."""
     user = update.message.from_user
     chat_id = update.effective_chat.id
 
@@ -989,17 +1104,40 @@ async def handle_model_command(update: Update, context: ContextTypes.DEFAULT_TYP
     query_val = " ".join(args).strip() if args else None
 
     # Инициализация состояния
-    context.user_data["model_flow"] = {
+    flow = {
         "page": 0,
         "query": query_val,
         "provider": None,
         "speed": None,
         "intelligence": None,
         "menu_message_id": None,
-        "menu_mode": "list"
+        "menu_mode": "list",
+        "pings": {}
     }
+    context.user_data["model_flow"] = flow
 
-    await _show_model_menu(update, context, edit=False)
+    # Если вызвана команда /models, сразу запускаем проверку пинга
+    run_pings_immediately = False
+    if update.message and update.message.text:
+        cmd = update.message.text.split()[0].lower()
+        if "models" in cmd:
+            run_pings_immediately = True
+
+    if run_pings_immediately:
+        sent = await update.message.reply_text(
+            "🤖 <b>Выбор модели ИИ</b>\n\n⚡ Измеряю скорость ответов моделей, пожалуйста, подождите...",
+            parse_mode='HTML'
+        )
+        flow["menu_message_id"] = sent.message_id
+        
+        try:
+            flow["pings"] = await run_pings_for_all_active_models()
+        except Exception as e:
+            logger.error(f"Ошибка при автоматическом пинге моделей: {e}")
+            
+        await _show_model_menu(update, context, edit=True)
+    else:
+        await _show_model_menu(update, context, edit=False)
 
 
 async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1023,7 +1161,8 @@ async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "speed": None,
             "intelligence": None,
             "menu_message_id": query.message.message_id,
-            "menu_mode": "list"
+            "menu_mode": "list",
+            "pings": {}
         }
         
     flow = context.user_data["model_flow"]
@@ -1031,6 +1170,18 @@ async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "model_noop":
         return
+        
+    elif data == "model_ping_check":
+        # Сначала редактируем текст сообщения, показывая статус загрузки
+        await query.message.edit_text(
+            "🤖 <b>Выбор модели ИИ</b>\n\n⚡ Измеряю скорость ответов моделей, пожалуйста, подождите...",
+            parse_mode='HTML'
+        )
+        try:
+            flow["pings"] = await run_pings_for_all_active_models()
+        except Exception as e:
+            logger.error(f"Ошибка при ручном пинге моделей: {e}")
+        await _show_model_menu(update, context, edit=True)
         
     elif data == "model_prev":
         if flow["page"] > 0:

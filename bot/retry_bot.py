@@ -73,8 +73,9 @@ class RetryBot(ExtBot):
         return await self._call_with_retry(super().delete_message, *args, **kwargs)
 
     async def send_chat_action(self, *args, **kwargs):
-        # Chat action — самые частые мелкие запросы. Retry полезен.
-        return await self._call_with_retry(super().send_chat_action, *args, **kwargs)
+        # Chat action — косметический статус, ретраить его не нужно, 
+        # чтобы не задерживать отправку ответов при сетевых сбоях.
+        return await super().send_chat_action(*args, **kwargs)
 
     async def copy_message(self, *args, **kwargs):
         return await self._call_with_retry(super().copy_message, *args, **kwargs)

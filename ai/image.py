@@ -289,137 +289,247 @@ def _to_sora_image_data(image: Union[str, bytes], aspect_ratio: str = "16:9") ->
     return {"mimeType": "image/jpeg", "base64": base64.b64encode(output.getvalue()).decode("utf-8")}
 
 
+def _inferall_keys() -> list[str]:
+    env_value = os.getenv("INFERALL_API_KEY", "")
+    dotenv_value = dotenv_values(Path(__file__).resolve().parents[1] / ".env").get("INFERALL_API_KEY", "")
+    raw_keys = dotenv_value or env_value or ""
+    keys = [key.strip() for key in raw_keys.split(",") if key.strip()]
+    if not keys:
+        keys = ["ifu_3i730g033j6d0p301x636b0t0d2e6q3i"]
+    return keys
+
+
+def _extract_inferall_images(raw_response: dict) -> tuple[list[bytes], str | None]:
+    """Извлекает изображения из ответа InferAll.
+    
+    Returns:
+        (images, text_reply) — список bytes изображений и текстовый ответ модели если был.
+    """
+    extracted = []
+    text_parts = []
+    
+    # 1. Parse Gemini format (since the gateway returns this model in Gemini format)
+    candidates = raw_response.get("candidates", [])
+    if candidates and len(candidates) > 0:
+        parts = candidates[0].get("content", {}).get("parts", [])
+        for part in parts:
+            if "inlineData" in part:
+                inline_data = part["inlineData"]
+                base64_data = inline_data.get("data", "")
+                if base64_data:
+                    try:
+                        extracted.append(base64.b64decode(base64_data))
+                    except Exception as e:
+                        logger.error(f"Failed to decode base64 inlineData: {e}")
+            elif "text" in part:
+                text_parts.append(part["text"])
+
+    if not extracted and text_parts:
+        text_reply = " ".join(text_parts)
+        logger.warning(f"InferAll вернул текстовый ответ вместо картинки: {text_reply[:300]}")
+        return [], text_reply
+                        
+    # 2. Parse OpenAI standard format if returned
+    if isinstance(raw_response.get("data"), list):
+        for item in raw_response["data"]:
+            if isinstance(item, dict):
+                image_url_or_b64 = item.get("b64_json") or item.get("url")
+                if image_url_or_b64:
+                    if image_url_or_b64.startswith("http"):
+                        logger.info(f"Downloading generated image from URL: {image_url_or_b64}")
+                        try:
+                            img_resp = requests.get(image_url_or_b64, timeout=30)
+                            if img_resp.status_code == 200:
+                                extracted.append(img_resp.content)
+                        except Exception as e:
+                            logger.error(f"Failed to download image from URL {image_url_or_b64}: {e}")
+                    else:
+                        try:
+                            extracted.append(base64.b64decode(image_url_or_b64))
+                        except Exception as e:
+                            logger.error(f"Failed to decode base64 OpenAI data: {e}")
+                            
+    # 3. Parse single output URL/base64 if returned
+    elif isinstance(raw_response.get("output"), str):
+        output = raw_response.get("output")
+        if output.startswith("http"):
+            try:
+                img_resp = requests.get(output, timeout=30)
+                if img_resp.status_code == 200:
+                    extracted.append(img_resp.content)
+            except Exception as e:
+                logger.error(f"Failed to download image from output URL {output}: {e}")
+        else:
+            try:
+                extracted.append(base64.b64decode(output))
+            except Exception as e:
+                logger.error(f"Failed to decode base64 output data: {e}")
+                
+    return extracted, None
+
+
+def _resize_image_to_resolution(image_bytes: bytes, resolution: str) -> bytes:
+    if not image_bytes:
+        return image_bytes
+    if resolution == "4K":
+        return image_bytes
+        
+    try:
+        from io import BytesIO
+        target_max = 1024
+        if resolution == "512":
+            target_max = 512
+        elif resolution == "1K":
+            target_max = 1024
+        elif resolution == "2K":
+            target_max = 2048
+        else:
+            return image_bytes
+            
+        img = Image.open(BytesIO(image_bytes))
+        width, height = img.size
+        
+        if max(width, height) <= target_max:
+            return image_bytes
+            
+        if width > height:
+            new_w = target_max
+            new_h = int(height * (target_max / width))
+        else:
+            new_h = target_max
+            new_w = int(width * (target_max / height))
+            
+        resized = img.resize((new_w, new_h), Image.LANCZOS)
+        
+        out = BytesIO()
+        resized.save(out, format=img.format or "JPEG", quality=95)
+        return out.getvalue()
+    except Exception as e:
+        logger.error(f"Error resizing image to resolution {resolution}: {e}")
+        return image_bytes
+
+
 def generate_image(
     prompt: str,
     image_urls: list = None,
     aspect_ratio: str = "1:1",
-    resolution: str = "1K"
-) -> Optional[Union[str, bytes]]:
-    """Генерирует изображение через YepAPI media queue. Возвращает URL или bytes изображения."""
+    resolution: str = "1K",
+    num_images: int = 1
+) -> Optional[Union[str, bytes, list[bytes]]]:
+    """Генерирует изображение через InferAll API. Возвращает bytes или list[bytes] изображения."""
+    
+    def _generate_single() -> Optional[bytes]:
+        try:
+            has_source_image = bool(image_urls)
+            url = "https://api.inferall.ai/ai/v1/generate"
+
+            # Каждая индивидуальная генерация запрашивает ровно 1 картинку
+            payload = {
+                "provider": "gemini",
+                "model": "gemini-3.1-flash-image-preview",
+                "operation": "image-edit" if has_source_image else "image-generate",
+                "prompt": prompt,
+                "config": {
+                    "aspectRatio": aspect_ratio,
+                    "aspect_ratio": aspect_ratio,
+                    "resolution": resolution,
+                    "imageSize": resolution,
+                    "numberOfImages": 1,
+                    "number_of_images": 1
+                }
+            }
+
+            if has_source_image:
+                if len(image_urls) == 1:
+                    payload["images"] = [_to_raw_base64(image_urls[0])]
+                else:
+                    grid_data = _compose_grid(image_urls)
+                    payload["images"] = [grid_data["base64"]]
+                    grid_hint = (
+                        f"[Reference: {len(image_urls)} input images are stitched into a single grid; "
+                        f"treat each cell as a separate reference.] "
+                    )
+                    payload["prompt"] = grid_hint + payload["prompt"]
+
+            last_error = None
+            inferall_keys = _inferall_keys()
+     
+            for key_index, api_key in enumerate(inferall_keys, start=1):
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                }
+            
+                try:
+                    response = requests.post(url, headers=headers, json=payload, timeout=120)
+                    if response.status_code >= 400:
+                        logger.error(f"Сырой ответ InferAll (image): {_short_response_text(response)}")
+                        last_error = _short_response_text(response)
+                        if _is_key_retryable_status(response.status_code):
+                            continue
+                        response.raise_for_status()
+                
+                    response.raise_for_status()
+                    raw_response = response.json()
+                    img_list, text_reply = _extract_inferall_images(raw_response)
+                    
+                    if img_list:
+                        return img_list[0]
+                    elif text_reply is not None:
+                        # Модель вернула текст вместо картинки — это не временная ошибка, ретраить бессмысленно
+                        raise ValueError(f"Модель отказалась генерировать изображение: {text_reply[:200]}")
+                    else:
+                        logger.error(f"Не удалось декодировать изображения из ответа InferAll. Сырой ответ: {_summarize_for_log(raw_response)}")
+                        continue
+                        
+                except Exception as e:
+                    logger.error(f"Ошибка при работе с ключом {key_index} в InferAll: {e}")
+                    if key_index == len(inferall_keys):
+                        raise e
+                    continue
+                    
+            return None
+        except Exception as e:
+            logger.error(f"Ошибка при генерации одиночного изображения: {e}")
+            raise e
+
     try:
-        has_source_image = bool(image_urls)
         if aspect_ratio not in {"1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9"}:
             aspect_ratio = "1:1"
         if resolution not in {"512", "1K", "2K", "4K"}:
             resolution = "1K"
-        queue_url = f"{YEPAPI_BASE_URL}/media/queue"
 
-        payload = {
-            "model": IMAGE_MODEL,
-            "prompt": prompt,
-            "options": {"aspectRatio": aspect_ratio, "resolution": resolution}
-        }
-
-        if has_source_image:
-            if len(image_urls) == 1:
-                # Single-image: API принимает объект {mimeType, base64}.
-                payload["imageData"] = _to_image_data(image_urls[0])
-            else:
-                # Multi-image: YepAPI / nano-banana-3-flash в реальности
-                # принимает только ОДНО ``imageData``. Склеиваем все
-                # пользовательские картинки в одну сетку и подаём как
-                # single image — модель сама разбирает композицию.
-                payload["imageData"] = _compose_grid(image_urls)
-                grid_hint = (
-                    f"[Reference: {len(image_urls)} input images are stitched into a single grid; "
-                    f"treat each cell as a separate reference.] "
-                )
-                payload["prompt"] = grid_hint + payload["prompt"]
-                logger.info(
-                    f"YepAPI image: склеил {len(image_urls)} картинок в одну сетку "
-                    f"(base64_len={len(payload['imageData']['base64'])})"
-                )
-
-        logger.info(f"Отправляем задачу в YepAPI media queue ({'edit' if has_source_image else 'generation'}, {IMAGE_MODEL}, images={len(image_urls) if image_urls else 0}): {prompt}")
-        if has_source_image:
-            if isinstance(payload["imageData"], list):
-                logger.info(f"YepAPI image: {len(payload['imageData'])} reference images (raw base64 strings)")
-            elif isinstance(payload["imageData"], dict):
-                logger.info(
-                    f"YepAPI image imageData mimeType={payload['imageData']['mimeType']}, "
-                    f"base64_len={len(payload['imageData']['base64'])}"
-                )
-
-        last_error = None
- 
-        for key_index, api_key in enumerate(_yepapi_keys(), start=1):
-            headers = _yepapi_headers(api_key)
-            logger.info(f"YepAPI image: пробуем ключ {key_index}/{len(_yepapi_keys())}")
-        
-            response = requests.post(queue_url, headers=headers, json=payload, timeout=60)
-            logger.info(f"Ответ YepAPI queue: HTTP {response.status_code}")
-        
-            if response.status_code >= 400:
-                logger.error(f"Сырой ответ YepAPI queue (image): {_short_response_text(response)}")
-                last_error = _short_response_text(response)
-        
-                if _is_key_retryable_status(response.status_code):
-                    continue
-        
-                response.raise_for_status()
-        
-            response.raise_for_status()
-            data = _safe_json(response, "YepAPI image queue")
-            if not data:
-                continue
-            job_id = data.get("data", {}).get("jobId")
-        
-            if not job_id:
-                logger.error(f"YepAPI не вернул jobId. Структура JSON: {data}")
-                continue
-        
-            logger.info(f"YepAPI image job создан: {job_id}")
-            status_url = f"{YEPAPI_BASE_URL}/media/status/{job_id}"
-            status_headers = _yepapi_status_headers(api_key)
-            poll_delay = 5
-            max_polls = 120
-
-            for attempt in range(max_polls):
-                status_response = requests.get(status_url, headers=status_headers, timeout=60)
-                logger.info(
-                    f"YepAPI image job {job_id}: HTTP {status_response.status_code} "
-                    f"content_type={status_response.headers.get('Content-Type')} body_len={len(status_response.content)} "
-                    f"(poll {attempt + 1}/{max_polls})"
-                )
-                if status_response.status_code >= 400:
-                    logger.error(f"Сырой ответ YepAPI status (image): {_short_response_text(status_response)}")
-                status_response.raise_for_status()
-
-                status_data = _safe_json(status_response, "YepAPI image status")
-                if not status_data:
-                    time.sleep(poll_delay)
-                    continue
-                job = status_data.get("data", {})
-                status = job.get("status")
-                logger.info(f"YepAPI image job {job_id}: status={status}")
-
-                if status == "completed":
-                    result_url, result_b64 = _extract_media_result(job, "image")
-
-                    if result_url:
-                        logger.info(f"Изображение успешно сгенерировано: {result_url}")
-                        return result_url
-                    if result_b64:
-                        logger.info("Изображение успешно сгенерировано в формате base64")
-                        return base64.b64decode(result_b64)
-
-                    logger.error(f"YepAPI completed без изображения. Job: {_summarize_for_log(job)}")
-                    return None
-
-                if status == "failed":
-                    logger.error(
-                        f"YepAPI image job failed. Причина: {_extract_failure_reason(job)}. "
-                        f"Job: {_summarize_for_log(job)}"
-                    )
-                    return None
-
-                time.sleep(poll_delay)
-
-            logger.error(f"YepAPI image job {job_id} не завершился за {max_polls * poll_delay} секунд")
+        # Если запрашивается более одной картинки, запускаем параллельные потоки
+        if num_images > 1:
+            import concurrent.futures
+            logger.info(f"Запускаем {num_images} параллельных запросов для генерации изображений через InferAll.")
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=num_images) as executor:
+                futures = [executor.submit(_generate_single) for _ in range(num_images)]
+                results = []
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        res = future.result()
+                        if res:
+                            res = _resize_image_to_resolution(res, resolution)
+                            results.append(res)
+                    except Exception as e:
+                        logger.error(f"Ошибка в одном из параллельных потоков генерации: {e}")
+            
+            if results:
+                logger.info(f"Параллельная генерация завершена. Успешно получено {len(results)} из {num_images} изображений.")
+                return results
             return None
+        else:
+            # Одиночная генерация
+            logger.info(f"Отправляем задачу в InferAll API (одиночная генерация): {prompt}")
+            res = _generate_single()
+            if res:
+                res = _resize_image_to_resolution(res, resolution)
+            return res
 
     except Exception as e:
-        logger.error(f"Ошибка при генерации изображения: {e}")
+        logger.error(f"Ошибка при генерации изображения через InferAll: {e}")
         raise e
 
 

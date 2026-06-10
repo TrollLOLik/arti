@@ -682,13 +682,6 @@ async def _create_tables_internal(conn):
                 VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
             """, key, name, model, provider, speed, intelligence, is_maintenance)
         logger.info(f"Успешно добавлено {len(seed_data)} начальных моделей ИИ")
-    else:
-        # Миграция существующих строк: обновляем признак обслуживания для начальных моделей
-        await conn.execute("""
-            UPDATE ai_models 
-            SET is_maintenance = TRUE 
-            WHERE key IN ('sonnet', 'opus', 'geminipro')
-        """)
     
     logger.info("Таблицы базы данных созданы/проверены")
 

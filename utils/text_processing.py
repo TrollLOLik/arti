@@ -149,7 +149,10 @@ async def send_continuous_action(bot, chat_id, action, interval=4):
     """Асинхронно отправляет действие (typing, upload_photo) каждые interval секунд."""
     try:
         while True:
-            await bot.send_chat_action(chat_id=chat_id, action=action)
+            try:
+                await bot.send_chat_action(chat_id=chat_id, action=action)
+            except Exception as e:
+                logger.debug(f"Ошибка при отправке chat action {action}: {e}")
             await asyncio.sleep(interval)
     except asyncio.CancelledError:
         pass
@@ -160,6 +163,9 @@ async def repeat_chat_action(bot, chat_id, action, interval=4):
     try:
         while True:
             await asyncio.sleep(interval)
-            await bot.send_chat_action(chat_id=chat_id, action=action)
+            try:
+                await bot.send_chat_action(chat_id=chat_id, action=action)
+            except Exception as e:
+                logger.debug(f"Ошибка при отправке chat action {action}: {e}")
     except asyncio.CancelledError:
         return

@@ -169,6 +169,7 @@ async def _execute_generation_task(task: dict):
     image_urls = task.get('image_urls', [])
     image_aspect_ratio = task.get('image_aspect_ratio', '1:1')
     image_resolution = task.get('image_resolution', '1K')
+    image_num_images = task.get('image_num_images', 1)
     video_model = task.get('video_model')
     video_duration = task.get('video_duration', '4')
     video_aspect_ratio = task.get('video_aspect_ratio', '16:9')
@@ -188,9 +189,21 @@ async def _execute_generation_task(task: dict):
                         return
                     try:
                         image_result = await asyncio.to_thread(
-                            generate_image, prompt, image_urls, image_aspect_ratio, image_resolution
+                            generate_image, prompt, image_urls, image_aspect_ratio, image_resolution, num_images=image_num_images
                         )
                         if image_result: break
+                    except ValueError as e:
+                        # Модель отказалась генерировать изображение (вернула текст вместо картинки)
+                        # Ретраить бессмысленно — отображаем отказ пользователю
+                        logger.warning(f"Модель отказалась генерировать изображение: {e}")
+                        if not await is_responses_enabled(chat_id):
+                            return
+                        await bot_client.send_message(
+                            chat_id=chat_id,
+                            text=f"❌ {e}",
+                            reply_to_message_id=message_id
+                        )
+                        return
                     except Exception as e:
                         error_text = str(e).lower()
                         is_retryable = any(marker in error_text for marker in [
@@ -211,16 +224,33 @@ async def _execute_generation_task(task: dict):
                 if not await is_responses_enabled(chat_id):
                     return
                 if image_result:
-                    if isinstance(image_result, bytes):
-                        image_bytes = io.BytesIO(image_result)
+                    if isinstance(image_result, list):
+                        from telegram import InputMediaPhoto
+                        media_group = []
+                        for img in image_result:
+                            if isinstance(img, bytes):
+                                img_io = io.BytesIO(img)
+                            else:
+                                img_resp = await asyncio.to_thread(requests.get, img, timeout=60)
+                                img_resp.raise_for_status()
+                                img_io = io.BytesIO(img_resp.content)
+                            img_io.seek(0)
+                            media_group.append(InputMediaPhoto(media=img_io))
+                        
+                        if not await is_responses_enabled(chat_id):
+                            return
+                        await bot_client.send_media_group(chat_id=chat_id, media=media_group, reply_to_message_id=message_id)
                     else:
-                        img_resp = await asyncio.to_thread(requests.get, image_result, timeout=60)
-                        img_resp.raise_for_status()
-                        image_bytes = io.BytesIO(img_resp.content)
-                    image_bytes.seek(0)
-                    if not await is_responses_enabled(chat_id):
-                        return
-                    await bot_client.send_photo(chat_id=chat_id, photo=image_bytes, reply_to_message_id=message_id)
+                        if isinstance(image_result, bytes):
+                            image_bytes = io.BytesIO(image_result)
+                        else:
+                            img_resp = await asyncio.to_thread(requests.get, image_result, timeout=60)
+                            img_resp.raise_for_status()
+                            image_bytes = io.BytesIO(img_resp.content)
+                        image_bytes.seek(0)
+                        if not await is_responses_enabled(chat_id):
+                            return
+                        await bot_client.send_photo(chat_id=chat_id, photo=image_bytes, reply_to_message_id=message_id)
                 else:
                     if not await is_responses_enabled(chat_id):
                         return
