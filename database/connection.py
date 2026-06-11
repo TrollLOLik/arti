@@ -354,6 +354,36 @@ async def _create_tables_internal(conn):
         WHERE archived_at IS NULL
     """)
 
+    # MEM-07: уникальность активных фактов по (chat_id, mode, lower(fact_text)).
+    # Миграция один раз: архивируем дубли среди НЕархивных (кроме самого старого),
+    # затем строим partial-unique индекс. Гард по наличию индекса — чтобы дорогую
+    # дедупликацию не гонять на каждом старте.
+    facts_uniq_exists = await conn.fetchval(
+        "SELECT 1 FROM pg_indexes WHERE indexname = 'idx_memory_facts_unique_active'"
+    )
+    if not facts_uniq_exists:
+        archived_dups = await conn.execute("""
+            WITH ranked AS (
+                SELECT id, ROW_NUMBER() OVER (
+                    PARTITION BY chat_id, mode, lower(fact_text)
+                    ORDER BY id
+                ) AS rn
+                FROM memory_facts
+                WHERE archived_at IS NULL
+            )
+            UPDATE memory_facts f
+            SET archived_at = NOW(), archive_reason = 'dedup_migration'
+            FROM ranked r
+            WHERE f.id = r.id AND r.rn > 1
+        """)
+        logger.info("MEM-07: дедуп фактов перед UNIQUE-индексом: %s", archived_dups)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_facts_unique_active
+            ON memory_facts (chat_id, mode, lower(fact_text))
+            WHERE archived_at IS NULL
+        """)
+        logger.info("MEM-07: partial-unique индекс активных фактов создан")
+
     await conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_memory_facts_text_ru
         ON memory_facts USING GIN (
@@ -547,6 +577,31 @@ async def _create_tables_internal(conn):
             """)
         except Exception as e:
             logger.warning(f"HNSW индекс pgvector недоступен, vector search будет работать без ANN-индекса: {e}")
+
+        # MEM-07: уникальность чанка по message_ids. Миграция один раз: удаляем дубли
+        # по одинаковому массиву message_ids, оставляя версию С embedding (или старейшую),
+        # затем строим UNIQUE-индекс. Гард по наличию индекса.
+        chunks_uniq_exists = await conn.fetchval(
+            "SELECT 1 FROM pg_indexes WHERE indexname = 'idx_memory_chunks_message_ids_unique'"
+        )
+        if not chunks_uniq_exists:
+            deleted_dups = await conn.execute("""
+                WITH ranked AS (
+                    SELECT id, ROW_NUMBER() OVER (
+                        PARTITION BY message_ids
+                        ORDER BY (embedding IS NOT NULL) DESC, id ASC
+                    ) AS rn
+                    FROM memory_chunks
+                )
+                DELETE FROM memory_chunks
+                WHERE id IN (SELECT id FROM ranked WHERE rn > 1)
+            """)
+            logger.info("MEM-07: дедуп чанков перед UNIQUE-индексом: %s", deleted_dups)
+            await conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_chunks_message_ids_unique
+                ON memory_chunks (message_ids)
+            """)
+            logger.info("MEM-07: UNIQUE-индекс чанков по message_ids создан")
     # Таблица эмоциональных состояний чата
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS chat_emotional_states (

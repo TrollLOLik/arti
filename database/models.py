@@ -542,15 +542,23 @@ class MemoryChunk:
             if exists:
                 return exists
 
+            # MEM-07: ON CONFLICT по UNIQUE(message_ids) — закрывает гонку двух
+            # параллельных вставок одинакового набора message_ids.
             row = await conn.fetchrow("""
                 INSERT INTO memory_chunks (
                     chat_id, user_id, mode, chunk_text, message_ids,
                     token_estimate, metadata, created_at
                 )
                 VALUES ($1, $2, $3, $4, $5::bigint[], $6, $7::jsonb, NOW())
+                ON CONFLICT (message_ids) DO NOTHING
                 RETURNING id
             """, chat_id, user_id, mode, chunk_text, message_ids, token_estimate, metadata_json)
-            return row["id"] if row else None
+            if row:
+                return row["id"]
+            # Проиграли гонку — возвращаем id уже существующего чанка.
+            return await conn.fetchval("""
+                SELECT id FROM memory_chunks WHERE message_ids = $1::bigint[] LIMIT 1
+            """, message_ids)
 
     @staticmethod
     async def bulk_create(chunks: List[Dict[str, Any]]) -> List[int]:
@@ -839,17 +847,27 @@ class MemoryFact:
                 if existing_id:
                     return existing_id
 
+                # MEM-07: ON CONFLICT по partial-unique индексу активных фактов —
+                # закрывает гонку двух параллельных вставок одинакового факта.
                 row = await c.fetchrow("""
                     INSERT INTO memory_facts (
                         chat_id, user_id, mode, summary, fact_text, importance,
                         source_message_id, metadata, created_at
                     )
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, NOW())
+                    ON CONFLICT (chat_id, mode, lower(fact_text)) WHERE archived_at IS NULL
+                    DO NOTHING
                     RETURNING id
                 """, chat_id, user_id, mode, summary, fact_text, importance_value, source_message_id, metadata_json)
 
                 if not row:
-                    return None
+                    # Проиграли гонку — возвращаем id уже вставленного активного факта.
+                    return await c.fetchval("""
+                        SELECT id FROM memory_facts
+                        WHERE chat_id = $1 AND mode = $2
+                        AND lower(fact_text) = lower($3) AND archived_at IS NULL
+                        ORDER BY id LIMIT 1
+                    """, chat_id, mode, fact_text)
 
                 fact_id = row["id"]
                 for entity_id in entity_ids or []:
@@ -1743,61 +1761,14 @@ async def infer_user_timezone(chat_id: int, user_id: Optional[int], conn=None) -
     return None
 
 
-# 9 базовых эмоций — единственный whitelist для дельт настроения (и LLM-тега, и словаря).
-SUPPORTED_MOODS = {"happy", "sad", "angry", "love", "teasing", "shock", "blush", "bored", "thinking"}
-
-# Скрытый служебный тег интроспекции, который модель дописывает в КОНЕЦ ответа:
-# <!-- emotional_introspection: {"mood_delta": {"love": 0.15}, "sticker_mood_suggest": "love"} -->
-_INTROSPECTION_RE = re.compile(r"<!--\s*emotional_introspection\s*:\s*(\{.*?\})\s*-->", re.DOTALL | re.IGNORECASE)
-# Незакрытый/обрезанный хвост тега (на случай, если модель не дописала комментарий).
-_INTROSPECTION_PARTIAL_RE = re.compile(r"<!--\s*emotional_introspection\b.*$", re.DOTALL | re.IGNORECASE)
-
-
-def parse_emotional_introspection(text: Optional[str]) -> Optional[dict]:
-    """Строгий fail-closed парсер тега интроспекции из СГЕНЕРИРОВАННОГО текста Арти.
-
-    Возвращает {"mood_delta": {emotion: float}, "sticker_mood_suggest": str|None}
-    либо None, если тег отсутствует, JSON битый, или в нём нет ничего пригодного.
-    Дельты клампятся в [-0.25, 0.25]; ключи вне whitelist из 9 эмоций отбрасываются.
-    """
-    if not text:
-        return None
-    match = _INTROSPECTION_RE.search(text)
-    if not match:
-        return None
-    try:
-        data = json.loads(match.group(1))
-    except (json.JSONDecodeError, ValueError, TypeError):
-        return None
-    if not isinstance(data, dict):
-        return None
-
-    mood_delta: dict = {}
-    raw_delta = data.get("mood_delta", {})
-    if isinstance(raw_delta, dict):
-        for key, val in raw_delta.items():
-            if key in SUPPORTED_MOODS and isinstance(val, (int, float)) and not isinstance(val, bool):
-                mood_delta[key] = max(-0.25, min(0.25, float(val)))
-
-    suggest = data.get("sticker_mood_suggest")
-    if isinstance(suggest, str) and suggest.strip().lower() in SUPPORTED_MOODS:
-        suggest = suggest.strip().lower()
-    else:
-        suggest = None
-
-    # Тег есть, но в нём нет ни валидной дельты, ни валидного стикера -> считаем браком.
-    if not mood_delta and suggest is None:
-        return None
-    return {"mood_delta": mood_delta, "sticker_mood_suggest": suggest}
-
-
-def strip_introspection_tags(text: Optional[str]) -> str:
-    """Вырезает служебный тег интроспекции (и его незакрытый хвост) из текста."""
-    if not text:
-        return text or ""
-    text = _INTROSPECTION_RE.sub("", text)
-    text = _INTROSPECTION_PARTIAL_RE.sub("", text)
-    return text.strip()
+# ARCH-01: чистая логика эмоц-машины вынесена в memory/emotion.py. Здесь —
+# ре-экспорт для обратной совместимости (внешний код импортирует эти имена
+# как `from database.models import SUPPORTED_MOODS / parse_emotional_introspection / ...`).
+from memory.emotion import (  # noqa: E402
+    SUPPORTED_MOODS,
+    parse_emotional_introspection,
+    strip_introspection_tags,
+)
 
 
 class ChatEmotionalState:

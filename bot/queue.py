@@ -42,8 +42,16 @@ from database.connection import get_db
 
 logger = logging.getLogger(__name__)
 
-# Глобальная очередь генерации (только медиа: image/video/music)
-generation_queue = asyncio.Queue()
+# REL-01: раздельные очереди по типам медиа. Раньше один воркер обрабатывал
+# image/video/music последовательно, и music-cooldown (120с) / ретраи image (до ~5мин)
+# блокировали генерацию во ВСЕХ чатах. Теперь у каждого типа свой воркер: внутри
+# типа — последовательно (щадим API), между типами — параллельно.
+image_queue = asyncio.Queue()
+video_queue = asyncio.Queue()
+music_queue = asyncio.Queue()
+
+# Карта тип -> очередь для маршрутизации в enqueue_generation.
+_MEDIA_QUEUES = {"image": image_queue, "video": video_queue, "music": music_queue}
 
 # Очередь дубляжа видео (изолирована — тяжёлый GPU-пайплайн не должен
 # блокировать обычную медиа-генерацию)
@@ -493,50 +501,83 @@ async def _execute_generation_task(task: dict):
             pass
 
 
-async def generation_worker():
-    """Фоновый воркер: обрабатывает только медиа-задачи (image/video/music)."""
-    logger.info("Медиа-воркер генерации запущен!")
+async def _media_queue_worker(queue: asyncio.Queue, worker_name: str):
+    """Обобщённый медиа-воркер для одной очереди типа (REL-01).
+
+    Внутри типа задачи идут последовательно (щадим внешний API), но разные типы
+    крутятся в своих воркерах параллельно. music-cooldown применяется только в
+    music-воркере и не задерживает image/video.
+    """
+    logger.info("Медиа-воркер '%s' запущен!", worker_name)
     while True:
-        task = await generation_queue.get()
+        task = await queue.get()
         if task is None:
             break
         chat_id = task.get('chat_id')
         if not chat_id:
-            generation_queue.task_done()
+            queue.task_done()
             continue
 
         if not await is_responses_enabled(chat_id):
-            logger.info(f"Медиа-воркер: отмена задачи '{task.get('type')}', так как бот отключен в {chat_id}")
-            generation_queue.task_done()
+            logger.info(f"Медиа-воркер '{worker_name}': отмена задачи '{task.get('type')}', бот отключён в {chat_id}")
+            queue.task_done()
             continue
 
         # REL-03: задача, поставленная до /cancel в этом чате, пропускается.
         if _is_task_cancelled(task):
-            logger.info(f"Медиа-воркер: задача '{task.get('type')}' для чата {chat_id} отменена через /cancel — пропуск.")
-            generation_queue.task_done()
+            logger.info(f"Медиа-воркер '{worker_name}': задача '{task.get('type')}' для чата {chat_id} отменена через /cancel — пропуск.")
+            queue.task_done()
             continue
 
         sub_task = asyncio.create_task(_execute_generation_task(task))
         register_running_task(chat_id, sub_task)
+        worker_cancelled = False
         try:
             await sub_task
         except asyncio.CancelledError:
-            logger.info(f"Медиа-воркер: задача '{task.get('type')}' для чата {chat_id} была отменена.")
+            if sub_task.cancelled():
+                # Отменили саму под-задачу (через /cancel) — воркер продолжает работу.
+                logger.info(f"Медиа-воркер '{worker_name}': задача '{task.get('type')}' для чата {chat_id} была отменена.")
+            else:
+                # Отменяют сам воркер (shutdown) — гасим под-задачу и пробрасываем,
+                # иначе воркер «проглотил» бы отмену и не остановился (graceful shutdown).
+                worker_cancelled = True
+                sub_task.cancel()
+                raise
         finally:
             unregister_running_task(chat_id, sub_task)
-            generation_queue.task_done()
-            cooldown = MUSIC_COOLDOWN if task.get('type') == 'music' else 2
-            logger.info(f"Медиа-воркер: пауза {cooldown}с...")
-            await asyncio.sleep(cooldown)
+            queue.task_done()
+            if not worker_cancelled:
+                cooldown = MUSIC_COOLDOWN if task.get('type') == 'music' else 2
+                logger.info(f"Медиа-воркер '{worker_name}': пауза {cooldown}с...")
+                await asyncio.sleep(cooldown)
+
+
+async def image_worker():
+    await _media_queue_worker(image_queue, "image")
+
+
+async def video_worker():
+    await _media_queue_worker(video_queue, "video")
+
+
+async def music_worker():
+    await _media_queue_worker(music_queue, "music")
 
 
 async def enqueue_generation(task: dict, bot, chat_id):
-    """Добавляет медиа-задачу в очередь и сообщает позицию."""
+    """Добавляет медиа-задачу в очередь СВОЕГО типа и сообщает позицию (REL-01)."""
     task.setdefault('enqueued_at', time.monotonic())  # REL-03: метка для /cancel
-    queue_pos = generation_queue.qsize() + 1
-    await generation_queue.put(task)
-    
-    type_emoji = {"image": "🎨", "video": "🎬", "music": "🎵"}.get(task['type'], "⏳")
+    task_type = task.get('type')
+    queue = _MEDIA_QUEUES.get(task_type)
+    if queue is None:
+        logger.error("enqueue_generation: неизвестный тип задачи %r", task_type)
+        return
+
+    queue_pos = queue.qsize() + 1
+    await queue.put(task)
+
+    type_emoji = {"image": "🎨", "video": "🎬", "music": "🎵"}.get(task_type, "⏳")
     if queue_pos > 1:
         await bot.send_message(chat_id=chat_id, text=f"⏳ Задача в очереди. Позиция: {queue_pos}")
     else:
@@ -648,7 +689,13 @@ async def _user_text_worker(user_id: int):
             try:
                 await sub_task
             except asyncio.CancelledError:
-                logger.info(f"Текстовый воркер: задача для чата {chat_id} была отменена.")
+                if sub_task.cancelled():
+                    # Отмена под-задачи (/cancel) — воркер продолжает работу.
+                    logger.info(f"Текстовый воркер: задача для чата {chat_id} была отменена.")
+                else:
+                    # Отменяют сам воркер (shutdown) — гасим под-задачу и пробрасываем.
+                    sub_task.cancel()
+                    raise
             except Exception as e:
                 logger.error(f"Ошибка при обработке текста для user {user_id}: {e}", exc_info=True)
                 try:

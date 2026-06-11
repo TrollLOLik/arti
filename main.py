@@ -49,7 +49,8 @@ from bot.commands import (
     handle_charge_command, profile_callback,
 )
 from bot.queue import (
-    generation_worker, dubbing_worker, vclone_worker, 
+    image_worker, video_worker, music_worker,
+    dubbing_worker, vclone_worker,
     vclone_fsm_timeout_watchdog, proactive_scheduler_worker,
     run_supervised
 )
@@ -97,8 +98,11 @@ def run_with_restart():
                     logger.warning("Продолжаем работу без БД")
 
                 # L-03: воркеры под супервизором — упавший автоматически перезапустится.
-                app.create_task(run_supervised(generation_worker, "generation_worker"))
-                logger.info("Глобальный воркер генерации запущен (supervised).")
+                # REL-01: раздельные воркеры по типам медиа (image/video/music).
+                app.create_task(run_supervised(image_worker, "image_worker"))
+                app.create_task(run_supervised(video_worker, "video_worker"))
+                app.create_task(run_supervised(music_worker, "music_worker"))
+                logger.info("Медиа-воркеры (image/video/music) запущены (supervised).")
                 app.create_task(run_supervised(dubbing_worker, "dubbing_worker"))
                 logger.info("Воркер дубляжа видео запущен (supervised).")
                 app.create_task(run_supervised(vclone_worker, "vclone_worker"))
