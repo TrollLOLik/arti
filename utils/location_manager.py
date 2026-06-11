@@ -216,28 +216,5 @@ async def get_user_location_context(user_id: int) -> str:
         f"Если запрос связан с местами, маршрутами, расстояниями, досугом или навигацией — "
         f"используй эти данные как точку отсчёта."
     )
-
-
-def clear_user_location(user_id: int):
-    """Удаляет геопозицию из кеша и БД."""
-    _location_cache.pop(user_id, None)
-    # Асинхронное удаление из БД — запускаем в фоне
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            asyncio.create_task(UserLocationModel.save(user_id, 0.0, 0.0))
-    except Exception:
-        pass
-
-
-def cleanup_expired():
-    """Удаление просроченных записей из кеша."""
-    now = time.time()
-    expired = [
-        uid for uid, data in _location_cache.items()
-        if now - data["timestamp"] > data.get("ttl", STATIC_TTL_SECONDS)
-    ]
-    for uid in expired:
-        del _location_cache[uid]
-    if expired:
-        logger.debug(f"📍 Очищено {len(expired)} просроченных геопозиций из кеша")
+# REL-06/L-05: удалены неиспользуемые clear_user_location (писала «Null Island» 0,0
+# вместо удаления) и cleanup_expired — мёртвый код, нигде не вызывался.

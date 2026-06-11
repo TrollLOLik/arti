@@ -503,18 +503,20 @@ async def _create_tables_internal(conn):
     """)
 
     if vector_available:
-        await conn.execute("""
+        # L-19: размерность вектора берём из единого источника config.EMBEDDING_DIMENSIONS.
+        from config import EMBEDDING_DIMENSIONS
+        await conn.execute(f"""
             CREATE TABLE IF NOT EXISTS memory_chunks (
                 id BIGSERIAL PRIMARY KEY,
                 chat_id BIGINT NOT NULL,
                 user_id BIGINT,
                 mode VARCHAR(32) NOT NULL DEFAULT 'default',
                 chunk_text TEXT NOT NULL,
-                message_ids BIGINT[] NOT NULL DEFAULT '{}',
+                message_ids BIGINT[] NOT NULL DEFAULT '{{}}',
                 token_estimate INTEGER NOT NULL DEFAULT 0,
-                embedding vector(1536),
+                embedding vector({int(EMBEDDING_DIMENSIONS)}),
                 embedding_model VARCHAR(80),
-                metadata JSONB DEFAULT '{}'::jsonb,
+                metadata JSONB DEFAULT '{{}}'::jsonb,
                 created_at TIMESTAMP NOT NULL DEFAULT NOW(),
                 embedded_at TIMESTAMP
             )

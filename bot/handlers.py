@@ -185,7 +185,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
         if not prompt:
             await update.message.reply_text("✍️ Жду текстовый промпт для изображения или /cancel.", parse_mode='HTML')
             return
-        logger.info(f"Получено описание изображения от пользователя {user_id} в чате {chat_id}: {prompt} (images={len(image_urls)})")
+        logger.info(f"Получено описание изображения от пользователя {user_id} в чате {chat_id} (len={len(prompt)}, images={len(image_urls)})")  # PRIV-01: без полного текста
         await _enqueue_image_from_flow(update, context, prompt, image_urls)
         return
 
@@ -210,7 +210,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
         if not prompt:
             await update.message.reply_text("✍️ Жду текстовый промпт для видео или /cancel.", parse_mode='HTML')
             return
-        logger.info(f"Получено описание видео от пользователя {user_id} в чате {chat_id}: {prompt} (images={len(image_urls)})")
+        logger.info(f"Получено описание видео от пользователя {user_id} в чате {chat_id} (len={len(prompt)}, images={len(image_urls)})")  # PRIV-01: без полного текста
 
         await _enqueue_video_from_flow(update, context, prompt, image_urls)
         return
@@ -501,7 +501,7 @@ async def _process_images(
             enable_introspection=True,
             emotional_state=img_state,
         )
-        logger.info(f"RAW ИИ ОТВЕТ (фото, {len(base64_images)} шт): {response_text}")
+        logger.debug(f"RAW ИИ ОТВЕТ (фото, {len(base64_images)} шт): {response_text}")  # PRIV-01
 
         # MEM-06: ответ-заглушку об ошибке покажем, но не сохраняем в историю/память.
         from ai.generation import is_error_response
@@ -670,7 +670,15 @@ async def _process_images(
                 except Exception as e:
                     logger.error(f"Не удалось отправить картинку из поиска {img_url}: {e}")
 
-        if image_requests:
+        # VAL-07: LLM-инициированная генерация считается в per-user медиа-квоту.
+        media_allowed = True
+        if image_requests or video_request_prompt or music_request:
+            from bot.queue import _llm_media_quota_ok
+            media_allowed = _llm_media_quota_ok(user_id)
+            if not media_allowed:
+                logger.info(f"LLM-медиа-теги (фото) пропущены: квота медиа исчерпана для user {user_id}")
+
+        if image_requests and media_allowed:
             source_image_urls = [f"data:image/jpeg;base64,{base64_images[0]}"] if base64_images else []
             logger.info(f"Ставлю в очередь {len(image_requests)} image-запросов из ответа на фото, reference_images={len(source_image_urls)}")
             for prompt in image_requests[:5]:
@@ -681,7 +689,7 @@ async def _process_images(
                 }
                 await enqueue_generation(task, bot, chat_id)
 
-        if video_request_prompt:
+        if video_request_prompt and media_allowed:
             source_image_urls = [f"data:image/jpeg;base64,{base64_images[0]}"] if base64_images else []
             logger.info(f"Ставлю в очередь video-запрос из ответа на фото, reference_images={len(source_image_urls)}")
             task = {
@@ -692,7 +700,7 @@ async def _process_images(
             }
             await enqueue_generation(task, bot, chat_id)
 
-        if music_request:
+        if music_request and media_allowed:
             logger.info("Ставлю в очередь music-запрос из ответа на фото")
             task = {
                 'type': 'music', 'chat_id': chat_id, 'prompt': music_request['prompt'],
@@ -1296,6 +1304,19 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_responses_enabled(chat_id):
         return
 
+    # VAL-02: в группах не реагируем на КАЖДЫЙ документ. Нужен явный триггер —
+    # ЛС, reply на бота или упоминание «арти» в caption. В ЛС работаем как раньше.
+    is_private = update.effective_chat.type == "private"
+    replied_to_bot = bool(
+        update.message.reply_to_message
+        and update.message.reply_to_message.from_user
+        and update.message.reply_to_message.from_user.id == context.bot.id
+    )
+    caption_mentions_arti = bool(re.search(r'\bарти\b', (update.message.caption or "").lower()))
+    if not (is_private or replied_to_bot or caption_mentions_arti):
+        logger.info("Документ в группе без триггера (нет reply/упоминания) — пропускаем.")
+        return
+
     if doc.file_size > 10 * 1024 * 1024:
         await update.message.reply_text(
             "<i>смотрит на размер файла с осуждением</i>\n\n"
@@ -1580,6 +1601,7 @@ async def _process_video_url_transcribe(
     from ai.video_url import download_audio_for_url, transcribe_url_audio, summarize_transcript
     from utils.text_processing import send_continuous_action
 
+    Path("temp").mkdir(parents=True, exist_ok=True)  # L-15: mkdtemp требует существующий dir
     work_dir = Path(_tempfile.mkdtemp(prefix="vurl_", dir="temp"))
     action_task = asyncio.create_task(
         send_continuous_action(bot, chat_id, "typing")

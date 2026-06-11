@@ -48,18 +48,40 @@ logger = logging.getLogger(__name__)
 # API КЛИЕНТЫ
 # ============================================================================
 
-# Groq (STT)
-from groq import AsyncGroq
-groq_client = AsyncGroq(
-    api_key=os.getenv("GROQ_API_KEY"),
-    default_headers={
-        "Groq-Model-Version": "2025-11-11"
-    },
-)
+# CONF-04: клиенты создаются на импорте config (его импортируют почти все модули).
+# Если ключ отсутствует/некорректен, заворачиваем криптичную ошибку библиотеки в
+# понятное сообщение с указанием нужной переменной .env.
 
-# Google GenAI (текстовая генерация)
+# Groq (STT, fallback-распознавание речи)
+from groq import AsyncGroq
+try:
+    groq_client = AsyncGroq(
+        api_key=os.getenv("GROQ_API_KEY"),
+        default_headers={
+            "Groq-Model-Version": "2025-11-11"
+        },
+    )
+except Exception as e:
+    raise RuntimeError(
+        "Не удалось инициализировать Groq-клиент. Проверьте GROQ_API_KEY в .env "
+        f"(см. .env.example). Исходная ошибка: {e}"
+    ) from e
+
+# Google GenAI (основная текстовая генерация). Клиент читает ключ из
+# GEMINI_API_KEY / GOOGLE_API_KEY — без него работа невозможна.
 from google import genai
-genai_client = genai.Client()
+if not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")):
+    logger.warning(
+        "GEMINI_API_KEY / GOOGLE_API_KEY не заданы — генерация через Gemini не будет "
+        "работать. Укажите ключ в .env (см. .env.example)."
+    )
+try:
+    genai_client = genai.Client()
+except Exception as e:
+    raise RuntimeError(
+        "Не удалось инициализировать Google GenAI клиент. Проверьте GEMINI_API_KEY / "
+        f"GOOGLE_API_KEY в .env (см. .env.example). Исходная ошибка: {e}"
+    ) from e
 
 # ============================================================================
 # НАСТРОЙКИ API
@@ -67,8 +89,8 @@ genai_client = genai.Client()
 
 # Airforce API (для генерации изображений/видео/музыки)
 AIRFORCE_TOKEN = os.getenv("AIRFORCE_TOKEN", "")
-FREETHEAI_API_KEY = os.getenv("FREETHEAI_API_KEY", "")
 YEPAPI_API_KEY = os.getenv("YEPAPI_API_KEY", "")
+# L-17: FREETHEAI_API_KEY удалён — нигде не использовался.
 
 # Telegram Bot Token
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
@@ -103,6 +125,10 @@ AUTO_REPLY_THRESHOLD = 40
 # ============================================================================
 # ГЕНЕРАЦИЯ
 # ============================================================================
+
+# L-19: размерность эмбеддингов — единый источник для кода (memory/embeddings.py)
+# и схемы БД (database/connection.py: vector(N)), чтобы значения не разъезжались.
+EMBEDDING_DIMENSIONS = 1536
 
 MUSIC_COOLDOWN = 120  # Секунд между генерациями музыки (лимит API: 1 трек / 2 мин)
 # AUTH-05: per-user квота на платную медиа-генерацию (/image, /video, /music).
@@ -178,8 +204,7 @@ pending_doc_action = {}
 # Ожидание геолокации для возобновления запроса
 pending_map_requests = {}
 
-# Состояния игр
-user_game_state = defaultdict(lambda: defaultdict(str))
+# L-17: user_game_state удалён — нигде не использовался.
 
 # Выбор модели для чата (по умолчанию — быстрая Gemini)
 DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"

@@ -550,6 +550,14 @@ async def handle_cancel_command(update: Update, context: ContextTypes.DEFAULT_TY
         del rp_mode_state[chat_id]
         logger.info(f"RP-режим отключен для чата {chat_id} пользователем {user_id}")
 
+    # REL-03: реально сворачиваем активные медиа-потоки — рубим запущенные задачи
+    # и помечаем стоящие в очереди как отменённые (воркер их пропустит).
+    try:
+        from bot.queue import cancel_chat_generation
+        cancel_chat_generation(chat_id)
+    except Exception:
+        logger.debug("Не удалось отменить генерацию для чата", exc_info=True)
+
     logger.info(f"Запрос отменен пользователем {user_id} в чате {chat_id}.")
     
     from telegram import ReplyKeyboardRemove
@@ -3905,7 +3913,12 @@ async def handle_charge_command(update: Update, context: ContextTypes.DEFAULT_TY
     from config import PRIVILEGED_USER_IDS, rp_mode_state
     from database.models import ChatEmotionalState, MemoryUserProfile
     import json
-    
+
+    # L-14: сначала проверяем выключатель — иначе в выключенном (/stop) чате бот
+    # выдавал бы своё присутствие отказом в правах.
+    if not await is_responses_enabled(chat_id):
+        return
+
     # Разрешаем доступ только привилегированным пользователям (Александру)
     if user_id not in PRIVILEGED_USER_IDS:
         await update.message.reply_text(
@@ -3915,9 +3928,6 @@ async def handle_charge_command(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
 
-    if not await is_responses_enabled(chat_id):
-        return
-        
     mode = "rp" if rp_mode_state.get(chat_id) else "default"
     
     # Получаем или создаем эмоциональное состояние чата

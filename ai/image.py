@@ -551,7 +551,7 @@ def generate_image(
             return None
         else:
             # Одиночная генерация
-            logger.info(f"Отправляем задачу в InferAll API (одиночная генерация): {prompt}")
+            logger.info(f"Отправляем задачу в InferAll API (одиночная генерация): {prompt[:80]}")  # PRIV-01
             res = _generate_single()
             if res:
                 res = _resize_image_to_resolution(res, resolution)
@@ -600,7 +600,7 @@ def generate_video(
             else:
                 payload["imageData"] = _to_video_image_data(image_urls[0])
 
-        logger.info(f"Отправляем задачу в YepAPI media queue ({'image-to-video' if has_source_image else 'text-to-video'}, {video_model}): {prompt}")
+        logger.info(f"Отправляем задачу в YepAPI media queue ({'image-to-video' if has_source_image else 'text-to-video'}, {video_model}): {prompt[:80]}")  # PRIV-01
         logger.info(f"YepAPI video options: {payload['options']}")
         if has_source_image:
             logger.info(f"YepAPI video imageData mimeType={payload['imageData']['mimeType']}, base64_len={len(payload['imageData']['base64'])}")

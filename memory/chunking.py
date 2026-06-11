@@ -32,7 +32,9 @@ def build_compact_chunks(messages: Iterable[Dict[str, Any]]) -> List[Dict[str, A
 
     chunks: List[Dict[str, Any]] = []
     for (chat_id, mode), group in grouped.items():
-        group.sort(key=lambda item: (item.get("created_at"), item.get("id")))
+        # L-20: устойчивая сортировка — created_at может быть datetime, str или None
+        # у разных сообщений; прямое сравнение разнотипных значений падало бы (TypeError).
+        group.sort(key=lambda item: (str(item.get("created_at") or ""), item.get("id") or 0))
         current = []
         current_lines = []
         current_chars = 0

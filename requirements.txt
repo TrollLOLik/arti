@@ -1,41 +1,45 @@
+# Версии: нижняя граница — минимально поддерживаемая, верхняя — следующий major
+# (CONF-05), чтобы внезапный мажорный апдейт не сломал рантайм. Обновлять осознанно.
+
 # Telegram Bot
 # [job-queue] обязателен: utils/spam_protection.py использует application.job_queue
-python-telegram-bot[job-queue]>=21.0
+python-telegram-bot[job-queue]>=21.0,<23.0
 
 # LLM / AI
-google-genai>=1.0.0
-groq>=0.4.0
-openai>=1.0.0
+google-genai>=1.0.0,<2.0.0
+groq>=0.4.0,<2.0.0
+openai>=1.0.0,<3.0.0
 
 # Database
-asyncpg>=0.29.0
-pgvector>=0.3.6
+asyncpg>=0.29.0,<1.0.0
+pgvector>=0.3.6,<1.0.0
 
 # HTTP / Networking
-httpx>=0.27.0
-aiohttp>=3.9.0
-requests>=2.31.0
+httpx>=0.27.0,<1.0.0
+aiohttp>=3.9.0,<4.0.0
+requests>=2.31.0,<3.0.0
 
 # Document parsing
-pypdf>=4.0.0
-python-docx>=1.0.0
+pypdf>=4.0.0,<8.0.0
+python-docx>=1.0.0,<2.0.0
 
 # Image processing
-Pillow>=10.0.0
+Pillow>=10.0.0,<13.0.0
 
 # HTML parsing (ai/tts.py — импортируется на старте через bot.handlers)
-beautifulsoup4>=4.12.0
+beautifulsoup4>=4.12.0,<5.0.0
 
 # Аудио/видео по URL и обработка (ai/video_url.py, ai/tts.py, ai/voice_clone.py)
+# yt-dlp использует CalVer и часто чинит хостинги — верхнюю границу не ставим.
 yt-dlp>=2024.8.0
-pydub>=0.25.1
+pydub>=0.25.1,<1.0.0
 
 # TTS Demo Space клиент (ai/tts.py — основной бэкенд синтеза речи)
-gradio_client>=1.3.0
+gradio_client>=1.3.0,<3.0.0
 
 # Config
-python-dotenv>=1.0.0
+python-dotenv>=1.0.0,<2.0.0
 
 # --- Вспомогательные скрипты (не требуются для запуска бота) ---
 # get_my_code.py (одноразовый помощник входа в Telegram)
-pyrogram>=2.0.0
+pyrogram>=2.0.0,<3.0.0

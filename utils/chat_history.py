@@ -62,20 +62,6 @@ async def save_chat_message(chat_id: int, user_name: str, message_text: str, use
         logger.error(f"Ошибка при сохранении сообщения в БД: {e}", exc_info=True)
 
 
-# Синхронная обертка для обратной совместимости
-def save_chat_message_sync(chat_id: int, user_name: str, message_text: str, user_id: int = None) -> None:
-    """Синхронная обертка для save_chat_message"""
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            asyncio.create_task(save_chat_message(chat_id, user_name, message_text, user_id=user_id))
-        else:
-            loop.run_until_complete(save_chat_message(chat_id, user_name, message_text, user_id=user_id))
-    except RuntimeError:
-        # Если нет event loop, создаем новый
-        asyncio.run(save_chat_message(chat_id, user_name, message_text, user_id=user_id))
-
-
 async def get_chat_context(chat_id, limit=20) -> str:
     """
     Получает последние сообщения (с датами) из истории чата, форматируя их для модели.
@@ -107,19 +93,6 @@ async def get_chat_context(chat_id, limit=20) -> str:
     except Exception as e:
         logger.error(f"Ошибка при получении истории чата: {e}", exc_info=True)
         return ""
-
-
-# Синхронная обертка для обратной совместимости
-def get_chat_context_sync(chat_id, limit=20) -> str:
-    """Синхронная обертка для get_chat_context"""
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            return ""
-        else:
-            return loop.run_until_complete(get_chat_context(chat_id, limit))
-    except RuntimeError:
-        return asyncio.run(get_chat_context(chat_id, limit))
 
 
 async def save_chat_message_rp(chat_id: int, user_name: str, message_text: str, user_id: int = None) -> None:
@@ -209,19 +182,6 @@ async def get_recent_messages(chat_id, timeout) -> list:
         return []
 
 
-# Синхронная обертка
-def get_recent_messages_sync(chat_id, timeout) -> list:
-    """Синхронная обертка для get_recent_messages"""
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            return []
-        else:
-            return loop.run_until_complete(get_recent_messages(chat_id, timeout))
-    except RuntimeError:
-        return asyncio.run(get_recent_messages(chat_id, timeout))
-
-
 async def get_dialog_history_as_text(chat_id, limit=20) -> str:
     """
     Возвращает историю диалога (без дат) для данного chat_id в виде строки.
@@ -275,17 +235,4 @@ async def get_dialog_history_as_text_rp(chat_id, limit=20) -> str:
     except Exception as e:
         logger.error(f"Ошибка при получении RP-диалоговой истории: {e}", exc_info=True)
         return ""
-
-
-# Синхронная обертка
-def get_dialog_history_as_text_sync(chat_id) -> str:
-    """Синхронная обертка для get_dialog_history_as_text"""
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            return ""
-        else:
-            return loop.run_until_complete(get_dialog_history_as_text(chat_id))
-    except RuntimeError:
-        return asyncio.run(get_dialog_history_as_text(chat_id))
 

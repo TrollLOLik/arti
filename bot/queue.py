@@ -6,6 +6,7 @@ import os
 import re
 import io
 import html
+import time
 import base64
 import asyncio
 import logging
@@ -36,7 +37,6 @@ from utils.chat_history import save_chat_message, get_chat_context, save_chat_me
 from utils.model_selection import get_chat_model
 from utils.response_status import is_responses_enabled
 from memory.storage import build_memory_context, remember_exchange
-from collections import deque
 from datetime import datetime
 from database.connection import get_db
 
@@ -70,6 +70,27 @@ def _get_user_lock(user_id: int) -> asyncio.Lock:
         _user_queue_locks[user_id] = lock
     return lock
 
+
+# REL-02: окно rolling-debounce склейки подряд идущих сообщений пользователя.
+# Снижено с 5с до 1.5с — серии сообщений всё ещё склеиваются, но одиночный вопрос
+# не ждёт лишние секунды до начала генерации.
+_DEBOUNCE_WINDOW_SEC = 1.5
+
+
+def _llm_media_quota_ok(user_id) -> bool:
+    """VAL-07: LLM-инициированная медиа-генерация (теги {image/video/music}) считается
+    в ту же per-user квоту, что и команды /image /video /music — иначе её можно было
+    бы обойти, склонив модель вставить тег. Привилегированные — без лимита.
+    Один вызов = одна единица квоты (на весь ответ, независимо от числа тегов)."""
+    try:
+        from config import PRIVILEGED_USER_IDS, MEDIA_RATE_LIMIT, MEDIA_RATE_WINDOW
+        from utils.rate_limit import is_rate_limited
+        if user_id in PRIVILEGED_USER_IDS:
+            return True
+        return not is_rate_limited("media", user_id, MEDIA_RATE_LIMIT, MEDIA_RATE_WINDOW)
+    except Exception:
+        return True
+
 _running_chat_tasks: dict[int, set[asyncio.Task]] = {}
 
 def register_running_task(chat_id: int, task: asyncio.Task):
@@ -83,34 +104,39 @@ def unregister_running_task(chat_id: int, task: asyncio.Task):
             _running_chat_tasks.pop(chat_id, None)
 
 def cancel_chat_tasks(chat_id: int):
-    """Cancels all active tasks for the given chat_id."""
+    """Отменяет все активные (запущенные) задачи чата."""
     if chat_id in _running_chat_tasks:
         logger.info(f"Отмена {len(_running_chat_tasks[chat_id])} активных задач для чата {chat_id}.")
         for task in list(_running_chat_tasks[chat_id]):
             task.cancel()
 
-def _clear_queue_for_chat(q: asyncio.Queue, chat_id: int):
-    removed_count = 0
-    new_deque = deque()
-    for item in list(q._queue):
-        if item and isinstance(item, dict) and item.get('chat_id') == chat_id:
-            removed_count += 1
-        else:
-            new_deque.append(item)
-    q._queue = new_deque
-    for _ in range(removed_count):
-        try:
-            q.task_done()
-        except ValueError:
-            pass
 
-def clear_chat_queues(chat_id: int):
-    """Clears all queued items for the given chat_id across all queues."""
-    _clear_queue_for_chat(generation_queue, chat_id)
-    _clear_queue_for_chat(dubbing_queue, chat_id)
-    _clear_queue_for_chat(vclone_queue, chat_id)
-    for user_id, q in list(_user_queues.items()):
-        _clear_queue_for_chat(q, chat_id)
+# REL-03: эпоха отмены генерации по чату. /cancel ставит метку времени; воркеры,
+# забрав из очереди задачу, поставленную ДО метки, пропускают её. Это безопасно
+# заменяет прежнюю мутацию приватного q._queue (которая могла портить счётчики).
+_chat_cancel_epoch: dict[int, float] = {}
+
+
+def mark_chat_generation_cancelled(chat_id: int):
+    """Помечает чат: все уже стоящие в очереди медиа-задачи (enqueued_at <= метки)
+    будут пропущены воркером. Новые задачи (после метки) выполняются нормально."""
+    _chat_cancel_epoch[chat_id] = time.monotonic()
+
+
+def _is_task_cancelled(task: dict) -> bool:
+    """True, если задача была поставлена до последнего /cancel в этом чате."""
+    chat_id = task.get('chat_id')
+    enqueued_at = task.get('enqueued_at')
+    if chat_id is None or enqueued_at is None:
+        return False
+    epoch = _chat_cancel_epoch.get(chat_id)
+    return epoch is not None and enqueued_at <= epoch
+
+
+def cancel_chat_generation(chat_id: int):
+    """Полная отмена для чата: помечает очередь (стоящие задачи) + рубит запущенные."""
+    mark_chat_generation_cancelled(chat_id)
+    cancel_chat_tasks(chat_id)
 
 
 # Глобальный семафор для ограничения одновременных текстовых запросов к AI API
@@ -465,6 +491,12 @@ async def generation_worker():
             generation_queue.task_done()
             continue
 
+        # REL-03: задача, поставленная до /cancel в этом чате, пропускается.
+        if _is_task_cancelled(task):
+            logger.info(f"Медиа-воркер: задача '{task.get('type')}' для чата {chat_id} отменена через /cancel — пропуск.")
+            generation_queue.task_done()
+            continue
+
         sub_task = asyncio.create_task(_execute_generation_task(task))
         register_running_task(chat_id, sub_task)
         try:
@@ -481,6 +513,7 @@ async def generation_worker():
 
 async def enqueue_generation(task: dict, bot, chat_id):
     """Добавляет медиа-задачу в очередь и сообщает позицию."""
+    task.setdefault('enqueued_at', time.monotonic())  # REL-03: метка для /cancel
     queue_pos = generation_queue.qsize() + 1
     await generation_queue.put(task)
     
@@ -547,12 +580,12 @@ async def _user_text_worker(user_id: int):
 
         request = await queue.get()
         
-        # Rolling debounce: ждём до 5с, каждое новое сообщение сбрасывает таймер
+        # Rolling debounce: ждём до _DEBOUNCE_WINDOW_SEC, каждое новое сообщение сбрасывает таймер
         extra_images = []
         extra_docs = []
         while True:
             try:
-                extra = await asyncio.wait_for(queue.get(), timeout=5.0)
+                extra = await asyncio.wait_for(queue.get(), timeout=_DEBOUNCE_WINDOW_SEC)
                 extra_msg = extra.get('user_message', '')
                 if extra_msg:
                     request['user_message'] = request.get('user_message', '') + '\n' + extra_msg
@@ -664,8 +697,8 @@ async def extract_and_save_events_task(chat_id: int, user_message: str, user_tz:
     logger.info(f"📅 [ШЕДУЛЕР СОБЫТИЙ] Запуск ИИ-экстрактора событий для chat_id={chat_id} (msg: '{user_message[:50]}...')")
 
     try:
-        from datetime import datetime, timedelta
-        local_now = datetime.utcnow() + timedelta(hours=user_tz)
+        from datetime import datetime, timedelta, timezone
+        local_now = datetime.now(timezone.utc) + timedelta(hours=user_tz)  # DB-03
         local_date_str = local_now.strftime("%Y-%m-%d")
         
         weekday_map = {
@@ -747,6 +780,11 @@ async def process_user_reply(request, bot):
     video_file_id = request.get('video_file_id')
     is_video_note = request.get('is_video_note', False)
 
+    # L-08: автоответ ставится с user_id=0 (нет конкретного автора). Не привязываем к
+    # такому «пользователю» профиль/близость/факты — нормализуем 0 → None, тогда
+    # профильные/аффективные методы корректно пропускают его.
+    profile_user_id = user_id or None
+
     # Защита от инъекций: вырезаем служебный тег интроспекции из ЛЮБОГО ввода юзера
     # (текст сообщения И содержимое документа), чтобы он не утёк в промпт и не был отражён
     # моделью обратно — парсим тег строго только из сгенерированного ответа Арти.
@@ -762,7 +800,7 @@ async def process_user_reply(request, bot):
     
     closeness = 0.1
     mode = "rp" if rp_mode_state.get(chat_id) else "default"
-    user_profile = await MemoryUserProfile.get(chat_id, user_id, mode)
+    user_profile = await MemoryUserProfile.get(chat_id, profile_user_id, mode) if profile_user_id else None
     if user_profile and user_profile.get("profile_json"):
         prof_json = json.loads(user_profile["profile_json"]) if isinstance(user_profile["profile_json"], str) else user_profile["profile_json"]
         closeness = prof_json.get("affective", {}).get("closeness", 0.1)
@@ -770,11 +808,11 @@ async def process_user_reply(request, bot):
     # defer_sentiment=True: словарный сдвиг НЕ применяется здесь (до генерации) — его применит
     # apply_turn_sentiment пост-генерации, отдав приоритет интроспекции самой LLM, а словарь
     # оставив как fail-closed фолбэк. Распад/заряд/циркадная база считаются как раньше.
-    updated_state = await ChatEmotionalState.update_state(chat_id, user_message, closeness, user_id=user_id, defer_sentiment=True)
+    updated_state = await ChatEmotionalState.update_state(chat_id, user_message, closeness, user_id=profile_user_id, defer_sentiment=True)
     # Рост близости от ОБЫЧНОГО общения (+ бонус за ответ на проактивный пуш),
     # а не только от эмодзи-реакций — иначе closeness почти никогда не растёт.
     await MemoryUserProfile.grow_closeness(
-        chat_id, user_id, mode,
+        chat_id, profile_user_id, mode,
         proactive_reply=updated_state.get("was_proactive_reply", False),
     )
     user_tz = updated_state.get("user_tz")
@@ -820,7 +858,9 @@ async def process_user_reply(request, bot):
                 tg_file = await callback_context.bot.get_file(video_file_id)
                 # Telegram bot api size limit is 20MB for downloading
                 if tg_file.file_size and tg_file.file_size <= 20 * 1024 * 1024:
-                    temp_video_path = f"temp_video_{chat_id}_{message_id}.mp4"
+                    # L-21: складываем во временную папку temp/, а не в текущий каталог.
+                    Path("temp").mkdir(parents=True, exist_ok=True)
+                    temp_video_path = str(Path("temp") / f"temp_video_{chat_id}_{message_id}.mp4")
                     await tg_file.download_to_drive(custom_path=temp_video_path)
                     
                     from config import genai_client
@@ -955,7 +995,7 @@ async def process_user_reply(request, bot):
                 await asyncio.to_thread(uploaded_video_file.delete)
             except Exception as e:
                 logger.error(f"Failed to delete uploaded video file: {e}")
-        logger.info(f"RAW ИИ ОТВЕТ: {response_text}")
+        logger.debug(f"RAW ИИ ОТВЕТ: {response_text}")  # PRIV-01: полный ответ только в DEBUG
 
         # MEM-06: ответ-заглушка об ошибке генерации — покажем пользователю, но НЕ
         # сохраняем в историю/память (иначе экстрактор учится на «у меня ошибка»).
@@ -1150,7 +1190,7 @@ async def process_user_reply(request, bot):
             memory_task = asyncio.create_task(
                 remember_exchange(
                     chat_id=chat_id,
-                    user_id=user_id,
+                    user_id=profile_user_id,  # L-08: автоответ → факты чата (user_id IS NULL)
                     user_name=user_name,
                     user_message=user_message,
                     response_text=history_response_text,
@@ -1174,8 +1214,15 @@ async def process_user_reply(request, bot):
                 except Exception as e:
                     logger.error(f"Не удалось отправить картинку из поиска {img_url}: {e}")
 
-        # Обработка медиа-тегов из ответа
-        if image_requests:
+        # Обработка медиа-тегов из ответа.
+        # VAL-07: LLM-инициированная генерация считается в per-user медиа-квоту.
+        media_allowed = True
+        if image_requests or video_request_prompt or music_request:
+            media_allowed = _llm_media_quota_ok(user_id)
+            if not media_allowed:
+                logger.info(f"LLM-медиа-теги пропущены: квота медиа исчерпана для user {user_id}")
+
+        if image_requests and media_allowed:
             for idx, prompt in enumerate(image_requests[:5], 1):
                 task = {
                     'type': 'image', 'chat_id': chat_id, 'prompt': prompt,
@@ -1184,7 +1231,7 @@ async def process_user_reply(request, bot):
                 }
                 await enqueue_generation(task, callback_context.bot, chat_id)
 
-        if video_request_prompt:
+        if video_request_prompt and media_allowed:
             task = {
                 'type': 'video', 'chat_id': chat_id, 'prompt': video_request_prompt,
                 'context': callback_context, 'message_id': message_id,
@@ -1192,7 +1239,7 @@ async def process_user_reply(request, bot):
             }
             await enqueue_generation(task, callback_context.bot, chat_id)
 
-        if music_request:
+        if music_request and media_allowed:
             task = {
                 'type': 'music', 'chat_id': chat_id, 'prompt': music_request['prompt'],
                 'style': music_request['style'], 'instrumental': music_request['instrumental'],
@@ -2044,8 +2091,8 @@ async def proactive_scheduler_worker(bot):
                     continue
                 
                 # 2. Проверяем жесткие quiet hours по локальному времени пользователя (23:00 - 09:00)
-                from datetime import datetime as _dt, timedelta
-                local_time = _dt.utcnow() + timedelta(hours=user_tz)
+                from datetime import datetime as _dt, timedelta, timezone as _tz
+                local_time = _dt.now(_tz.utc) + timedelta(hours=user_tz)  # DB-03
                 local_hour = local_time.hour
                 local_date = local_time.date()
                 

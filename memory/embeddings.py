@@ -4,13 +4,12 @@ from typing import List
 
 from google.genai import types
 
-from config import genai_client
+from config import genai_client, EMBEDDING_DIMENSIONS  # L-19: размерность из единого источника
 from memory.normalizer import compact_text
 
 logger = logging.getLogger(__name__)
 
 EMBEDDING_MODEL = "gemini-embedding-2"
-EMBEDDING_DIMENSIONS = 1536
 
 
 async def _embed(text: str) -> List[float]:

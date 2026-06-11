@@ -4,7 +4,7 @@
 import json
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Tuple, Dict, Any
 import asyncpg
 
@@ -32,23 +32,25 @@ class ChatHistory:
         if timestamp is None:
             timestamp = datetime.now()
         
+        # L-18: вставку и чистку «хвоста» делаем атомарно в одной транзакции.
         async with get_db() as conn:
-            await conn.execute("""
-                INSERT INTO chat_history (chat_id, timestamp, user_name, message_text, created_at)
-                VALUES ($1, $2, $3, $4, NOW())
-            """, chat_id, timestamp, user_name, message_text)
-            
-            # Очищаем старые записи (оставляем только последние 30)
-            await conn.execute("""
-                DELETE FROM chat_history
-                WHERE chat_id = $1
-                AND id NOT IN (
-                    SELECT id FROM chat_history
+            async with conn.transaction():
+                await conn.execute("""
+                    INSERT INTO chat_history (chat_id, timestamp, user_name, message_text, created_at)
+                    VALUES ($1, $2, $3, $4, NOW())
+                """, chat_id, timestamp, user_name, message_text)
+
+                # Очищаем старые записи (оставляем только последние 30)
+                await conn.execute("""
+                    DELETE FROM chat_history
                     WHERE chat_id = $1
-                    ORDER BY timestamp DESC
-                    LIMIT 30
-                )
-            """, chat_id)
+                    AND id NOT IN (
+                        SELECT id FROM chat_history
+                        WHERE chat_id = $1
+                        ORDER BY timestamp DESC
+                        LIMIT 30
+                    )
+                """, chat_id)
     
     @staticmethod
     async def get_recent(chat_id: int, limit: int = 30) -> List[Tuple[datetime, str]]:
@@ -80,22 +82,24 @@ class ChatHistoryRP:
         if timestamp is None:
             timestamp = datetime.now()
 
+        # L-18: вставку и чистку «хвоста» делаем атомарно в одной транзакции.
         async with get_db() as conn:
-            await conn.execute("""
-                INSERT INTO chat_history_rp (chat_id, timestamp, user_name, message_text, created_at)
-                VALUES ($1, $2, $3, $4, NOW())
-            """, chat_id, timestamp, user_name, message_text)
+            async with conn.transaction():
+                await conn.execute("""
+                    INSERT INTO chat_history_rp (chat_id, timestamp, user_name, message_text, created_at)
+                    VALUES ($1, $2, $3, $4, NOW())
+                """, chat_id, timestamp, user_name, message_text)
 
-            await conn.execute("""
-                DELETE FROM chat_history_rp
-                WHERE chat_id = $1
-                AND id NOT IN (
-                    SELECT id FROM chat_history_rp
+                await conn.execute("""
+                    DELETE FROM chat_history_rp
                     WHERE chat_id = $1
-                    ORDER BY timestamp DESC
-                    LIMIT 30
-                )
-            """, chat_id)
+                    AND id NOT IN (
+                        SELECT id FROM chat_history_rp
+                        WHERE chat_id = $1
+                        ORDER BY timestamp DESC
+                        LIMIT 30
+                    )
+                """, chat_id)
 
     @staticmethod
     async def get_recent(chat_id: int, limit: int = 30) -> List[Tuple[datetime, str]]:
@@ -1990,9 +1994,10 @@ class ChatEmotionalState:
                         if _em in mood_dict:
                             mood_dict[_em] = min(max(mood_dict[_em] + _d, 0.0), 1.0)
 
-                # Применяем циркадный сдвиг к вектору
+                # Применяем циркадный сдвиг к вектору (DB-03: now(timezone.utc) вместо
+                # устаревшего utcnow(); локальный час пользователя считается так же).
                 if user_tz is not None:
-                    hour = (datetime.utcnow() + timedelta(hours=user_tz)).hour
+                    hour = (datetime.now(timezone.utc) + timedelta(hours=user_tz)).hour
                 else:
                     hour = datetime.now().hour
 
