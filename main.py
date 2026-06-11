@@ -50,7 +50,8 @@ from bot.commands import (
 )
 from bot.queue import (
     generation_worker, dubbing_worker, vclone_worker, 
-    vclone_fsm_timeout_watchdog, proactive_scheduler_worker
+    vclone_fsm_timeout_watchdog, proactive_scheduler_worker,
+    run_supervised
 )
 from bot.retry_bot import RetryBot
 from config import TELEGRAM_TOKEN
@@ -95,16 +96,17 @@ def run_with_restart():
                     logger.error(f"Ошибка при инициализации БД: {e}", exc_info=True)
                     logger.warning("Продолжаем работу без БД")
 
-                app.create_task(generation_worker())
-                logger.info("Глобальный воркер генерации запущен.")
-                app.create_task(dubbing_worker())
-                logger.info("Воркер дубляжа видео запущен.")
-                app.create_task(vclone_worker())
-                logger.info("Воркер vclone запущен.")
-                app.create_task(vclone_fsm_timeout_watchdog(app.bot))
-                logger.info("Watchdog vclone FSM запущен.")
-                app.create_task(proactive_scheduler_worker(app.bot))
-                logger.info("Проактивный воркер шедулера запущен.")
+                # L-03: воркеры под супервизором — упавший автоматически перезапустится.
+                app.create_task(run_supervised(generation_worker, "generation_worker"))
+                logger.info("Глобальный воркер генерации запущен (supervised).")
+                app.create_task(run_supervised(dubbing_worker, "dubbing_worker"))
+                logger.info("Воркер дубляжа видео запущен (supervised).")
+                app.create_task(run_supervised(vclone_worker, "vclone_worker"))
+                logger.info("Воркер vclone запущен (supervised).")
+                app.create_task(run_supervised(vclone_fsm_timeout_watchdog, "vclone_fsm_watchdog", app.bot))
+                logger.info("Watchdog vclone FSM запущен (supervised).")
+                app.create_task(run_supervised(proactive_scheduler_worker, "proactive_scheduler", app.bot))
+                logger.info("Проактивный воркер шедулера запущен (supervised).")
                 logger.info("Глобальные ретраи для отправки сообщений (3 попытки) активированы.")
 
             # Создаём приложение с кастомными таймаутами и RetryBot
@@ -233,7 +235,7 @@ def main():
             loop.run_until_complete(close_db())
             loop.close()
             logger.info("Соединение с БД окончательно закрыто")
-        except:
+        except Exception:
             pass
         logger.info("Бот завершил работу")
 

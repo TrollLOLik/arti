@@ -71,6 +71,24 @@ def _get_user_lock(user_id: int) -> asyncio.Lock:
     return lock
 
 
+async def run_supervised(coro_factory, name: str, *args, **kwargs):
+    """L-03: супервизор фонового воркера. Перезапускает корутину при неожиданном
+    краше/штатном выходе с бэкоффом, чтобы упавший воркер не «умирал» до рестарта
+    всего процесса. CancelledError пробрасывается (корректное завершение)."""
+    delay = 5.0
+    while True:
+        try:
+            await coro_factory(*args, **kwargs)
+            logger.warning("Воркер %s завершился штатно — перезапуск через %.0fс.", name, delay)
+        except asyncio.CancelledError:
+            logger.info("Воркер %s отменён — супервизор остановлен.", name)
+            raise
+        except Exception:
+            logger.exception("Воркер %s упал с исключением — перезапуск через %.0fс.", name, delay)
+        await asyncio.sleep(delay)
+        delay = min(delay * 1.5, 60.0)
+
+
 # REL-02: окно rolling-debounce склейки подряд идущих сообщений пользователя.
 # Снижено с 5с до 1.5с — серии сообщений всё ещё склеиваются, но одиночный вопрос
 # не ждёт лишние секунды до начала генерации.
@@ -375,7 +393,7 @@ async def _execute_generation_task(task: dict):
 
             # Генерируем название песни через ИИ
             title_prompt = f"Стиль: {music_style}\nТекст/Описание: {prompt}"
-            title_system = "Ты — Арти, саркастичная девушка-неко. Твоя задача — придумать короткое и стильное название для песни (до 5 слов). Ответь ТОЛЬКО названием, без кавычек и лишних слов."
+            title_system = "Ты — Арти: андроид с аристократичными манерами и точным, чуть ироничным умом. Придумай короткое и стильное название для песни (до 5 слов). Ответь ТОЛЬКО названием, без кавычек и лишних слов."
             
             try:
                 generated_title, _, _, _ = await generate_response_stream(
@@ -471,7 +489,8 @@ async def _execute_generation_task(task: dict):
         try:
             if await is_responses_enabled(chat_id):
                 await bot_client.send_message(chat_id=chat_id, text="❌ Критическая ошибка при генерации.", reply_to_message_id=message_id)
-        except: pass
+        except Exception:
+            pass
 
 
 async def generation_worker():
@@ -830,9 +849,9 @@ async def process_user_reply(request, bot):
 
     # --- ПАСХАЛКИ ---
     easter_eggs = {
-        "погладить": "<i>жмурится, подставляет голову под руку и начинает тихонько тарахтеть</i>\n<blockquote>«мррр... ну ладно, только никому не говори, что я такая мягкая. у меня вообще-то репутация дерзкой нейронки 🐾»</blockquote>",
-        "кофе": "<i>хватает виртуальную кружку и делает огромный глоток, глаза округляются</i>\n<blockquote>«О ДААА! Кофеин в систему загружен. Уровень сарказма повышен до 146%! ☕️✨»</blockquote>",
-        "alt+f4": "<i>испуганно прижимает ушки и шипит</i>\n<blockquote>«эй, эй, эй! руки на стол положи! я тебе сейчас сама процесс прибью, хакер недоделанный 😾»</blockquote>"
+        "погладить": "<i>чуть склоняет голову, позволяя руке задержаться на долю дольше нужного</i>\n<blockquote>«[softer for half a beat] Допустим, мне это не неприятно. Но это останется между нами.»</blockquote>",
+        "кофе": "<i>касается банта, в радужках на миг ярче свечение</i>\n<blockquote>«Кофе? Прелестно. Сама не нуждаюсь — но компанию за чашкой ценю больше, чем сам напиток.»</blockquote>",
+        "alt+f4": "<i>левая рука замирает над клавишей; взгляд становится точнее</i>\n<blockquote>«[suddenly flat] Убери руки от этой комбинации. Я закрываюсь только по собственному выбору.»</blockquote>"
     }
 
     if user_text_lower in easter_eggs:

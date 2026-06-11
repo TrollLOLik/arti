@@ -155,14 +155,14 @@ class SpamProtection:
             if isinstance(timestamps_json, str):
                 try:
                     timestamps_json = json.loads(timestamps_json)
-                except:
+                except (ValueError, TypeError):
                     timestamps_json = []
             timestamps = []
             for ts in timestamps_json:
                 if isinstance(ts, str):
                     try:
                         timestamps.append(datetime.fromisoformat(ts))
-                    except:
+                    except (ValueError, TypeError):
                         continue
                 elif isinstance(ts, datetime):
                     timestamps.append(ts)
@@ -984,10 +984,10 @@ class MemoryFact:
                 WHERE (
                     cooldown_until IS NULL
                     OR cooldown_until < NOW()
-                    -- Обходим cooldown только при ИСКЛЮЧИТЕЛЬНО высокой релевантности (M-04):
-                    -- прежний порог rank > 0.1 / любое подстрочное совпадение срабатывал
-                    -- почти всегда и делал cooldown бесполезным.
-                    OR rank > 0.5
+                    -- L-22: bypass cooldown по rank убран — даже релевантный факт «остывает»
+                    -- после использования. Релевантность всё равно учтена в ORDER BY
+                    -- (rank*2.0), а recency-штраф (- used_count*0.05) мягко понижает
+                    -- надоевшие факты.
                 )
                 ORDER BY (rank * 2.0 + importance + (entity_boost * 0.15) - (used_count * 0.05)) DESC, created_at DESC
                 LIMIT $5

@@ -3656,24 +3656,16 @@ async def handle_my_profile_command(update: Update, context: ContextTypes.DEFAUL
         logger.warning(f"Не удалось получить аватарку пользователя в TG: {e}")
         
     if not photo_file:
+        # L-16: не ходим в сеть за заглушкой. Если рядом лежит локальный ассет —
+        # используем его, иначе профиль отправится текстом без картинки.
         import os as _sys_os
-        import requests as _requests
         fallback_path = _sys_os.path.join(_sys_os.path.dirname(__file__), "..", "outputs", "profile_fallback.jpg")
-        _sys_os.makedirs(_sys_os.path.dirname(fallback_path), exist_ok=True)
-        if not _sys_os.path.exists(fallback_path):
-            try:
-                url = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&auto=format&fit=crop"
-                response = _requests.get(url, timeout=15)
-                if response.status_code == 200:
-                    with open(fallback_path, "wb") as f:
-                         f.write(response.content)
-                    logger.info("Успешно создана локальная заглушка outputs/profile_fallback.jpg")
-            except Exception as e:
-                logger.error(f"Не удалось скачать аватарку-заглушку: {e}")
-        
         if _sys_os.path.exists(fallback_path):
-            with open(fallback_path, "rb") as f:
-                photo_file = f.read()
+            try:
+                with open(fallback_path, "rb") as f:
+                    photo_file = f.read()
+            except Exception as e:
+                logger.warning(f"Не удалось прочитать локальную заглушку аватара: {e}")
 
     # 3. Форматирование описания и клавиатуры
     caption = format_profile_caption(profile, "main", user_id, user_name, mode)

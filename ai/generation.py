@@ -418,7 +418,9 @@ async def generate_response_stream(
     # RP-режим: переопределяем системный промпт и отключаем поиск/карты
     if is_rp_mode:
         from config import RP_SYSTEM_PROMPT
-        actual_role = custom_system_prompt if custom_system_prompt else RP_SYSTEM_PROMPT
+        # L-09: если arti_card.md отсутствует/пуст, RP_SYSTEM_PROMPT="" → не запускаем
+        # RP с пустым системным промптом, а откатываемся на основной промпт Арти.
+        actual_role = custom_system_prompt or RP_SYSTEM_PROMPT or ARTI_SYSTEM_PROMPT
         should_search = False
         user_location = None
     else:

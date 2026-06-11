@@ -720,7 +720,7 @@ async def _process_images(
                 text="Ошибка... Но я тут! 😉",
                 reply_to_message_id=message_id
             )
-        except:
+        except Exception:
             pass
 
 
@@ -728,8 +728,10 @@ async def _collect_and_process_media_group(
     bot, media_group_id, chat_id, user_id, user_name, message_id,
     replied_to_bot, is_private
 ):
-    """Ждёт 2.5 сек, собирает все картинки из альбома, запускает обработку."""
-    await asyncio.sleep(2.5)
+    """Ждёт окно сбора, собирает все картинки из альбома, запускает обработку."""
+    # L-06: окно 4с (было 2.5с) — большие альбомы/медленная сеть успевают доехать,
+    # иначе поздние части группы терялись.
+    await asyncio.sleep(4.0)
 
     group_data = _media_group_cache.pop(media_group_id, None)
     if not group_data:
@@ -772,14 +774,15 @@ async def photo_action_callback(update: Update, context: ContextTypes.DEFAULT_TY
     user_name = query.from_user.first_name or query.from_user.username or "Пользователь"
 
     key = (chat_id, user_id)
+    # L-07: если для этого пользователя нет ожидания — это либо чужая кнопка, либо
+    # ожидание уже обработано. Тихо отвечаем и НЕ редактируем сообщение владельца.
+    if key not in pending_photo_action:
+        await query.answer("Эта кнопка не для тебя или уже неактуальна.", show_alert=False)
+        return
     pending = pending_photo_action.pop(key, None)
 
     if not pending:
-        await query.edit_message_text(
-            "<i>оглядывается, не находит картинки</i>\n\n"
-            "<blockquote>«Хм, похоже, эти фото уже потерялись. Отправь заново.»</blockquote>",
-            parse_mode='HTML'
-        )
+        await query.answer("Уже неактуально.", show_alert=False)
         return
 
     base64_images = pending["images"]
@@ -1110,7 +1113,7 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
                 text="❌ Произошла ошибка при обработке голосового сообщения. Попробуйте позже.",
                 reply_to_message_id=message_id
             )
-        except:
+        except Exception:
             pass
 
     finally:
@@ -1385,14 +1388,14 @@ async def document_action_callback(update: Update, context: ContextTypes.DEFAULT
     user_name = query.from_user.first_name or query.from_user.username or "Пользователь"
 
     key = (chat_id, user_id)
+    # L-07: чужая/неактуальная кнопка — тихо отвечаем, не редактируя сообщение владельца.
+    if key not in pending_doc_action:
+        await query.answer("Эта кнопка не для тебя или уже неактуальна.", show_alert=False)
+        return
     pending = pending_doc_action.pop(key, None)
 
     if not pending:
-        await query.edit_message_text(
-            "<i>оглядывается — документа уже нет на столе</i>\n\n"
-            "<blockquote>«Хм, куда-то делся. Отправь ещё раз.»</blockquote>",
-            parse_mode='HTML'
-        )
+        await query.answer("Уже неактуально.", show_alert=False)
         return
 
     # --- Отмена ---

@@ -109,7 +109,7 @@ def extract_urls_and_make_keyboard(text: str, extra_links=None):
         if url_clean not in url_titles:
             try:
                 domain = urlparse(url_clean).netloc.replace('www.', '')
-            except:
+            except Exception:
                 domain = "Ссылка"
             url_titles[url_clean] = domain
         
