@@ -27,6 +27,12 @@ logger = logging.getLogger(__name__)
 # до завершения (см. docs asyncio.create_task). Снимаем в done-callback.
 _BACKGROUND_TASKS: set = set()
 
+# MEM-04: счётчик новых фактов ПО ЧАТУ (chat_id, mode) -> int с момента последней
+# консолидации. Заменяет старый триггер по глобальному id % N, при котором частота
+# обслуживания чата зависела от трафика других чатов. Память процесса; сброс при
+# рестарте лишь отложит ближайшую консолидацию (безопасно).
+_consolidation_counters: dict = {}
+
 
 def _track_background_task(task) -> None:
     _BACKGROUND_TASKS.add(task)
@@ -409,12 +415,16 @@ async def remember_exchange(
             description=relation.get("description") or None,
         )
 
-    if (
-        MEMORY_CONSOLIDATION_AUTO
-        and source_message_id
-        and MEMORY_CONSOLIDATION_INTERVAL > 0
-        and source_message_id % MEMORY_CONSOLIDATION_INTERVAL == 0
-    ):
+    # MEM-04: триггерим консолидацию по числу НОВЫХ фактов именно этого чата.
+    should_consolidate = False
+    if MEMORY_CONSOLIDATION_AUTO and MEMORY_CONSOLIDATION_INTERVAL > 0 and created_facts > 0:
+        counter_key = (chat_id, mode)
+        _consolidation_counters[counter_key] = _consolidation_counters.get(counter_key, 0) + created_facts
+        if _consolidation_counters[counter_key] >= MEMORY_CONSOLIDATION_INTERVAL:
+            _consolidation_counters[counter_key] = 0
+            should_consolidate = True
+
+    if should_consolidate:
         consolidation_task = asyncio.create_task(
             maybe_consolidate(
                 chat_id=chat_id,

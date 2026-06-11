@@ -75,6 +75,10 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 
 CATBOX_USERHASH = os.getenv("CATBOX_USERHASH", "").strip()
 
+# OmniRoute (OpenAI-совместимый прокси для non-Gemini моделей). Адрес выносим в env
+# (CONF-02), чтобы не хардкодить localhost-эндпоинт в нескольких местах кода.
+OMNIROUTE_BASE_URL = os.getenv("OMNIROUTE_BASE_URL" "")
+
 # ============================================================================
 # ИСТОРИЯ ЧАТОВ
 # ============================================================================

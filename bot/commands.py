@@ -903,8 +903,9 @@ async def _ping_single_model(model_info: dict, sem: asyncio.Semaphore) -> Tuple[
                     return model_id, time.monotonic() - start_time
                 return model_id, "empty"
             else:
+                from config import OMNIROUTE_BASE_URL
                 client = AsyncOpenAI(
-                    base_url="http://localhost:20128/v1",
+                    base_url=OMNIROUTE_BASE_URL,
                     api_key=os.getenv("OMNIROUTE_API_KEY", ""),
                     max_retries=0 # Отключаем ретраи, чтобы не копить таймауты при перегрузке
                 )

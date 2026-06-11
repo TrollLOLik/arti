@@ -55,11 +55,24 @@ def is_known_video_url(url: str) -> bool:
     """URL принадлежит известному видеохостингу или указывает на видеофайл."""
     if not url:
         return False
-    url_lower = url.lower()
-    if any(host in url_lower for host in _KNOWN_VIDEO_HOSTS):
-        return True
+
+    # VAL-03: сверяем именно HOSTNAME, а не подстроку во всём URL — иначе
+    # https://evil.com/?x=youtube.com и https://youtube.com.evil.io/... считались бы
+    # «известным видеохостингом».
+    from urllib.parse import urlparse
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        host = ""
+    if host:
+        host = host.lstrip(".")
+        for known in _KNOWN_VIDEO_HOSTS:
+            k = known.lower()
+            if host == k or host.endswith("." + k):
+                return True
+
     # Прямые ссылки на видеофайлы
-    if re.search(r"\.(mp4|webm|mkv|mov|m4v|avi)(?:\?|$)", url_lower):
+    if re.search(r"\.(mp4|webm|mkv|mov|m4v|avi)(?:\?|$)", url.lower()):
         return True
     return False
 

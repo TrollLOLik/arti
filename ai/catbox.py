@@ -130,11 +130,17 @@ async def download_file(url: str, target_path: Path | str) -> Path:
 
     last_error: Exception | None = None
 
+    # VAL-04: allowlist проверяется ДО запроса, но авто-следование редиректам могло бы
+    # увести на адрес вне allowlist (в т.ч. внутренний). Прямые ссылки catbox/litterbox
+    # отдают контент сразу (200), поэтому редиректы НЕ следуем — fail closed.
+
     # Попытка 1: httpx со стандартными настройками (trust_env по умолчанию True,
     # чтобы использовать SSL-сертификаты Conda на Windows).
     try:
-        async with httpx.AsyncClient(timeout=CATBOX_TIMEOUT, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=CATBOX_TIMEOUT, follow_redirects=False) as client:
             response = await client.get(url)
+            if response.is_redirect:
+                raise RuntimeError(f"unexpected redirect to {response.headers.get('location')!r}")
             response.raise_for_status()
             await asyncio.to_thread(path.write_bytes, response.content)
         return path
@@ -147,7 +153,9 @@ async def download_file(url: str, target_path: Path | str) -> Path:
         import aiohttp
         timeout = aiohttp.ClientTimeout(total=CATBOX_TIMEOUT)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url) as response:
+            async with session.get(url, allow_redirects=False) as response:
+                if response.status in (301, 302, 303, 307, 308):
+                    raise RuntimeError(f"unexpected redirect (HTTP {response.status})")
                 response.raise_for_status()
                 content = await response.read()
                 await asyncio.to_thread(path.write_bytes, content)
@@ -156,10 +164,11 @@ async def download_file(url: str, target_path: Path | str) -> Path:
         last_error = exc
         logger.debug("aiohttp download failed for %s: %s", url, exc)
 
-    # Попытка 3: curl.exe fallback (отлично обходит локальные проблемы со SSL/прокси в Python на Windows)
+    # Попытка 3: curl.exe fallback (отлично обходит локальные проблемы со SSL/прокси в Python на Windows).
+    # Без -L: редиректы не следуем (VAL-04, тот же fail-closed принцип).
     try:
         proc = await asyncio.create_subprocess_exec(
-            "curl.exe", "-L", "-sS", "-o", str(path), url,
+            "curl.exe", "-sS", "-o", str(path), url,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

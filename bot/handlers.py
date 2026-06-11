@@ -298,13 +298,19 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # === Перехват одиночного URL на видео: предлагаем инлайн-меню ===
     # Условия: ЛС, сообщение — только URL, известный видеохост, нет reply/forward/упоминания.
-    forwarded_from_bot = (hasattr(update.message, "forward_from") and
-                          update.message.forward_from and
-                          update.message.forward_from.is_bot)
-    replied_to_bot = (update.message.reply_to_message and
-                      update.message.reply_to_message.from_user and
-                      update.message.reply_to_message.from_user.is_bot)
-    has_arti_mention = "арти" in user_message.lower()
+    # VAL-01: реагируем на reply/forward именно от САМОЙ Арти, а не от любого бота.
+    bot_id = context.bot.id
+    forwarded_from_bot = bool(
+        getattr(update.message, "forward_from", None)
+        and update.message.forward_from.id == bot_id
+    )
+    replied_to_bot = bool(
+        update.message.reply_to_message
+        and update.message.reply_to_message.from_user
+        and update.message.reply_to_message.from_user.id == bot_id
+    )
+    # VAL-01: упоминание по границе слова, иначе «квАРТИра»/«пАРТИя» ложно триггерят.
+    has_arti_mention = bool(re.search(r'\bарти\b', user_message.lower()))
 
     is_private_chat = update.effective_chat.type == "private"
 
@@ -442,7 +448,8 @@ async def _process_images(
 ):
     """Фоновая задача: отправляет все собранные картинки в ИИ и шлёт ответ."""
     try:
-        if not (is_private or ("арти" in user_caption.lower()) or replied_to_bot):
+        # VAL-01: упоминание по границе слова, а не подстрокой.
+        if not (is_private or bool(re.search(r'\bарти\b', user_caption.lower())) or replied_to_bot):
             logger.info("Триггер для ответа на фото не сработал — пропускаем")
             return
 
@@ -495,6 +502,10 @@ async def _process_images(
             emotional_state=img_state,
         )
         logger.info(f"RAW ИИ ОТВЕТ (фото, {len(base64_images)} шт): {response_text}")
+
+        # MEM-06: ответ-заглушку об ошибке покажем, но не сохраняем в историю/память.
+        from ai.generation import is_error_response
+        generation_failed = is_error_response(response_text)
 
         # === ЦЕПОЧКА ОЧИСТКИ ТЕКСТА ===
         response_text = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL | re.IGNORECASE).strip()
@@ -559,7 +570,9 @@ async def _process_images(
         if not response_text.strip() and sticker_mood:
             history_response_text = f"[Стикер: {sticker_mood}]"
 
-        await _save_message(chat_id, "Арти", history_response_text)
+        # MEM-06: заглушку об ошибке не пишем в историю.
+        if not generation_failed:
+            await _save_message(chat_id, "Арти", history_response_text)
 
         # === ОТПРАВКА СООБЩЕНИЯ (ТЕКСТ/ГОЛОС) ===
         sent_msg = None
@@ -630,18 +643,20 @@ async def _process_images(
                 )
             )
 
-        memory_task = asyncio.create_task(
-            remember_exchange(
-                chat_id=chat_id,
-                user_id=user_id,
-                user_name=user_name,
-                user_message=user_caption,
-                response_text=history_response_text,
-                mode="rp" if rp_mode_state.get(chat_id) else "default",
-                metadata={"message_id": message_id, "used_search": used_search, "source": "image"},
+        # MEM-06: не учим память на заглушке об ошибке.
+        if not generation_failed:
+            memory_task = asyncio.create_task(
+                remember_exchange(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    user_name=user_name,
+                    user_message=user_caption,
+                    response_text=history_response_text,
+                    mode="rp" if rp_mode_state.get(chat_id) else "default",
+                    metadata={"message_id": message_id, "used_search": used_search, "source": "image"},
+                )
             )
-        )
-        _track_task(memory_task)
+            _track_task(memory_task)
 
         # === ОТПРАВЛЯЕМ КАРТИНКИ ИЗ ПОИСКА ===
         if found_search_images:
@@ -901,10 +916,10 @@ async def handle_image_message(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.error(f"Ошибка при base64-кодировании изображения: {e}")
         return
 
-    replied_to_bot = (
+    replied_to_bot = bool(
         update.message.reply_to_message
         and update.message.reply_to_message.from_user
-        and update.message.reply_to_message.from_user.is_bot
+        and update.message.reply_to_message.from_user.id == context.bot.id  # VAL-01
     )
     is_private = update.effective_chat.type == "private"
 
@@ -1057,7 +1072,12 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         await _save_message(chat_id, update.message.from_user.first_name, transcription, user_id=user_id)
 
         is_private = update.effective_chat.type == "private"
-        if is_private or (update.message.reply_to_message and update.message.reply_to_message.from_user.is_bot) or contains_arti(transcription):
+        replied_to_bot = bool(
+            update.message.reply_to_message
+            and update.message.reply_to_message.from_user
+            and update.message.reply_to_message.from_user.id == context.bot.id  # VAL-01
+        )
+        if is_private or replied_to_bot or contains_arti(transcription):
             await enqueue_reply(
                 chat_id=chat_id, user_id=user_id,
                 user_name=update.message.from_user.first_name,
@@ -1145,14 +1165,14 @@ async def handle_video_upload_message(update: Update, context: ContextTypes.DEFA
     video_file_id = update.message.video.file_id
     user_caption = update.message.caption or "Проанализируй это видео."
     
-    replied_to_bot = (
+    replied_to_bot = bool(
         update.message.reply_to_message
         and update.message.reply_to_message.from_user
-        and update.message.reply_to_message.from_user.is_bot
+        and update.message.reply_to_message.from_user.id == context.bot.id  # VAL-01
     )
     is_private = update.effective_chat.type == "private"
-    
-    if is_private or ("арти" in user_caption.lower()) or replied_to_bot:
+
+    if is_private or bool(re.search(r'\bарти\b', user_caption.lower())) or replied_to_bot:
         await _save_message(chat_id, user_name, user_caption, user_id=user_id)
         await enqueue_reply(chat_id, user_id, user_name, user_caption, message_id, context, is_voice=True, video_file_id=video_file_id)
     else:
@@ -1616,13 +1636,14 @@ async def _process_video_url_transcribe(
             await _send_long_html(bot, chat_id, message_id, "📝 <b>Транскрипция</b>\n\n" + _html.escape(transcript))
 
     except Exception as exc:
+        # VAL-05: детали ошибки (стектрейс/внутренние пути) — только в лог, не в чат.
         logger.exception("Ошибка при обработке URL-видео (transcribe/summary)")
         try:
             await bot.send_message(
                 chat_id=chat_id,
                 text=(
-                    "❌ <b>Не получилось.</b>\n\n"
-                    f"<pre>{_html.escape(str(exc))[-3500:]}</pre>"
+                    "<i>Разводит руками</i>\n"
+                    "<blockquote>«Не получилось обработать это видео. Попробуй другое.»</blockquote>"
                 ),
                 reply_to_message_id=message_id,
                 parse_mode='HTML',

@@ -84,6 +84,9 @@ def _normalize_events(payload: Dict[str, Any], allowed_ids: set[int]) -> List[Di
                 source_ids.append(source_id)
         if not source_ids:
             continue
+        # MEM-05: храним id по возрастанию, чтобы дальнейшая логика "после какого id"
+        # не зависела от порядка, в котором их перечислила LLM.
+        source_ids.sort()
         events.append({"title": title, "summary": summary, "topics": topics, "source_message_ids": source_ids})
     return events
 

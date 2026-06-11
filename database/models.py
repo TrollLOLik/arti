@@ -318,12 +318,14 @@ class UserLocation:
     @staticmethod
     async def get_with_ttl(user_id: int, ttl_seconds: int = 14400) -> Optional[dict]:
         """Получить геопозицию, если она не протухла (по умолчанию 4 часа)"""
+        # DB-01: TTL передаём параметром через make_interval, а не интерполяцией
+        # строки в SQL (единственное место в проекте со %-форматированием запроса).
         async with get_db() as conn:
             row = await conn.fetchrow("""
                 SELECT lat, lng, address, city, updated_at
                 FROM user_locations
-                WHERE user_id = $1 AND updated_at > NOW() - INTERVAL '%s seconds'
-            """ % ttl_seconds, user_id)
+                WHERE user_id = $1 AND updated_at > NOW() - make_interval(secs => $2)
+            """, user_id, float(ttl_seconds))
             if row:
                 return {
                     "lat": row["lat"],
@@ -627,10 +629,12 @@ class MemoryChunk:
 
     @staticmethod
     async def latest_message_id() -> int:
+        # MEM-05: настоящий максимум по ВСЕМ элементам массива, а не последний
+        # элемент (порядок внутри message_ids не гарантирован).
         async with get_db() as conn:
             value = await conn.fetchval("""
-                SELECT COALESCE(MAX(message_ids[array_length(message_ids, 1)]), 0)
-                FROM memory_chunks
+                SELECT COALESCE(MAX(m), 0)
+                FROM memory_chunks, LATERAL unnest(message_ids) AS m
             """)
             return int(value or 0)
 
@@ -1486,12 +1490,15 @@ class MemoryTimeline:
 
     @staticmethod
     async def latest_source_message_id(chat_id: int, mode: str = "default") -> int:
+        # MEM-05: настоящий максимум по ВСЕМ элементам source_message_ids, а не
+        # последний элемент — LLM возвращает id в произвольном порядке, и заниженный
+        # after_id приводил к повторной обработке сообщений и дублям событий.
         async with get_db() as conn:
             value = await conn.fetchval("""
-                SELECT COALESCE(MAX(source_message_ids[array_length(source_message_ids, 1)]), 0)
-                FROM memory_timelines
-                WHERE chat_id = $1
-                AND mode = $2
+                SELECT COALESCE(MAX(m), 0)
+                FROM memory_timelines t, LATERAL unnest(t.source_message_ids) AS m
+                WHERE t.chat_id = $1
+                AND t.mode = $2
             """, chat_id, mode)
             return int(value or 0)
 
@@ -1823,10 +1830,14 @@ class ChatEmotionalState:
                 """, chat_id)
                 
                 if not state:
+                    # DB-02: ON CONFLICT — два первых сообщения в новый чат одновременно
+                    # иначе дают UniqueViolation. delta считаем из last_activity_time
+                    # (для свежей строки ≈ 0; на конфликте — реальная дельта).
                     state = await conn.fetchrow("""
                         INSERT INTO chat_emotional_states (chat_id, charge, mood_state, last_sticker_time, last_activity_time, sticker_history, last_sent_sticker_mood, conversation_stage, user_tz)
                         VALUES ($1, 0.0, '{"happy": 0.0, "sad": 0.0, "angry": 0.0, "love": 0.0, "teasing": 0.0, "shock": 0.0, "blush": 0.0, "bored": 0.0, "thinking": 0.0}'::jsonb, NULL, NOW(), '[]'::jsonb, NULL, 'active', NULL)
-                        RETURNING *, 0.0::float8 AS delta_t_seconds
+                        ON CONFLICT (chat_id) DO UPDATE SET chat_id = EXCLUDED.chat_id
+                        RETURNING *, EXTRACT(EPOCH FROM (NOW() - last_activity_time))::float8 AS delta_t_seconds
                     """, chat_id)
                 
                 # Запоминаем, был ли это первый ответ юзера на проактивный пуш

@@ -18,6 +18,30 @@ from config import genai_client, ARTI_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
+# MEM-06: тексты-заглушки, которые возвращает generate_response_stream при сбое.
+# Вынесены в константы, чтобы вызывающий код мог отличить ошибку от настоящего
+# ответа и НЕ сохранять её в историю чата и долговременную память.
+ERROR_RESPONSE_GENERIC = "К сожалению, произошла ошибка. Попробуйте позже."
+ERROR_RESPONSE_MODEL_PREFIX = "К сожалению, модель "
+ERROR_RESPONSE_MODEL_SUFFIX = " сейчас недоступна или отдыхает."
+
+
+def is_error_response(text) -> bool:
+    """True, если text — это служебная заглушка об ошибке генерации (или пусто).
+
+    Используется перед сохранением ответа Арти в историю/память: такие сообщения
+    показываем пользователю, но не учим на них модель и не держим в контексте.
+    """
+    if not text or not str(text).strip():
+        return True
+    t = str(text).strip()
+    if t == ERROR_RESPONSE_GENERIC:
+        return True
+    if t.startswith(ERROR_RESPONSE_MODEL_PREFIX) and t.endswith(ERROR_RESPONSE_MODEL_SUFFIX):
+        return True
+    return False
+
+
 # Инструкция для модели: в самом конце ответа дописать скрытый служебный тег интроспекции.
 # Бот распарсит его (строгая валидация + fail-closed фолбэк), применит дельты к настроению
 # и вырежет тег перед отправкой пользователю. Только 9 базовых эмоций, дельты в [-0.25, 0.25].
@@ -463,8 +487,9 @@ async def generate_response_stream(
     # 🌟 ВЕТКА OMNIROUTE (Claude, Qwen, DeepSeek, etc.)
     # =====================================================================
     if not model.lower().startswith("gemini"):
+        from config import OMNIROUTE_BASE_URL
         client = AsyncOpenAI(
-            base_url="http://localhost:20128/v1",
+            base_url=OMNIROUTE_BASE_URL,
             api_key=os.getenv("OMNIROUTE_API_KEY", "")
         )
 
@@ -497,7 +522,7 @@ async def generate_response_stream(
             
         except Exception as e:
             logger.error(f"Ошибка генерации через OmniRoute ({model}): {e}")
-            return f"К сожалению, модель {model} сейчас недоступна или отдыхает.", False, [], []
+            return f"{ERROR_RESPONSE_MODEL_PREFIX}{model}{ERROR_RESPONSE_MODEL_SUFFIX}", False, [], []
 
 
     # =====================================================================
@@ -642,5 +667,5 @@ async def generate_response_stream(
                 await asyncio.sleep(2)
             else:
                 logger.error("Все попытки генерации провалены.")
-                return "К сожалению, произошла ошибка. Попробуйте позже.", False, [], []
+                return ERROR_RESPONSE_GENERIC, False, [], []
 

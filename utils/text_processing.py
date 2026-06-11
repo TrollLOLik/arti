@@ -12,26 +12,22 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 logger = logging.getLogger(__name__)
 
 
-def contains_arti(text, threshold=0.7):
-    """Проверяет, содержит ли текст упоминание 'арти' (с учётом нечёткого поиска)."""
-    text_lower = text.lower()
+def contains_arti(text, threshold=0.85):
+    """Проверяет, содержит ли текст обращение 'арти' (с учётом опечаток распознавания).
+
+    VAL-01: раньше нечёткий поиск с порогом 0.7 ловил «март», «карт(ина)» и т.п.
+    Теперь: точное совпадение по границе слова, плюс консервативный fuzzy только для
+    коротких слов, реально содержащих корень «арт», с высоким порогом — чтобы
+    распознать опечатки («артти»), но не обычные слова.
+    """
+    text_lower = (text or "").lower()
 
     if re.search(r'\bарти\b', text_lower):
         return True
 
-    words = re.findall(r'\b\w{3,5}\b', text_lower)
-
-    for word in words:
-        matches = get_close_matches(word, ["арти"], n=1, cutoff=threshold)
-        if matches:
+    for word in re.findall(r'\b[а-яёa-z]{4,6}\b', text_lower):
+        if 'арт' in word and get_close_matches(word, ["арти"], n=1, cutoff=threshold):
             return True
-
-    if re.search(r'\b\w*арти\w*\b', text_lower):
-        long_words = re.findall(r'\b\w{6,}\b', text_lower)
-        for word in long_words:
-            if 'арти' in word:
-                if get_close_matches("арти", [word[:4]], cutoff=0.7):
-                    return True
     return False
 
 

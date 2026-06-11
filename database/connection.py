@@ -16,16 +16,38 @@ logger = logging.getLogger(__name__)
 
 # Глобальный пул соединений
 _pool: Optional[asyncpg.Pool] = None
+# DB-02: сериализуем инициализацию пула, иначе две конкурентные корутины на старте
+# (например, get_db() из параллельных задач до post_init) создадут два пула — один
+# утечёт. Lock создаётся лениво внутри текущего event loop.
+_pool_init_lock: Optional[asyncio.Lock] = None
+
+
+def _get_pool_init_lock() -> asyncio.Lock:
+    global _pool_init_lock
+    if _pool_init_lock is None:
+        _pool_init_lock = asyncio.Lock()
+    return _pool_init_lock
 
 
 async def init_db():
     """Инициализация пула соединений с PostgreSQL"""
     global _pool
-    
+
     if _pool is not None:
         logger.info("Пул соединений уже инициализирован")
         return
-    
+
+    async with _get_pool_init_lock():
+        # Повторная проверка под локом: пока ждали лок, пул мог уже создаться.
+        if _pool is not None:
+            return
+        await _init_db_locked()
+
+
+async def _init_db_locked():
+    """Создание пула (вызывается строго под _pool_init_lock)."""
+    global _pool
+
     # Параметры подключения из .env
     db_host = os.getenv("DB_HOST", "localhost")
     db_port = int(os.getenv("DB_PORT", "5432"))

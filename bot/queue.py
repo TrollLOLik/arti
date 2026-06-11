@@ -16,7 +16,7 @@ import requests
 from telegram import InputFile
 
 from config import MUSIC_COOLDOWN, TTS_ENABLED, rp_mode_state
-from ai.generation import generate_response_stream
+from ai.generation import generate_response_stream, is_error_response
 from ai.image import generate_image, generate_video
 from ai.music import generate_music, prepare_audio_with_cover
 from ai.tts import text_to_speech_telegram, _wav_to_telegram_ogg
@@ -956,7 +956,10 @@ async def process_user_reply(request, bot):
             except Exception as e:
                 logger.error(f"Failed to delete uploaded video file: {e}")
         logger.info(f"RAW ИИ ОТВЕТ: {response_text}")
-        print(f"Ответ Арти: {response_text[:100]}...")
+
+        # MEM-06: ответ-заглушка об ошибке генерации — покажем пользователю, но НЕ
+        # сохраняем в историю/память (иначе экстрактор учится на «у меня ошибка»).
+        generation_failed = is_error_response(response_text)
 
         if repeating_task:
             repeating_task.cancel()
@@ -1057,10 +1060,12 @@ async def process_user_reply(request, bot):
         if not response_text.strip() and sticker_mood:
             history_response_text = f"[Стикер: {sticker_mood}]"
 
-        if rp_mode_state.get(chat_id):
-            await save_chat_message_rp(chat_id, "Арти", history_response_text)
-        else:
-            await save_chat_message(chat_id, "Арти", history_response_text)
+        # MEM-06: ответ-заглушку об ошибке не пишем в историю.
+        if not generation_failed:
+            if rp_mode_state.get(chat_id):
+                await save_chat_message_rp(chat_id, "Арти", history_response_text)
+            else:
+                await save_chat_message(chat_id, "Арти", history_response_text)
 
         # === ОТПРАВКА СООБЩЕНИЯ (ТЕКСТ/ГОЛОС) ===
         sent_msg = None
@@ -1140,18 +1145,20 @@ async def process_user_reply(request, bot):
                 )
             )
 
-        memory_task = asyncio.create_task(
-            remember_exchange(
-                chat_id=chat_id,
-                user_id=user_id,
-                user_name=user_name,
-                user_message=user_message,
-                response_text=history_response_text,
-                mode="rp" if rp_mode_state.get(chat_id) else "default",
-                metadata={"message_id": message_id, "used_search": used_search},
+        # MEM-06: не учим долговременную память на заглушке об ошибке.
+        if not generation_failed:
+            memory_task = asyncio.create_task(
+                remember_exchange(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    user_name=user_name,
+                    user_message=user_message,
+                    response_text=history_response_text,
+                    mode="rp" if rp_mode_state.get(chat_id) else "default",
+                    metadata={"message_id": message_id, "used_search": used_search},
+                )
             )
-        )
-        _track_task(memory_task)
+            _track_task(memory_task)
 
         # === ОТПРАВЛЯЕМ КАРТИНКИ ИЗ ПОИСКА ===
         if found_search_images:

@@ -19,6 +19,16 @@ _location_cache = {}
 LIVE_TTL_SECONDS = 4 * 60 * 60      # 4 часа для live-локаций
 STATIC_TTL_SECONDS = 2 * 60 * 60    # 2 часа для статических
 
+# REL-05: троттлинг обратного геокодирования (Nominatim usage policy: ~1 req/s).
+# Live-геолокация шлёт апдейты каждые несколько секунд — без троттлинга легко
+# словить бан IP. Геокодируем не чаще раза в GEOCODE_MIN_INTERVAL на пользователя
+# и глобально разносим запросы минимум на GEOCODE_GLOBAL_SPACING секунд.
+GEOCODE_MIN_INTERVAL = 120.0
+GEOCODE_GLOBAL_SPACING = 1.1
+_last_geocode_at: dict = {}            # user_id -> monotonic
+_geocode_global_lock = None            # ленивый asyncio.Lock
+_geocode_last_global = 0.0
+
 
 async def _reverse_geocode(lat: float, lng: float) -> dict:
     """
@@ -34,6 +44,16 @@ async def _reverse_geocode(lat: float, lng: float) -> dict:
         "accept-language": "ru",
     }
     headers = {"User-Agent": "ArtiBot/1.0 (telegram bot)"}
+
+    # REL-05: глобально разносим запросы к Nominatim (>= ~1 req/s по их policy).
+    global _geocode_global_lock, _geocode_last_global
+    if _geocode_global_lock is None:
+        _geocode_global_lock = asyncio.Lock()
+    async with _geocode_global_lock:
+        wait = GEOCODE_GLOBAL_SPACING - (time.monotonic() - _geocode_last_global)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _geocode_last_global = time.monotonic()
 
     try:
         timeout = aiohttp.ClientTimeout(total=8)
@@ -74,26 +94,38 @@ async def set_user_location(user_id: int, lat: float, lng: float, is_live: bool 
     now = time.time()
     ttl = LIVE_TTL_SECONDS if is_live else STATIC_TTL_SECONDS
 
+    # REL-05: решаем, нужно ли геокодировать (троттлинг per-user).
+    mono = time.monotonic()
+    should_geocode = (mono - _last_geocode_at.get(user_id, 0.0)) >= GEOCODE_MIN_INTERVAL
+
     # Сохраняем в БД без адреса (сначала)
     try:
         await UserLocationModel.save(user_id, lat, lng, address=None, city=None)
     except Exception as e:
         logger.error(f"Ошибка сохранения локации в БД: {e}")
 
+    # Если геокодирование сейчас пропускаем — сохраняем ранее определённый адрес,
+    # чтобы не «обнулять» город/адрес на каждом live-апдейте.
+    prev = _location_cache.get(user_id) or {}
+    carry_city = None if should_geocode else prev.get("city")
+    carry_address = None if should_geocode else prev.get("address")
+
     # Обновляем in-memory кеш
     _location_cache[user_id] = {
         "lat": lat,
         "lng": lng,
-        "city": None,
-        "address": None,
+        "city": carry_city,
+        "address": carry_address,
         "timestamp": now,
         "live": is_live,
         "ttl": ttl,
     }
     logger.info(f"📍 Геопозиция пользователя {user_id} обновлена: {lat:.5f}, {lng:.5f} (live={is_live})")
 
-    # Фоновое геокодирование
-    asyncio.create_task(_do_geocoding(user_id, lat, lng))
+    # Фоновое геокодирование (с троттлингом — Nominatim usage policy).
+    if should_geocode:
+        _last_geocode_at[user_id] = mono
+        asyncio.create_task(_do_geocoding(user_id, lat, lng))
 
 
 async def _do_geocoding(user_id: int, lat: float, lng: float):
