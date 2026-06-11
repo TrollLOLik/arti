@@ -5,6 +5,7 @@
 import asyncio
 import asyncpg
 import os
+import re
 import sys
 from dotenv import load_dotenv
 
@@ -24,7 +25,14 @@ async def setup_database():
     db_name = os.getenv("DB_NAME", "arti_bot")
     db_user = os.getenv("DB_USER", "postgres")
     db_password = os.getenv("DB_PASSWORD", "")
-    
+
+    # Имя БД попадает в неэкранируемый CREATE DATABASE — допускаем только
+    # безопасный идентификатор, чтобы исключить SQL injection через DB_NAME.
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", db_name):
+        print(f"[ERROR] Недопустимое имя базы данных DB_NAME={db_name!r}. "
+              f"Разрешены латинские буквы, цифры и подчёркивание; первый символ — буква или _.")
+        return False
+
     if not db_password:
         print("[WARNING] DB_PASSWORD not found in .env file")
         try:

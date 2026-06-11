@@ -231,6 +231,10 @@ async def _execute_generation_task(task: dict):
                             if isinstance(img, bytes):
                                 img_io = io.BytesIO(img)
                             else:
+                                from utils.url_safety import is_safe_public_url_async
+                                if not await is_safe_public_url_async(img):
+                                    logger.warning(f"Пропущен небезопасный URL изображения (SSRF guard): {img!r}")
+                                    continue
                                 img_resp = await asyncio.to_thread(requests.get, img, timeout=60)
                                 img_resp.raise_for_status()
                                 img_io = io.BytesIO(img_resp.content)
@@ -244,6 +248,9 @@ async def _execute_generation_task(task: dict):
                         if isinstance(image_result, bytes):
                             image_bytes = io.BytesIO(image_result)
                         else:
+                            from utils.url_safety import is_safe_public_url_async
+                            if not await is_safe_public_url_async(image_result):
+                                raise ValueError(f"Небезопасный URL изображения (SSRF guard): {image_result!r}")
                             img_resp = await asyncio.to_thread(requests.get, image_result, timeout=60)
                             img_resp.raise_for_status()
                             image_bytes = io.BytesIO(img_resp.content)

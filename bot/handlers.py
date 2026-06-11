@@ -1769,6 +1769,19 @@ async def video_url_action_callback(update: Update, context: ContextTypes.DEFAUL
         # Переиспользуем dub flow: сразу шаг про сабы
         from config import dub_flow_state
         from bot.commands import _dub_subs_keyboard
+        from utils.admin import is_admin
+
+        # Озвучка — тяжёлый videotrans-pipeline, доступен только админам (как и /dub).
+        if not await is_admin(user, chat_id, context):
+            try:
+                await query.edit_message_text(
+                    "<i>Качает головой</i>\n"
+                    "<blockquote>«Озвучка — только для администраторов. Не в этот раз.»</blockquote>",
+                    parse_mode='HTML',
+                )
+            except Exception:
+                pass
+            return
 
         try:
             await query.edit_message_text(

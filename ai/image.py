@@ -14,6 +14,7 @@ from PIL import Image
 from dotenv import dotenv_values
 
 from config import YEPAPI_API_KEY
+from utils.url_safety import is_safe_public_url
 
 logger = logging.getLogger(__name__)
 
@@ -314,7 +315,10 @@ def _inferall_keys() -> list[str]:
     raw_keys = dotenv_value or env_value or ""
     keys = [key.strip() for key in raw_keys.split(",") if key.strip()]
     if not keys:
-        keys = ["ifu_3i730g033j6d0p301x636b0t0d2e6q3i"]
+        raise RuntimeError(
+            "INFERALL_API_KEY не задан. Укажите ключ(и) через переменную окружения "
+            "INFERALL_API_KEY (несколько — через запятую)."
+        )
     return keys
 
 
@@ -355,6 +359,9 @@ def _extract_inferall_images(raw_response: dict) -> tuple[list[bytes], str | Non
                 image_url_or_b64 = item.get("b64_json") or item.get("url")
                 if image_url_or_b64:
                     if image_url_or_b64.startswith("http"):
+                        if not is_safe_public_url(image_url_or_b64):
+                            logger.warning(f"Пропущен небезопасный URL изображения (SSRF guard): {image_url_or_b64!r}")
+                            continue
                         logger.info(f"Downloading generated image from URL: {image_url_or_b64}")
                         try:
                             img_resp = requests.get(image_url_or_b64, timeout=30)
@@ -372,6 +379,9 @@ def _extract_inferall_images(raw_response: dict) -> tuple[list[bytes], str | Non
     elif isinstance(raw_response.get("output"), str):
         output = raw_response.get("output")
         if output.startswith("http"):
+            if not is_safe_public_url(output):
+                logger.warning(f"Пропущен небезопасный URL изображения (SSRF guard): {output!r}")
+                return extracted, None
             try:
                 img_resp = requests.get(output, timeout=30)
                 if img_resp.status_code == 200:

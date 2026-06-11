@@ -3,6 +3,7 @@
 """
 import random
 import logging
+from collections import defaultdict, deque
 from datetime import datetime, timedelta
 
 from config import SPAM_THRESHOLD, SPAM_INTERVAL, BLOCK_DURATION
@@ -11,6 +12,24 @@ from database.models import SpamProtection
 from utils.response_status import is_responses_enabled
 
 logger = logging.getLogger(__name__)
+
+# Деградированный in-memory лимитер на случай недоступности БД (S-14).
+# Не блокируем всех наглухо (fail-closed), но и не открываемся полностью —
+# держим скользящее окно по (chat_id, user_id) в памяти процесса.
+_degraded_hits: "defaultdict[tuple, deque]" = defaultdict(deque)
+
+
+def _degraded_check_spam(chat_id, user_id) -> str:
+    """Резервная проверка спама в памяти процесса, когда БД недоступна."""
+    interval_delta = SPAM_INTERVAL if isinstance(SPAM_INTERVAL, timedelta) else timedelta(seconds=SPAM_INTERVAL)
+    now = datetime.now()
+    hits = _degraded_hits[(chat_id, user_id)]
+    while hits and (now - hits[0]) > interval_delta:
+        hits.popleft()
+    hits.append(now)
+    if len(hits) > SPAM_THRESHOLD:
+        return 'blocked'
+    return 'ok'
 
 SPAM_WARNING_REPLIES = [
     "<i>Поднимает взгляд от терминала с выражением, которое сложно назвать терпеливым</i>\n"
@@ -47,7 +66,8 @@ async def check_spam(chat_id, user_id, command_name):
 
     Использует SELECT ... FOR UPDATE внутри транзакции для предотвращения
     race condition при параллельных запросах (S-06).
-    При ошибке возвращает 'blocked' (fail-closed, S-07).
+    При ошибке БД переключается на деградированный in-memory лимитер (S-14),
+    чтобы сбой PostgreSQL не блокировал команды всем пользователям.
     """
     try:
         import json as _json
@@ -140,8 +160,8 @@ async def check_spam(chat_id, user_id, command_name):
                 return 'ok'
 
     except Exception as e:
-        logger.error(f"Ошибка при проверке спама: {e}", exc_info=True)
-        return 'blocked'
+        logger.error(f"Ошибка при проверке спама (переход на in-memory лимитер): {e}", exc_info=True)
+        return _degraded_check_spam(chat_id, user_id)
 
 
 async def handle_spam_protection(update, context, command_name) -> bool:

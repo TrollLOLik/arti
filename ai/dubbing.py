@@ -64,6 +64,11 @@ async def run_dubbing(
     if not input_file and not is_supported_url(url):
         return False, None, "URL должен начинаться с http:// или https:// либо нужен файл"
 
+    if not input_file:
+        from utils.url_safety import is_safe_public_url_async
+        if not await is_safe_public_url_async(url):
+            return False, None, "Недопустимый или небезопасный URL (заблокировано SSRF-защитой)"
+
     python_path = _resolve_python()
     if python_path is None:
         return False, None, (

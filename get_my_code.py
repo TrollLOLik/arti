@@ -1,9 +1,19 @@
 from pyrogram import Client, filters
 import asyncio
+import os
+from dotenv import load_dotenv
 
-# Используй те же данные, через которые зашла успешно
-api_id = 2040
-api_hash = "b18441a1ff607e10a989891a5462e627"
+load_dotenv()
+
+# Учётные данные Telegram API берём только из окружения (.env): TELEGRAM_API_ID / TELEGRAM_API_HASH.
+api_id_raw = os.getenv("TELEGRAM_API_ID", "")
+api_hash = os.getenv("TELEGRAM_API_HASH", "")
+if not api_id_raw.isdigit() or not api_hash:
+    raise RuntimeError(
+        "Не заданы TELEGRAM_API_ID / TELEGRAM_API_HASH. "
+        "Укажите их в .env (получить можно на https://my.telegram.org)."
+    )
+api_id = int(api_id_raw)
 
 async def main():
     # Подключаемся к уже созданному файлу сессии

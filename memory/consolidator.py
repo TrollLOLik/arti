@@ -201,9 +201,16 @@ async def consolidate_chat_facts(
     if dry_run:
         return report
 
-    # 1. Сохраняем новые Wiki-предложения как не верифицированные
+    # 1. Сохраняем новые Wiki-предложения как не верифицированные.
+    #    M-05: не перезаписываем уже существующую ВЕРИФИЦИРОВАННУЮ страницу —
+    #    иначе LLM-предложение сбросило бы ручное подтверждение (is_verified).
     suggested_wiki_ids = []
+    skipped_verified = 0
     for sug in plan["wiki_suggestions"]:
+        existing = await MemoryWikiPage.get_by_key(chat_id=chat_id, mode=mode, page_key=sug["page_key"])
+        if existing and existing.get("is_verified"):
+            skipped_verified += 1
+            continue
         page_id = await MemoryWikiPage.save(
             page_key=sug["page_key"],
             title=sug["title"],
@@ -217,6 +224,7 @@ async def consolidate_chat_facts(
         if page_id:
             suggested_wiki_ids.append(page_id)
     report["suggested_wiki_ids"] = suggested_wiki_ids
+    report["skipped_verified_wiki"] = skipped_verified
 
     if not plan["archive_ids"]:
         return report

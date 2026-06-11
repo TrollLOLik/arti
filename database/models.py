@@ -947,11 +947,12 @@ class MemoryFact:
                 SELECT *
                 FROM ranked_facts
                 WHERE (
-                    cooldown_until IS NULL 
+                    cooldown_until IS NULL
                     OR cooldown_until < NOW()
-                    -- Bypass cooldown if FTS rank is exceptionally high (e.g. > 0.1) OR it is an exact text substring match
-                    OR rank > 0.1
-                    OR is_direct_match
+                    -- Обходим cooldown только при ИСКЛЮЧИТЕЛЬНО высокой релевантности (M-04):
+                    -- прежний порог rank > 0.1 / любое подстрочное совпадение срабатывал
+                    -- почти всегда и делал cooldown бесполезным.
+                    OR rank > 0.5
                 )
                 ORDER BY (rank * 2.0 + importance + (entity_boost * 0.15) - (used_count * 0.05)) DESC, created_at DESC
                 LIMIT $5
@@ -991,20 +992,45 @@ class MemoryFact:
             return int(result.split()[-1])
 
     @staticmethod
+    async def archive_for_user(fact_id: int, chat_id: int, user_id: int, reason: str = "user_request") -> bool:
+        """Архивирует факт ТОЛЬКО если он принадлежит этому чату и пользователю
+        (или это общий факт чата с user_id IS NULL). Защита от IDOR в /forget:
+        нельзя стереть личный факт другого участника группы по чужому fact_id."""
+        try:
+            fact_id = int(fact_id)
+            chat_id = int(chat_id)
+            user_id = int(user_id)
+        except (TypeError, ValueError):
+            return False
+
+        async with get_db() as conn:
+            result = await conn.execute("""
+                UPDATE memory_facts
+                SET archived_at = NOW(),
+                    archive_reason = $4
+                WHERE id = $1
+                AND chat_id = $2
+                AND (user_id = $3 OR user_id IS NULL)
+                AND archived_at IS NULL
+            """, fact_id, chat_id, user_id, reason)
+            return result.split()[-1] != "0"
+
+    @staticmethod
     async def mark_used(fact_ids: List[int], cooldown_seconds: int = 3600):
         fact_ids = [int(fact_id) for fact_id in fact_ids if fact_id]
         if not fact_ids:
             return
 
-        cooldown_until = datetime.now() + timedelta(seconds=cooldown_seconds)
+        # cooldown_until считаем на стороне БД (NOW() + interval), чтобы не смешивать
+        # наивное локальное время приложения с временем сервера БД (M-07).
         async with get_db() as conn:
             await conn.execute("""
                 UPDATE memory_facts
                 SET used_count = used_count + 1,
                     last_used_at = NOW(),
-                    cooldown_until = $2
+                    cooldown_until = NOW() + make_interval(secs => $2)
                 WHERE id = ANY($1::bigint[])
-            """, fact_ids, cooldown_until)
+            """, fact_ids, float(cooldown_seconds))
 
 
 class MemoryRelation:

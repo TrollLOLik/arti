@@ -17,11 +17,20 @@ from memory.chunking import build_compact_chunks
 from memory.consolidator import maybe_consolidate
 from memory.embeddings import EMBEDDING_MODEL, embed_document, embed_query
 from memory.extractor import extract_memory
-from memory.normalizer import compact_text, keyword_query, normalize_entity_name
+from memory.normalizer import compact_text, keyword_query, normalize_entity_name, text_contains_entity
 from memory.profiles import get_profile_context, maybe_refresh_user_profile
 from memory.timeline import get_timeline_context
 
 logger = logging.getLogger(__name__)
+
+# Удерживаем ссылки на fire-and-forget задачи, иначе их может собрать GC
+# до завершения (см. docs asyncio.create_task). Снимаем в done-callback.
+_BACKGROUND_TASKS: set = set()
+
+
+def _track_background_task(task) -> None:
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
 
 
 def _format_relation(row: Dict[str, Any]) -> str:
@@ -48,41 +57,65 @@ async def build_memory_context(
 
     try:
         # 1. Загрузка Wiki Lore
-        wiki_personality = await MemoryWikiPage.get_by_key(chat_id=None, mode=mode, page_key="personality")
-        wiki_pages = await MemoryWikiPage.search(chat_id=chat_id, mode=mode, query=user_message, limit=1)
+        wiki_personality = None
         relevant_wiki = None
-        if wiki_pages:
-            candidate = wiki_pages[0]
-            if candidate.get("page_key") != "personality":
-                relevant_wiki = candidate
+        try:
+            wiki_personality = await MemoryWikiPage.get_by_key(chat_id=None, mode=mode, page_key="personality")
+            wiki_pages = await MemoryWikiPage.search(chat_id=chat_id, mode=mode, query=user_message, limit=1)
+            if wiki_pages:
+                candidate = wiki_pages[0]
+                if candidate.get("page_key") != "personality":
+                    relevant_wiki = candidate
+        except Exception as e:
+            logger.warning(f"Wiki retrieval недоступен: {e}")
 
         profile_context = ""
         if MEMORY_PROFILES_ENABLED:
-            profile_context = await get_profile_context(chat_id=chat_id, user_id=user_id, mode=mode)
+            try:
+                profile_context = await get_profile_context(chat_id=chat_id, user_id=user_id, mode=mode)
+            except Exception as e:
+                logger.warning(f"Profile retrieval недоступен: {e}")
 
         timeline_context = ""
         if MEMORY_TIMELINE_ENABLED:
-            timeline_context = await get_timeline_context(chat_id=chat_id, mode=mode, query=user_message, limit=3)
+            try:
+                timeline_context = await get_timeline_context(chat_id=chat_id, mode=mode, query=user_message, limit=3)
+            except Exception as e:
+                logger.warning(f"Timeline retrieval недоступен: {e}")
 
-        graph_entities = await MemoryEntity.find_mentions(chat_id=chat_id, text=user_message, limit=5)
+        graph_entities = []
         graph_relations = []
         all_related_entities = []
-        if graph_entities:
-            entity_ids = [entity.get("id") for entity in graph_entities]
-            # Находим 1-hop и 2-hop связанные сущности
-            all_related_entities = await MemoryEntity.find_related_entities(chat_id=chat_id, entity_ids=entity_ids, limit=10)
-            all_entity_ids = [entity.get("id") for entity in all_related_entities]
-            
-            # Находим связи для всех этих сущностей (включая связи 2-го порядка)
-            graph_relations = await MemoryRelation.find_for_entities(
-                chat_id=chat_id,
-                entity_ids=all_entity_ids,
-                limit=10,
-            )
+        try:
+            graph_entities = await MemoryEntity.find_mentions(chat_id=chat_id, text=user_message, limit=5)
+            if graph_entities:
+                entity_ids = [entity.get("id") for entity in graph_entities]
+                # Находим 1-hop и 2-hop связанные сущности
+                all_related_entities = await MemoryEntity.find_related_entities(chat_id=chat_id, entity_ids=entity_ids, limit=10)
+                all_entity_ids = [entity.get("id") for entity in all_related_entities]
 
-        facts = await MemoryFact.search(chat_id=chat_id, query=query, mode=mode, limit=fact_limit)
+                # Находим связи для всех этих сущностей (включая связи 2-го порядка)
+                graph_relations = await MemoryRelation.find_for_entities(
+                    chat_id=chat_id,
+                    entity_ids=all_entity_ids,
+                    limit=10,
+                )
+        except Exception as e:
+            logger.warning(f"Graph retrieval недоступен: {e}")
+            graph_entities, graph_relations, all_related_entities = [], [], []
+
+        facts = []
+        try:
+            facts = await MemoryFact.search(chat_id=chat_id, query=query, mode=mode, limit=fact_limit)
+        except Exception as e:
+            logger.warning(f"Fact retrieval недоступен: {e}")
+
         chunks = []
-        query_vector = await embed_query(user_message)
+        try:
+            query_vector = await embed_query(user_message)
+        except Exception as e:
+            logger.warning(f"Embedding query недоступен: {e}")
+            query_vector = []
         if query_vector:
             try:
                 chunks = await MemoryChunk.search_vector(
@@ -102,36 +135,45 @@ async def build_memory_context(
 
         messages = []
         if not chunks:
-            messages = await MemoryMessage.search(chat_id=chat_id, query=query, mode=mode, limit=log_limit)
+            try:
+                messages = await MemoryMessage.search(chat_id=chat_id, query=query, mode=mode, limit=log_limit)
+            except Exception as e:
+                logger.warning(f"Message retrieval недоступен: {e}")
 
-        # ЗАГРУЗКА ЭМОЦИОНАЛЬНОГО СОСТОЯНИЯ И АФФЕКТИВНОГО ПРОФИЛЯ
+        # ЗАГРУЗКА ЭМОЦИОНАЛЬНОГО СОСТОЯНИЯ И АФФЕКТИВНОГО ПРОФИЛЯ.
+        # Изолируем: сбой этого блока НЕ должен обнулять уже собранные wiki/факты/чанки.
         from database.models import ChatEmotionalState, MemoryUserProfile
         import json
-        
-        emo_state = await ChatEmotionalState.get_or_create(chat_id)
-        charge = emo_state.get("charge", 0.0)
-        mood_dict = json.loads(emo_state["mood_state"]) if isinstance(emo_state["mood_state"], str) else emo_state["mood_state"]
-        
-        # Поиск доминирующей эмоции
+
+        charge = 0.0
         dominant_mood = "thinking"
-        max_val = -1.0
-        for emotion, val in mood_dict.items():
-            if val > max_val:
-                max_val = val
-                dominant_mood = emotion
-        
-        # Получение аффективного профиля пользователя
+        max_val = 0.0
         closeness = 0.1
         sticker_receptivity = 0.5
-        user_profile = await MemoryUserProfile.get(chat_id, user_id, mode)
-        if user_profile and user_profile.get("profile_json"):
-            prof_json = json.loads(user_profile["profile_json"]) if isinstance(user_profile["profile_json"], str) else user_profile["profile_json"]
-            aff = prof_json.get("affective", {})
-            closeness = aff.get("closeness", 0.1)
-            sticker_receptivity = aff.get("sticker_receptivity", 0.5)
-        
-        last_sent_mood = emo_state.get("last_sent_sticker_mood") or "нет"
-        
+        last_sent_mood = "нет"
+        try:
+            emo_state = await ChatEmotionalState.get_or_create(chat_id)
+            charge = emo_state.get("charge", 0.0)
+            mood_dict = json.loads(emo_state["mood_state"]) if isinstance(emo_state["mood_state"], str) else emo_state["mood_state"]
+
+            # Поиск доминирующей эмоции (max_val<=0 трактуем как отсутствие выраженной эмоции)
+            for emotion, val in (mood_dict or {}).items():
+                if val > max_val:
+                    max_val = val
+                    dominant_mood = emotion
+
+            # Получение аффективного профиля пользователя
+            user_profile = await MemoryUserProfile.get(chat_id, user_id, mode)
+            if user_profile and user_profile.get("profile_json"):
+                prof_json = json.loads(user_profile["profile_json"]) if isinstance(user_profile["profile_json"], str) else user_profile["profile_json"]
+                aff = prof_json.get("affective", {})
+                closeness = aff.get("closeness", 0.1)
+                sticker_receptivity = aff.get("sticker_receptivity", 0.5)
+
+            last_sent_mood = emo_state.get("last_sent_sticker_mood") or "нет"
+        except Exception as e:
+            logger.warning(f"Эмоциональное состояние недоступно, используются дефолты: {e}")
+
         emo_line = (
             f"[ЭМОЦИОНАЛЬНЫЙ СТАТУС ДИАЛОГА]\n"
             f"- Твоя текущая близость с собеседником: {closeness:.2f} (0.0 — холодный незнакомец, 1.0 — твой близкий друг Александр).\n"
@@ -257,6 +299,7 @@ async def remember_exchange(
     facts = payload.get("facts") or []
     entities = payload.get("entities") or []
     relations = payload.get("relations") or []
+    is_fallback = bool(payload.get("fallback"))
 
     if not summary and not facts and not entities and not relations:
         return
@@ -325,7 +368,7 @@ async def remember_exchange(
         if not fact_key or fact_key in seen_fact_texts:
             continue
         seen_fact_texts.add(fact_key)
-        linked_entity_ids = [entity_id for normalized, entity_id in entity_by_name.items() if normalized in normalize_entity_name(text)]
+        linked_entity_ids = [entity_id for normalized, entity_id in entity_by_name.items() if text_contains_entity(text, normalized)]
         fact_id = await MemoryFact.create(
             chat_id=chat_id,
             user_id=user_id,
@@ -340,7 +383,7 @@ async def remember_exchange(
         if fact_id:
             created_facts += 1
 
-    if summary and not facts:
+    if summary and not facts and not is_fallback:
         await MemoryFact.create(
             chat_id=chat_id,
             user_id=user_id,
@@ -379,6 +422,7 @@ async def remember_exchange(
                 dry_run=not MEMORY_CONSOLIDATION_APPLY,
             )
         )
+        _track_background_task(consolidation_task)
 
         def _log_consolidation_error(task):
             try:
@@ -405,6 +449,7 @@ async def remember_exchange(
                 min_interval_sec=MEMORY_PROFILE_MIN_INTERVAL_SEC,
             )
         )
+        _track_background_task(profile_task)
 
         def _log_profile_error(task):
             try:

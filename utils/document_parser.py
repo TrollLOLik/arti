@@ -37,7 +37,9 @@ async def extract_text_from_file(file_path: Path, file_name: str) -> str:
 
 async def extract_document_text(context, doc) -> Optional[str]:
     """Скачивает и извлекает текст из документа для reply-анализа."""
-    safe_name = Path(doc.file_name).name if doc.file_name else "unknown"
+    file_name = doc.file_name or "unknown"
+    safe_name = Path(file_name).name
+    name_lower = file_name.lower()
     file_path = Path("temp") / f"temp_extract_{os.urandom(4).hex()}_{safe_name}"
     file_path.parent.mkdir(exist_ok=True)
     try:
@@ -45,16 +47,16 @@ async def extract_document_text(context, doc) -> Optional[str]:
         await file.download_to_drive(file_path)
         
         extracted_text = ""
-        if doc.file_name.lower().endswith('.txt'):
+        if name_lower.endswith('.txt'):
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 extracted_text = f.read()
-        elif doc.file_name.lower().endswith('.pdf'):
+        elif name_lower.endswith('.pdf'):
             with open(file_path, 'rb') as f:
                 reader = pypdf.PdfReader(f)
                 for page in reader.pages:
                     text = page.extract_text()
                     if text: extracted_text += text + "\n"
-        elif doc.file_name.lower().endswith('.docx'):
+        elif name_lower.endswith('.docx'):
             word_doc = Document(file_path)
             for para in word_doc.paragraphs:
                 extracted_text += para.text + "\n"
@@ -63,7 +65,7 @@ async def extract_document_text(context, doc) -> Optional[str]:
             extracted_text = extracted_text[:30000] + "\n...[текст обрезан]..."
         return extracted_text.strip() if extracted_text.strip() else None
     except Exception as e:
-        logger.error(f"Ошибка при извлечении текста из {doc.file_name}: {e}")
+        logger.error(f"Ошибка при извлечении текста из {file_name}: {e}")
         return None
     finally:
         if file_path.exists():

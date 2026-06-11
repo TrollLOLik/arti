@@ -210,6 +210,13 @@ def run_with_restart():
 
 def main():
     """Главная функция для запуска бота"""
+    # Fail-fast: без токена бот всё равно не сможет работать — лучше упасть сразу
+    # с понятной ошибкой, чем стартовать и циклически перезапускаться.
+    if not (TELEGRAM_TOKEN or "").strip():
+        logger.critical(
+            "TELEGRAM_TOKEN не задан. Укажите его в .env (см. .env.example). Запуск прерван."
+        )
+        sys.exit(1)
     try:
         setup_signal_handlers()
         run_with_restart()

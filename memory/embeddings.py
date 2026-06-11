@@ -28,7 +28,19 @@ async def _embed(text: str) -> List[float]:
         return []
 
     values = response.embeddings[0].values
-    return [float(value) for value in values]
+    vector = [float(value) for value in values]
+
+    # Размерность зашита и в коде, и в схеме БД (vector(1536)). Если модель/версия
+    # вернёт вектор другой длины — вставка в pgvector упадёт. Отбрасываем заранее,
+    # чтобы поиск корректно деградировал на text retrieval, а не падал молча.
+    if len(vector) != EMBEDDING_DIMENSIONS:
+        logger.error(
+            "Embedding размерности %s не совпадает с ожидаемой %s (модель %s) — вектор отброшен.",
+            len(vector), EMBEDDING_DIMENSIONS, EMBEDDING_MODEL,
+        )
+        return []
+
+    return vector
 
 
 async def embed_query(text: str) -> List[float]:

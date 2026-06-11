@@ -8,11 +8,15 @@ from pathlib import Path
 import httpx
 
 from config import CATBOX_USERHASH
+from utils.url_safety import is_safe_public_url_async
 
 logger = logging.getLogger(__name__)
 
 CATBOX_API_URL = "https://catbox.moe/user/api.php"
 CATBOX_TIMEOUT = 120.0
+
+# Разрешённые хосты для скачивания (SSRF-защита).
+_DOWNLOAD_ALLOWED_HOSTS = {"catbox.moe", "files.catbox.moe", "litter.catbox.moe", "litterbox.catbox.moe"}
 
 
 @dataclass(frozen=True)
@@ -118,6 +122,9 @@ async def delete_file(file_id: str | None) -> bool:
 
 
 async def download_file(url: str, target_path: Path | str) -> Path:
+    if not await is_safe_public_url_async(url, allowed_hosts=_DOWNLOAD_ALLOWED_HOSTS):
+        raise ValueError(f"Недопустимый или небезопасный URL для скачивания: {url!r}")
+
     path = Path(target_path)
     path.parent.mkdir(parents=True, exist_ok=True)
 

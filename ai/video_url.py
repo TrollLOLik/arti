@@ -69,6 +69,11 @@ async def download_audio_for_url(url: str, work_dir: Path) -> Path:
     Скачивает только аудиодорожку для URL через yt-dlp.
     Возвращает путь к получившемуся аудиофайлу.
     """
+    from utils.url_safety import is_safe_public_url_async
+
+    if not await is_safe_public_url_async(url):
+        raise ValueError(f"Недопустимый или небезопасный URL для загрузки: {url!r}")
+
     work_dir.mkdir(parents=True, exist_ok=True)
 
     def _do_download() -> Path:

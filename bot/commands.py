@@ -797,6 +797,7 @@ async def _ping_single_model(model_info: dict, sem: asyncio.Semaphore) -> Tuple[
     Возвращает (model_id, результат). Результат может быть float (секунды) или str (ошибка).
     """
     import asyncio
+    import os
     import time
     from openai import AsyncOpenAI
     from google.genai import types
@@ -830,7 +831,7 @@ async def _ping_single_model(model_info: dict, sem: asyncio.Semaphore) -> Tuple[
             else:
                 client = AsyncOpenAI(
                     base_url="http://localhost:20128/v1",
-                    api_key="sk-5d8d8294f9d6911b-3eb135-8f0e8f4f",
+                    api_key=os.getenv("OMNIROUTE_API_KEY", ""),
                     max_retries=0 # Отключаем ретраи, чтобы не копить таймауты при перегрузке
                 )
                 response = await asyncio.wait_for(
@@ -3683,8 +3684,11 @@ async def handle_forget_command(update: Update, context: ContextTypes.DEFAULT_TY
 
     mode = "rp" if rp_mode_state.get(chat_id) else "default"
     
-    # Ищем подходящие воспоминания (лимит 5)
-    facts = await MemoryFact.search(chat_id=chat_id, query=topic, mode=mode, limit=5)
+    # Ищем подходящие воспоминания (лимит 5). Показываем только факты этого
+    # пользователя или общие факты чата (user_id IS NULL) — чтобы участник группы
+    # не видел и не мог стереть личные факты других (S-07: privacy/IDOR).
+    found = await MemoryFact.search(chat_id=chat_id, query=topic, mode=mode, limit=20)
+    facts = [f for f in found if f.get("user_id") in (user_id, None)][:5]
     if not facts:
         await update.message.reply_text(
             f"<i>Касается банта, ровно и молча глядя на тебя. Свечение в радужках холодное.</i>\n\n"
@@ -3753,14 +3757,24 @@ async def forget_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Некорректный ID.", show_alert=True)
         return
 
-    # Защита приватности: кликать может только владелец
+    # Защита приватности: кликать может только владелец сессии
     if user_id != owner_id:
         await query.answer("⚠️ Это не твоя сессия памяти!", show_alert=True)
         return
 
-    # Архивируем выбранный факт
-    await MemoryFact.archive_many([fact_id], reason="user_request_interactive")
-    
+    # Серверная проверка владения: архивируем факт, только если он принадлежит
+    # этому чату и этому пользователю (или это общий факт чата). Закрывает IDOR —
+    # подделанный callback_data с чужим fact_id не сработает.
+    archived = await MemoryFact.archive_for_user(
+        fact_id=fact_id,
+        chat_id=chat_id,
+        user_id=user_id,
+        reason="user_request_interactive",
+    )
+    if not archived:
+        await query.answer("⚠️ Это воспоминание тебе не принадлежит или уже стёрто.", show_alert=True)
+        return
+
     # Показываем всплывающий тост в ТГ
     await query.answer("✨ Воспоминание стёрто из моей памяти.")
     

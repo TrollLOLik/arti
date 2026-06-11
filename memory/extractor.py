@@ -40,14 +40,18 @@ def _parse_json(text: str) -> Dict[str, Any]:
 
 
 def _fallback(user_message: str, response_text: str) -> Dict[str, Any]:
+    # При сбое LLM не создаём «факт» из сырого диалога (это шум, который засоряет
+    # память и консолидацию — M-11). Сохраняем только summary для чанка/сообщения
+    # и помечаем payload флагом fallback, чтобы storage не превратил его в factoid.
     joined = compact_text(f"Пользователь: {user_message} Арти: {response_text}", 700)
     if len(joined) < 80:
-        return {"summary": "", "facts": [], "entities": [], "relations": []}
+        return {"summary": "", "facts": [], "entities": [], "relations": [], "fallback": True}
     return {
         "summary": joined,
-        "facts": [{"text": joined, "importance": 0.35}],
+        "facts": [],
         "entities": [],
         "relations": [],
+        "fallback": True,
     }
 
 
