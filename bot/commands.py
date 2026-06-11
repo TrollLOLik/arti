@@ -17,7 +17,7 @@ from config import (
     pending_image_inputs, pending_video_inputs, pending_map_requests, pending_photo_action,
     rp_mode_state, SKIP_WORDS, dub_flow_state, vclone_flow_state,
     vclone_save_flow_state, pending_video_url_action, CATBOX_USERHASH,
-    waiting_for_model_search
+    waiting_for_model_search, TTS_ENABLED, PRIVILEGED_USER_IDS
 )
 from utils.spam_protection import handle_spam_protection
 from utils.admin import is_admin
@@ -31,6 +31,42 @@ from database.models import ChatHistory, SpamProtection as SpamProtectionModel, 
 
 
 logger = logging.getLogger(__name__)
+
+
+async def _gate_tts_disabled(update) -> bool:
+    """CONF-01: голосовые/дубляжные фичи (/vclone, /steal, /dub, /voice_save) работают
+    только при TTS_ENABLED=True. Если выключено — сразу честно сообщаем и не даём FSM
+    дойти до конца. Возвращает True, если фича заблокирована (вызывающий делает return."""
+    if TTS_ENABLED:
+        return False
+    try:
+        await update.message.reply_text(
+            "<i>прикрывает микрофон ладонью</i>\n"
+            "<blockquote>«Голосовые функции сейчас отключены.»</blockquote>",
+            parse_mode='HTML',
+        )
+    except Exception:
+        pass
+    return True
+
+
+async def _gate_vclone_not_privileged(update, user_id: int) -> bool:
+    """POL-01: клонирование голоса (/vclone, /steal, /voice_save, выбор сохранённого
+    голоса) разрешено только PRIVILEGED_USER_IDS — иначе любой участник мог бы
+    синтезировать произвольную фразу чужим голосом из reply без согласия. Возвращает
+    True, если доступ запрещён (вызывающий делает return)."""
+    if user_id in PRIVILEGED_USER_IDS:
+        return False
+    try:
+        await update.message.reply_text(
+            "<i>Качает головой</i>\n"
+            "<blockquote>«Клонирование голоса — только для доверенных. Не в этот раз.»</blockquote>",
+            parse_mode='HTML',
+        )
+    except Exception:
+        pass
+    return True
+
 
 IMAGE_ASPECT_OPTIONS = ["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9"]
 IMAGE_RESOLUTION_OPTIONS = ["512", "1K", "2K", "4K"]
@@ -397,12 +433,21 @@ async def arti_commands(update, context):
         "• /image — Синтезировать изображение по текстовому описанию\n"
         "• /video — Сгенерировать кинематографичный видеоряд\n"
         "• /music — Сочинить музыкальную композицию (пошаговый конструктор)\n"
-        "• /dub — Дублировать видео или аудио на русский язык (с субтитрами)\n"
-        "• /vclone (или /steal) — Скопировать голос из аудио-файла и озвучить им текст\n"
-        "• /voices — Показать реестр твоих сохранённых слепков голосов\n"
-        "• /voice_save — Извлечь и сохранить слепок голоса без озвучивания\n"
-        "• /voice_delete — Стереть сохранённый слепок голоса из базы\n\n"
-        "🎲 <b>Развлекательные протоколы:</b>\n"
+    )
+
+    # CONF-01: голосовые/дубляжные команды показываем только когда TTS включён —
+    # иначе они отвечали бы «отключено» после прохождения всего диалога.
+    if TTS_ENABLED:
+        commands_list += (
+            "• /dub — Дублировать видео или аудио на русский язык (с субтитрами)\n"
+            "• /vclone (или /steal) — Скопировать голос из аудио-файла и озвучить им текст\n"
+            "• /voices — Показать реестр твоих сохранённых слепков голосов\n"
+            "• /voice_save — Извлечь и сохранить слепок голоса без озвучивания\n"
+            "• /voice_delete — Стереть сохранённый слепок голоса из базы\n"
+        )
+
+    commands_list += (
+        "\n🎲 <b>Развлекательные протоколы:</b>\n"
         "• /rps — Сыграть с Арти в классическую «цу-е-фа» (Камень, Ножницы, Бумага)\n\n"
         "──────────────────────────────\n"
         "🛠 <b>Системный архитектор:</b> @DeallSign"
@@ -1389,6 +1434,10 @@ async def handle_dub_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not await is_responses_enabled(chat_id):
         return
 
+    # CONF-01: дубляж требует TTS-бэкендов; при выключенном TTS — честный ранний отказ.
+    if await _gate_tts_disabled(update):
+        return
+
     if not await is_admin(user, chat_id, context):
         await update.message.reply_text(
             "❌ Команда /dub доступна только админам — пайплайн долгий и тяжёлый."
@@ -1922,6 +1971,14 @@ async def _vclone_caption_fastpath(
     if not await is_responses_enabled(chat_id):
         return True
 
+    # CONF-01: голосовые фичи выключены глобально.
+    if await _gate_tts_disabled(update):
+        return True
+
+    # POL-01: клонирование чужого голоса — только для доверенных пользователей.
+    if await _gate_vclone_not_privileged(update, user.id):
+        return True
+
     # 3. Спам-защита.
     if not await handle_spam_protection(update, context, "vclone"):
         return True
@@ -2094,7 +2151,7 @@ async def handle_vclone_command(update: Update, context: ContextTypes.DEFAULT_TY
     - reply без медиа/URL — Bot_Persona_Reply «нужен голос», без FSM.
     - без reply — step="reference", prompt-сообщение.
 
-    Доступна всем, если бот включён и не в RP-режиме.
+    Доступна только PRIVILEGED_USER_IDS (POL-01) и при включённом TTS (CONF-01).
     """
     chat_id = update.effective_chat.id
     user = update.message.from_user
@@ -2110,6 +2167,14 @@ async def handle_vclone_command(update: Update, context: ContextTypes.DEFAULT_TY
 
     # 2. Бот выключен — тихо завершаем.
     if not await is_responses_enabled(chat_id):
+        return
+
+    # CONF-01: голосовые фичи выключены глобально.
+    if await _gate_tts_disabled(update):
+        return
+
+    # POL-01: клонирование чужого голоса — только для доверенных пользователей.
+    if await _gate_vclone_not_privileged(update, user_id):
         return
 
     # 3. Спам-защита.
@@ -3017,6 +3082,12 @@ async def handle_voice_save_command(update: Update, context: ContextTypes.DEFAUL
         return
     if not await is_responses_enabled(chat_id):
         return
+    # CONF-01 / POL-01: сохранение слепка голоса — часть фичи клонирования,
+    # требует включённого TTS и доступно только доверенным пользователям.
+    if await _gate_tts_disabled(update):
+        return
+    if await _gate_vclone_not_privileged(update, user_id):
+        return
     if not await handle_spam_protection(update, context, "voice_save"):
         return
 
@@ -3145,6 +3216,15 @@ async def saved_voice_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             parse_mode='HTML',
         )
         await query.answer()
+        return
+
+    # Ниже — синтез по сохранённому голосу (vsel). CONF-01: нужен включённый TTS.
+    # POL-01: озвучка чужим голосом — только доверенным пользователям.
+    if not TTS_ENABLED:
+        await query.answer("Голосовые функции сейчас отключены.", show_alert=True)
+        return
+    if user_id not in PRIVILEGED_USER_IDS:
+        await query.answer("Клонирование голоса — только для доверенных.", show_alert=True)
         return
 
     voice = await SavedVoice.get(user_id, voice_id)

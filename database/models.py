@@ -284,22 +284,36 @@ class UserLocation:
             """, user_id, lat, lng, address, city)
 
     @staticmethod
-    async def get(user_id: int) -> Optional[dict]:
-        """Получить геопозицию пользователя из БД"""
-        async with get_db() as conn:
-            row = await conn.fetchrow("""
+    async def get(user_id: int, conn=None) -> Optional[dict]:
+        """Получить геопозицию пользователя из БД.
+
+        conn: если передано существующее соединение — переиспользуем его и НЕ
+        захватываем новое из пула. Это важно при вызове изнутри уже открытой
+        транзакции (см. ChatEmotionalState.update_state): иначе вложенный
+        get_db() забирает второе соединение пула и под нагрузкой пул может
+        самозаблокироваться (RACE-01).
+        """
+        async def _fetch(c):
+            return await c.fetchrow("""
                 SELECT lat, lng, address, city, updated_at
                 FROM user_locations WHERE user_id = $1
             """, user_id)
-            if row:
-                return {
-                    "lat": row["lat"],
-                    "lng": row["lng"],
-                    "address": row["address"],
-                    "city": row["city"],
-                    "updated_at": row["updated_at"]
-                }
-            return None
+
+        if conn is not None:
+            row = await _fetch(conn)
+        else:
+            async with get_db() as db_conn:
+                row = await _fetch(db_conn)
+
+        if row:
+            return {
+                "lat": row["lat"],
+                "lng": row["lng"],
+                "address": row["address"],
+                "city": row["city"],
+                "updated_at": row["updated_at"]
+            }
+        return None
 
     @staticmethod
     async def get_with_ttl(user_id: int, ttl_seconds: int = 14400) -> Optional[dict]:
@@ -1577,25 +1591,30 @@ class UserEvent:
             return [dict(row) for row in rows]
 
 
-async def infer_user_timezone(chat_id: int, user_id: Optional[int]) -> Optional[int]:
+async def infer_user_timezone(chat_id: int, user_id: Optional[int], conn=None) -> Optional[int]:
     """
     Инферирует таймзону пользователя по геолокации или гистограмме его активности в чате.
     Порог: >= 20 сообщений.
     Смещение: int (офсет относительно UTC).
+
+    conn: если передано существующее соединение (например, из открытой транзакции
+    update_state) — переиспользуем его и НЕ захватываем второе соединение пула.
+    Без этого вложенный get_db() внутри транзакции с FOR UPDATE приводит к
+    самоблокировке пула под нагрузкой (RACE-01).
     """
     if user_id is None:
         return None
 
-    # 1. Проверяем геолокацию
-    loc = await UserLocation.get(user_id)
+    # 1. Проверяем геолокацию (переиспользуем переданное соединение, если есть)
+    loc = await UserLocation.get(user_id, conn=conn)
     if loc and loc.get("lng") is not None:
         user_tz = int(round(loc["lng"] / 15.0))
         logger.info(f"🔮 [ЭМОЦИОНАЛЬНАЯ МАШИНА] Таймзона для user_id={user_id} определена по геолокации: {user_tz:+d}")
         return user_tz
 
     # 2. Анализируем историю чата
-    async with get_db() as conn:
-        rows = await conn.fetch("""
+    async def _fetch_history(c):
+        return await c.fetch("""
             SELECT timestamp 
             FROM chat_history 
             WHERE chat_id = $1 
@@ -1603,6 +1622,12 @@ async def infer_user_timezone(chat_id: int, user_id: Optional[int]) -> Optional[
             ORDER BY timestamp DESC
             LIMIT 100
         """, chat_id)
+
+    if conn is not None:
+        rows = await _fetch_history(conn)
+    else:
+        async with get_db() as db_conn:
+            rows = await _fetch_history(db_conn)
 
     # Порог входа в инференс: минимум 20 сообщений для стабильности
     if len(rows) < 20:
@@ -1746,10 +1771,13 @@ class ChatEmotionalState:
                 # (для бонуса близости — сильный позитивный сигнал)
                 was_proactive_reply = (state["conversation_stage"] == 'proactive_sent')
                 
-                # Ленивое определение таймзоны
+                # Ленивое определение таймзоны.
+                # Передаём текущее соединение (conn) внутрь — иначе infer_user_timezone
+                # захватил бы второе соединение пула изнутри этой транзакции с FOR UPDATE,
+                # и под нагрузкой пул мог бы самозаблокироваться (RACE-01).
                 user_tz = state["user_tz"]
                 if user_tz is None and user_id is not None:
-                    user_tz = await infer_user_timezone(chat_id, user_id)
+                    user_tz = await infer_user_timezone(chat_id, user_id, conn=conn)
                 
                 # 2. Вычисляем распад (Time Decay) — дельта посчитана БД (UTC-консистентно)
                 delta_t = max(0.0, state["delta_t_seconds"] or 0.0)

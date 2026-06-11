@@ -101,7 +101,10 @@ AUTO_REPLY_THRESHOLD = 40
 # ============================================================================
 
 MUSIC_COOLDOWN = 120  # Секунд между генерациями музыки (лимит API: 1 трек / 2 мин)
-TTS_ENABLED = False
+# TTS_ENABLED управляет голосовыми фичами: озвучка ответов, /vclone, /steal, /dub,
+# /voice_save. По умолчанию выкл — включать только если подняты TTS-бэкенды
+# (VoxCPM Demo/локальный/Fish). Настраивается через .env: TTS_ENABLED=True.
+TTS_ENABLED = os.getenv("TTS_ENABLED", "False").strip().lower() == "true"
 MEMORY_CONSOLIDATION_AUTO = True
 MEMORY_CONSOLIDATION_APPLY = False
 MEMORY_CONSOLIDATION_INTERVAL = 50

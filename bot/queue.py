@@ -1983,6 +1983,13 @@ async def proactive_scheduler_worker(bot):
                 last_act = state["last_activity_time"]
                 last_push = state["last_proactive_push_time"]
                 user_tz = state["user_tz"]
+
+                # AUTH-02: не пишем проактив в чаты, где бот выключен (/stop).
+                # Эмоциональное состояние живёт независимо от выключателя, поэтому
+                # без этой проверки шедулер слал бы сообщения отключившим бота.
+                if not await is_responses_enabled(chat_id):
+                    logger.debug(f"Шедулер: Пропускаем чат {chat_id}, бот отключён (/stop).")
+                    continue
                 
                 # 1. До определения TZ не пушим вообще (тихий дефолт)
                 if user_tz is None:

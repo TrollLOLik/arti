@@ -959,6 +959,12 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
     user_id = update.message.from_user.id
     message_id = update.message.message_id
 
+    # AUTH-01: в выключенном (/stop) чате не делаем ничего — иначе бот скачивал бы
+    # и транскрибировал чужие голосовые (затраты STT, передача аудио вовне) и отвечал
+    # в обход выключателя. Ставим проверку первой, как в остальных медиа-хендлерах.
+    if not await is_responses_enabled(chat_id):
+        return
+
     # Перехват /vclone или /steal в caption голосового сообщения
     caption_handled = await _vclone_caption_fastpath(update, context)
     if caption_handled:
@@ -979,6 +985,12 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             if handled:
                 return
+
+    # AUTH-01 / S-04: лимит дорогих LLM/STT-операций (как для текстового пути).
+    # Ставим после vclone-fast-path'ов, чтобы загрузка референса не съедала бюджет.
+    if _is_text_rate_limited(user_id):
+        logger.warning(f"Rate limit: голосовое от user {user_id} в чате {chat_id} превысило лимит")
+        return
 
     temp_audio_path = None
     try:
@@ -1767,9 +1779,21 @@ async def video_url_action_callback(update: Update, context: ContextTypes.DEFAUL
 
     if action == "dub":
         # Переиспользуем dub flow: сразу шаг про сабы
-        from config import dub_flow_state
+        from config import dub_flow_state, TTS_ENABLED
         from bot.commands import _dub_subs_keyboard
         from utils.admin import is_admin
+
+        # CONF-01: озвучка требует TTS-бэкендов — при выключенном TTS честный отказ.
+        if not TTS_ENABLED:
+            try:
+                await query.edit_message_text(
+                    "<i>прикрывает микрофон ладонью</i>\n"
+                    "<blockquote>«Голосовые функции сейчас отключены.»</blockquote>",
+                    parse_mode='HTML',
+                )
+            except Exception:
+                pass
+            return
 
         # Озвучка — тяжёлый videotrans-pipeline, доступен только админам (как и /dub).
         if not await is_admin(user, chat_id, context):
