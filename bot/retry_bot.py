@@ -8,7 +8,21 @@ import random
 from telegram.error import TimedOut, NetworkError
 from telegram.ext import ExtBot
 
+from utils.sent_messages import record_bot_message
+
 logger = logging.getLogger(__name__)
+
+
+def _maybe_record_sent(result) -> None:
+    """Если результат вызова похож на отправленное сообщение — запоминаем его ID
+    (AUTH-03: чтобы реагировать только на реакции к сообщениям самого бота)."""
+    try:
+        chat = getattr(result, "chat", None)
+        message_id = getattr(result, "message_id", None)
+        if chat is not None and message_id is not None:
+            record_bot_message(getattr(chat, "id", None), message_id)
+    except Exception:
+        pass
 
 
 class RetryBot(ExtBot):
@@ -20,7 +34,9 @@ class RetryBot(ExtBot):
         last_exc: Exception | None = None
         for attempt in range(self.MAX_ATTEMPTS):
             try:
-                return await method(*args, **kwargs)
+                result = await method(*args, **kwargs)
+                _maybe_record_sent(result)
+                return result
             except (TimedOut, NetworkError) as e:
                 last_exc = e
                 if attempt < self.MAX_ATTEMPTS - 1:

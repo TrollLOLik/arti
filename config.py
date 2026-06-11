@@ -101,6 +101,10 @@ AUTO_REPLY_THRESHOLD = 40
 # ============================================================================
 
 MUSIC_COOLDOWN = 120  # Секунд между генерациями музыки (лимит API: 1 трек / 2 мин)
+# AUTH-05: per-user квота на платную медиа-генерацию (/image, /video, /music).
+# Скользящее окно. Настраивается через .env.
+MEDIA_RATE_LIMIT = int(os.getenv("MEDIA_RATE_LIMIT", "6"))
+MEDIA_RATE_WINDOW = int(os.getenv("MEDIA_RATE_WINDOW", "300"))
 # TTS_ENABLED управляет голосовыми фичами: озвучка ответов, /vclone, /steal, /dub,
 # /voice_save. По умолчанию выкл — включать только если подняты TTS-бэкенды
 # (VoxCPM Demo/локальный/Fish). Настраивается через .env: TTS_ENABLED=True.

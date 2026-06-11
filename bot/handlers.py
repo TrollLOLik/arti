@@ -1851,7 +1851,7 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
     """
     Обрабатывает изменения реакций пользователей на сообщения Арти.
 
-    На добавленную реакцию:
+    На добавленную реакцию (ТОЛЬКО к сообщению самого бота, AUTH-03):
       1) подкрепляет аффективный профиль (closeness/receptivity),
       2) сдвигает вектор настроения Арти (влияет на тон следующих ответов),
       3) на эмоционально сильную реакцию иногда (вероятностно, с троттлингом)
@@ -1867,6 +1867,22 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
         return
     user_id = user.id
     message_id = reaction_update.message_id
+
+    # AUTH-03: в выключенном (/stop) чате реакции не влияют на состояние.
+    if not await is_responses_enabled(chat_id):
+        return
+
+    # AUTH-03: реагируем ТОЛЬКО на реакции к сообщениям самого бота. Telegram не
+    # сообщает автора сообщения в апдейте реакции, поэтому сверяемся с трекером
+    # исходящих сообщений. Иначе лайки участников друг другу накручивали бы
+    # close­ness/настроение Арти и открывали проактивные пуши.
+    from utils.sent_messages import is_bot_message
+    if not is_bot_message(chat_id, message_id):
+        logger.debug(
+            f"Реакция в чате {chat_id} на сообщение {message_id} проигнорирована: "
+            f"это не сообщение бота."
+        )
+        return
 
     new_reactions = reaction_update.new_reaction or []
     old_reactions = reaction_update.old_reaction or []

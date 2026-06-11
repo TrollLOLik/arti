@@ -802,16 +802,24 @@ class MemoryFact:
         source_message_id: int = None,
         metadata: Dict[str, Any] = None,
         entity_ids: List[int] = None,
+        conn=None,
     ) -> Optional[int]:
+        """Создаёт факт (с дедупом по lower(fact_text)).
+
+        conn: если передано соединение — работаем в нём (для атомарной консолидации
+        в одной транзакции, MEM-01). Внутренний conn.transaction() в этом случае
+        становится savepoint'ом существующей транзакции.
+        """
         fact_text = (fact_text or "").strip()
         if not fact_text:
             return None
 
         metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
         importance_value = max(0.0, min(float(importance or 0.5), 1.0))
-        async with get_db() as conn:
-            async with conn.transaction():
-                existing_id = await conn.fetchval("""
+
+        async def _do(c):
+            async with c.transaction():
+                existing_id = await c.fetchval("""
                     SELECT id
                     FROM memory_facts
                     WHERE chat_id = $1
@@ -823,7 +831,7 @@ class MemoryFact:
                 if existing_id:
                     return existing_id
 
-                row = await conn.fetchrow("""
+                row = await c.fetchrow("""
                     INSERT INTO memory_facts (
                         chat_id, user_id, mode, summary, fact_text, importance,
                         source_message_id, metadata, created_at
@@ -839,13 +847,18 @@ class MemoryFact:
                 for entity_id in entity_ids or []:
                     if not entity_id:
                         continue
-                    await conn.execute("""
+                    await c.execute("""
                         INSERT INTO memory_fact_entities (fact_id, entity_id)
                         VALUES ($1, $2)
                         ON CONFLICT DO NOTHING
                     """, fact_id, entity_id)
 
                 return fact_id
+
+        if conn is not None:
+            return await _do(conn)
+        async with get_db() as db_conn:
+            return await _do(db_conn)
 
     @staticmethod
     async def search(chat_id: int, query: str, mode: str = "default", limit: int = 5) -> List[dict]:
@@ -989,13 +1002,13 @@ class MemoryFact:
             return [dict(row) for row in rows]
 
     @staticmethod
-    async def archive_many(fact_ids: List[int], reason: str = "consolidated", superseded_by: int = None) -> int:
+    async def archive_many(fact_ids: List[int], reason: str = "consolidated", superseded_by: int = None, conn=None) -> int:
         fact_ids = [int(fact_id) for fact_id in fact_ids if fact_id]
         if not fact_ids:
             return 0
 
-        async with get_db() as conn:
-            result = await conn.execute("""
+        async def _do(c):
+            result = await c.execute("""
                 UPDATE memory_facts
                 SET archived_at = NOW(),
                     archive_reason = $2,
@@ -1004,6 +1017,11 @@ class MemoryFact:
                 AND archived_at IS NULL
             """, fact_ids, reason, superseded_by)
             return int(result.split()[-1])
+
+        if conn is not None:
+            return await _do(conn)
+        async with get_db() as db_conn:
+            return await _do(db_conn)
 
     @staticmethod
     async def archive_for_user(fact_id: int, chat_id: int, user_id: int, reason: str = "user_request") -> bool:
@@ -1122,28 +1140,51 @@ class MemoryUserProfile:
         if not chat_id or not user_id or not profile_text:
             return None
 
-        profile_json_text = json.dumps(profile_json or {}, ensure_ascii=False)
         source_fact_ids = [int(item) for item in source_fact_ids or [] if item]
         source_entity_ids = [int(item) for item in source_entity_ids or [] if item]
+        incoming = dict(profile_json or {})
 
         async with get_db() as conn:
-            row = await conn.fetchrow("""
-                INSERT INTO memory_user_profiles (
-                    chat_id, user_id, mode, profile_json, profile_text,
-                    source_fact_ids, source_entity_ids, facts_version, updated_at
-                )
-                VALUES ($1, $2, $3, $4::jsonb, $5, $6::bigint[], $7::bigint[], 1, NOW())
-                ON CONFLICT (chat_id, user_id, mode)
-                DO UPDATE SET
-                    profile_json = EXCLUDED.profile_json,
-                    profile_text = EXCLUDED.profile_text,
-                    source_fact_ids = EXCLUDED.source_fact_ids,
-                    source_entity_ids = EXCLUDED.source_entity_ids,
-                    facts_version = memory_user_profiles.facts_version + 1,
-                    updated_at = NOW()
-                RETURNING id
-            """, chat_id, user_id, mode, profile_json_text, profile_text, source_fact_ids, source_entity_ids)
-            return row["id"] if row else None
+            async with conn.transaction():
+                # MEM-02: аффективный блок (closeness/receptivity) ведут grow_closeness /
+                # apply_reinforcement под FOR UPDATE. Этот upsert (смысловой профиль из LLM)
+                # перезаписывает profile_json целиком, и без блокировки затёр бы параллельное
+                # обновление близости устаревшим значением (lost update). Берём СВЕЖИЙ
+                # affective из БД под тем же FOR UPDATE-локом и сохраняем его.
+                existing = await conn.fetchrow("""
+                    SELECT profile_json
+                    FROM memory_user_profiles
+                    WHERE chat_id = $1 AND user_id = $2 AND mode = $3
+                    FOR UPDATE
+                """, chat_id, user_id, mode)
+                if existing:
+                    ex_json = existing["profile_json"]
+                    if isinstance(ex_json, str):
+                        try:
+                            ex_json = json.loads(ex_json)
+                        except Exception:
+                            ex_json = {}
+                    if isinstance(ex_json, dict) and isinstance(ex_json.get("affective"), dict):
+                        incoming["affective"] = ex_json["affective"]
+
+                profile_json_text = json.dumps(incoming, ensure_ascii=False)
+                row = await conn.fetchrow("""
+                    INSERT INTO memory_user_profiles (
+                        chat_id, user_id, mode, profile_json, profile_text,
+                        source_fact_ids, source_entity_ids, facts_version, updated_at
+                    )
+                    VALUES ($1, $2, $3, $4::jsonb, $5, $6::bigint[], $7::bigint[], 1, NOW())
+                    ON CONFLICT (chat_id, user_id, mode)
+                    DO UPDATE SET
+                        profile_json = EXCLUDED.profile_json,
+                        profile_text = EXCLUDED.profile_text,
+                        source_fact_ids = EXCLUDED.source_fact_ids,
+                        source_entity_ids = EXCLUDED.source_entity_ids,
+                        facts_version = memory_user_profiles.facts_version + 1,
+                        updated_at = NOW()
+                    RETURNING id
+                """, chat_id, user_id, mode, profile_json_text, profile_text, source_fact_ids, source_entity_ids)
+                return row["id"] if row else None
 
     @staticmethod
     async def fetch_source_material(
@@ -1165,13 +1206,23 @@ class MemoryUserProfile:
                 LIMIT $4
             """, chat_id, mode, user_id, fact_limit)
 
+            # MEM-03: берём не ВСЕ сущности чата, а только связанные с фактами ИМЕННО
+            # этого пользователя (или общими фактами чата user_id IS NULL). Иначе в
+            # групповом чате в «досье» пользователя A попадали бы сущности участников
+            # B и C — и логическая ошибка, и утечка приватных данных.
             entities = await conn.fetch("""
-                SELECT *
-                FROM memory_entities
-                WHERE chat_id = $1
-                ORDER BY mention_count DESC, last_seen_at DESC
-                LIMIT $2
-            """, chat_id, entity_limit)
+                SELECT DISTINCT e.*
+                FROM memory_entities e
+                JOIN memory_fact_entities fe ON fe.entity_id = e.id
+                JOIN memory_facts f ON f.id = fe.fact_id
+                WHERE e.chat_id = $1
+                AND f.chat_id = $1
+                AND f.mode = $2
+                AND f.archived_at IS NULL
+                AND (f.user_id = $3 OR f.user_id IS NULL)
+                ORDER BY e.mention_count DESC, e.last_seen_at DESC
+                LIMIT $4
+            """, chat_id, mode, user_id, entity_limit)
 
             return {
                 "facts": [dict(row) for row in facts],
@@ -1457,6 +1508,7 @@ class MemoryWikiPage:
         importance: float = 0.5,
         is_verified: bool = True,
         is_default: bool = False,
+        conn=None,
     ) -> Optional[int]:
         page_key = (page_key or "").strip()
         title = (title or "").strip()
@@ -1464,9 +1516,9 @@ class MemoryWikiPage:
         if not page_key or not title or not content:
             return None
 
-        async with get_db() as conn:
+        async def _do(c):
             if chat_id is None:
-                row = await conn.fetchrow("""
+                row = await c.fetchrow("""
                     INSERT INTO memory_wiki_pages (
                         chat_id, mode, page_key, title, content, category,
                         importance, is_verified, is_default, last_verified_at, created_at
@@ -1484,7 +1536,7 @@ class MemoryWikiPage:
                     RETURNING id
                 """, mode, page_key, title, content, category, float(importance or 0.5), is_verified, is_default)
             else:
-                row = await conn.fetchrow("""
+                row = await c.fetchrow("""
                     INSERT INTO memory_wiki_pages (
                         chat_id, mode, page_key, title, content, category,
                         importance, is_verified, is_default, last_verified_at, created_at
@@ -1503,10 +1555,15 @@ class MemoryWikiPage:
                 """, chat_id, mode, page_key, title, content, category, float(importance or 0.5), is_verified, is_default)
             return row["id"] if row else None
 
+        if conn is not None:
+            return await _do(conn)
+        async with get_db() as db_conn:
+            return await _do(db_conn)
+
     @staticmethod
-    async def get_by_key(chat_id: Optional[int], mode: str, page_key: str) -> Optional[dict]:
-        async with get_db() as conn:
-            row = await conn.fetchrow("""
+    async def get_by_key(chat_id: Optional[int], mode: str, page_key: str, conn=None) -> Optional[dict]:
+        async def _do(c):
+            row = await c.fetchrow("""
                 SELECT *
                 FROM memory_wiki_pages
                 WHERE (chat_id = $1 OR (chat_id IS NULL AND $1 IS NULL))
@@ -1514,6 +1571,11 @@ class MemoryWikiPage:
                 AND page_key = $3
             """, chat_id, mode, page_key)
             return dict(row) if row else None
+
+        if conn is not None:
+            return await _do(conn)
+        async with get_db() as db_conn:
+            return await _do(db_conn)
 
     @staticmethod
     async def search(chat_id: int, mode: str, query: str, limit: int = 3) -> List[dict]:

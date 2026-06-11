@@ -17,8 +17,10 @@ from config import (
     pending_image_inputs, pending_video_inputs, pending_map_requests, pending_photo_action,
     rp_mode_state, SKIP_WORDS, dub_flow_state, vclone_flow_state,
     vclone_save_flow_state, pending_video_url_action, CATBOX_USERHASH,
-    waiting_for_model_search, TTS_ENABLED, PRIVILEGED_USER_IDS
+    waiting_for_model_search, TTS_ENABLED, PRIVILEGED_USER_IDS,
+    MEDIA_RATE_LIMIT, MEDIA_RATE_WINDOW
 )
+from utils.rate_limit import is_rate_limited
 from utils.spam_protection import handle_spam_protection
 from utils.admin import is_admin
 from utils.response_status import is_responses_enabled, set_responses_enabled
@@ -48,6 +50,27 @@ async def _gate_tts_disabled(update) -> bool:
     except Exception:
         pass
     return True
+
+
+async def _gate_media_quota(update, user_id: int) -> bool:
+    """AUTH-05: per-user квота на платную медиа-генерацию. Привилегированные
+    пользователи без лимита. Возвращает True, если лимит превышен (вызывающий
+    делает return)."""
+    if user_id in PRIVILEGED_USER_IDS:
+        return False
+    if is_rate_limited("media", user_id, MEDIA_RATE_LIMIT, MEDIA_RATE_WINDOW):
+        try:
+            mins = max(1, MEDIA_RATE_WINDOW // 60)
+            await update.message.reply_text(
+                "<i>отстраняется от терминала</i>\n"
+                f"<blockquote>«Слишком много генераций подряд. Дай мне передышку — "
+                f"не больше {MEDIA_RATE_LIMIT} за {mins} мин.»</blockquote>",
+                parse_mode='HTML',
+            )
+        except Exception:
+            pass
+        return True
+    return False
 
 
 async def _gate_vclone_not_privileged(update, user_id: int) -> bool:
@@ -576,6 +599,8 @@ async def handle_image_command(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     if not await handle_spam_protection(update, context, "image"):
         return
+    if await _gate_media_quota(update, user_id):  # AUTH-05
+        return
     image_urls = await _extract_photo_urls(update, context)
     if not context.args:
         await _start_image_settings_flow(update, context, image_urls)
@@ -623,6 +648,8 @@ async def handle_video_command(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     if not await handle_spam_protection(update, context, "video"):
         return
+    if await _gate_media_quota(update, user_id):  # AUTH-05
+        return
 
     image_urls = await _extract_photo_urls(update, context)
     if not context.args:
@@ -656,6 +683,8 @@ async def handle_music_command(update: Update, context: ContextTypes.DEFAULT_TYP
     if not await is_responses_enabled(chat_id):
         return
     if not await handle_spam_protection(update, context, "music"):
+        return
+    if await _gate_media_quota(update, user_id):  # AUTH-05
         return
 
     music_flow_state[chat_id][user_id] = {

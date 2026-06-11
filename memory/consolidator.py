@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 from google.genai import types
 
 from config import genai_client
+from database.connection import get_db
 from database.models import MemoryFact, MemoryWikiPage
 from memory.normalizer import compact_text
 
@@ -201,55 +202,78 @@ async def consolidate_chat_facts(
     if dry_run:
         return report
 
-    # 1. Сохраняем новые Wiki-предложения как не верифицированные.
-    #    M-05: не перезаписываем уже существующую ВЕРИФИЦИРОВАННУЮ страницу —
-    #    иначе LLM-предложение сбросило бы ручное подтверждение (is_verified).
-    suggested_wiki_ids = []
+    # MEM-01: применяем весь план АТОМАРНО в одной транзакции и под per-chat
+    # advisory-локом (сериализует параллельные консолидации одного чата: авто-триггер
+    # из storage и ручной maintain_memory.py). Раньше wiki/факты/архивация шли тремя
+    # независимыми запросами, и сбой между ними оставлял память в частичном состоянии;
+    # к тому же ранний return при пустом archive_ids вообще не создавал новые факты.
+    created_ids: List[int] = []
+    archived_count = 0
+    suggested_wiki_ids: List[int] = []
     skipped_verified = 0
-    for sug in plan["wiki_suggestions"]:
-        existing = await MemoryWikiPage.get_by_key(chat_id=chat_id, mode=mode, page_key=sug["page_key"])
-        if existing and existing.get("is_verified"):
-            skipped_verified += 1
-            continue
-        page_id = await MemoryWikiPage.save(
-            page_key=sug["page_key"],
-            title=sug["title"],
-            content=sug["content"],
-            category=sug["category"],
-            chat_id=chat_id,
-            mode=mode,
-            importance=0.6,
-            is_verified=False  # Требуется ручное подтверждение!
-        )
-        if page_id:
-            suggested_wiki_ids.append(page_id)
+
+    async with get_db() as conn:
+        async with conn.transaction():
+            # Advisory-лок держится до конца транзакции (commit/rollback).
+            await conn.execute("SELECT pg_advisory_xact_lock($1)", int(chat_id))
+
+            # 1. Wiki-предложения (M-05: не перезаписываем верифицированные вручную).
+            for sug in plan["wiki_suggestions"]:
+                existing = await MemoryWikiPage.get_by_key(
+                    chat_id=chat_id, mode=mode, page_key=sug["page_key"], conn=conn,
+                )
+                if existing and existing.get("is_verified"):
+                    skipped_verified += 1
+                    continue
+                page_id = await MemoryWikiPage.save(
+                    page_key=sug["page_key"],
+                    title=sug["title"],
+                    content=sug["content"],
+                    category=sug["category"],
+                    chat_id=chat_id,
+                    mode=mode,
+                    importance=0.6,
+                    is_verified=False,  # Требуется ручное подтверждение!
+                    conn=conn,
+                )
+                if page_id:
+                    suggested_wiki_ids.append(page_id)
+
+            # 2. Создаём консолидированные факты и архивируем ИХ источники, привязывая
+            #    superseded_by к КОНКРЕТНОМУ новому факту (а не к первому — корректный
+            #    провенанс). Создаём факты всегда, независимо от archive_ids.
+            archived_via_facts: set[int] = set()
+            for fact in plan["facts"]:
+                new_id = await MemoryFact.create(
+                    chat_id=chat_id,
+                    mode=mode,
+                    fact_text=fact["text"],
+                    summary="Сконсолидированный факт памяти",
+                    importance=fact["importance"],
+                    metadata={"kind": "consolidated", "source_ids": fact.get("source_ids") or []},
+                    conn=conn,
+                )
+                if not new_id:
+                    continue
+                created_ids.append(new_id)
+                # Не архивируем сам новый факт (на случай dedup-совпадения по тексту).
+                src_ids = [int(s) for s in (fact.get("source_ids") or []) if s and int(s) != new_id]
+                if src_ids:
+                    archived_count += await MemoryFact.archive_many(
+                        src_ids, reason="consolidated", superseded_by=new_id, conn=conn,
+                    )
+                    archived_via_facts.update(src_ids)
+
+            # 3. Остальные факты, помеченные к архивации, но не привязанные к новому
+            #    факту, архивируем как шум (без superseded_by).
+            leftover = [int(fid) for fid in plan["archive_ids"] if int(fid) not in archived_via_facts]
+            if leftover:
+                archived_count += await MemoryFact.archive_many(
+                    leftover, reason="consolidated", superseded_by=None, conn=conn,
+                )
+
     report["suggested_wiki_ids"] = suggested_wiki_ids
     report["skipped_verified_wiki"] = skipped_verified
-
-    if not plan["archive_ids"]:
-        return report
-
-    created_ids = []
-    first_new_id = None
-    for fact in plan["facts"]:
-        fact_id = await MemoryFact.create(
-            chat_id=chat_id,
-            mode=mode,
-            fact_text=fact["text"],
-            summary="Сконсолидированный факт памяти",
-            importance=fact["importance"],
-            metadata={"kind": "consolidated", "source_ids": fact.get("source_ids") or []},
-        )
-        if fact_id:
-            created_ids.append(fact_id)
-            if first_new_id is None:
-                first_new_id = fact_id
-
-    archived_count = await MemoryFact.archive_many(
-        plan["archive_ids"],
-        reason="consolidated",
-        superseded_by=first_new_id,
-    )
     report["created_ids"] = created_ids
     report["archived_count"] = archived_count
     return report

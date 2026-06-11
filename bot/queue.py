@@ -6,6 +6,7 @@ import os
 import re
 import io
 import html
+import base64
 import asyncio
 import logging
 from pathlib import Path
@@ -56,6 +57,18 @@ vclone_queue = asyncio.Queue()
 # Per-user текстовые очереди: {user_id: asyncio.Queue}
 _user_queues: dict[int, asyncio.Queue] = {}
 _user_workers: dict[int, asyncio.Task] = {}
+# Per-user локи жизненного цикла очереди/воркера (RACE-02). Сериализуют постановку
+# сообщения + старт воркера (продюсер) с самозавершением воркера при пустой очереди,
+# чтобы между "очередь пуста" и снятием воркера сообщение не потерялось.
+_user_queue_locks: dict[int, asyncio.Lock] = {}
+
+
+def _get_user_lock(user_id: int) -> asyncio.Lock:
+    lock = _user_queue_locks.get(user_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _user_queue_locks[user_id] = lock
+    return lock
 
 _running_chat_tasks: dict[int, set[asyncio.Task]] = {}
 
@@ -134,25 +147,38 @@ def _short_error(error: Exception, limit: int = 500) -> str:
 
 
 async def _extract_photo_urls(update, context) -> list:
-    """Извлекает URL прикреплённых фото из сообщения (макс 14)."""
+    """Извлекает прикреплённые фото как data:base64-URL (макс 14).
+
+    SEC-01: НЕ возвращаем сырой Telegram ``file.file_path`` — он содержит токен
+    бота (``.../bot<TOKEN>/...``) и оседал бы в pending-state и задачах очереди,
+    рискуя утечь в логи или во внешний API при будущем рефакторинге. Скачиваем
+    байты сразу и отдаём ``data:image/jpeg;base64,...`` — генераторы изображений
+    и видео уже умеют принимать такой формат.
+    """
     image_urls = []
     msg = update.message
+
+    async def _fetch_data_url(file_id) -> str:
+        file = await context.bot.get_file(file_id)
+        data = await file.download_as_bytearray()
+        b64 = base64.b64encode(bytes(data)).decode("utf-8")
+        # Фото в Telegram всегда JPEG.
+        return f"data:image/jpeg;base64,{b64}"
+
     if msg.photo:
         for photo in msg.photo[-1:]:
             try:
-                file = await context.bot.get_file(photo.file_id)
-                image_urls.append(file.file_path)
+                image_urls.append(await _fetch_data_url(photo.file_id))
             except Exception as e:
-                logger.warning(f"Не удалось получить URL фото: {e}")
+                logger.warning(f"Не удалось загрузить фото: {e}")
     if msg.reply_to_message and msg.reply_to_message.photo:
         for photo_size in msg.reply_to_message.photo[-1:]:
             if len(image_urls) >= 14:
                 break
             try:
-                file = await context.bot.get_file(photo_size.file_id)
-                image_urls.append(file.file_path)
+                image_urls.append(await _fetch_data_url(photo_size.file_id))
             except Exception as e:
-                logger.warning(f"Не удалось получить URL фото из reply: {e}")
+                logger.warning(f"Не удалось загрузить фото из reply: {e}")
     return image_urls[:14]
 
 
@@ -482,17 +508,22 @@ async def enqueue_reply(chat_id, user_id, user_name, user_message, message_id, c
         'is_video_note': is_video_note
     }
     
-    # Получаем или создаём очередь для пользователя
-    if user_id not in _user_queues:
-        _user_queues[user_id] = asyncio.Queue()
-    
-    await _user_queues[user_id].put(request)
-    
-    # Запускаем воркер для пользователя, если ещё не запущен
-    if user_id not in _user_workers or _user_workers[user_id].done():
-        task = asyncio.create_task(_user_text_worker(user_id))
-        _track_task(task)
-        _user_workers[user_id] = task
+    # RACE-02: постановку в очередь и (пере)запуск воркера делаем под per-user локом,
+    # чтобы это не пересекалось с самозавершением воркера (которое тоже под этим локом).
+    async with _get_user_lock(user_id):
+        queue = _user_queues.get(user_id)
+        if queue is None:
+            queue = asyncio.Queue()
+            _user_queues[user_id] = queue
+
+        await queue.put(request)
+
+        # Запускаем воркер для пользователя, если ещё не запущен
+        worker = _user_workers.get(user_id)
+        if worker is None or worker.done():
+            task = asyncio.create_task(_user_text_worker(user_id))
+            _track_task(task)
+            _user_workers[user_id] = task
 
 
 async def _user_text_worker(user_id: int):
@@ -500,8 +531,20 @@ async def _user_text_worker(user_id: int):
     queue = _user_queues.get(user_id)
     if not queue:
         return
-    
-    while not queue.empty():
+
+    while True:
+        # RACE-02: самозавершение строго под локом. Если очередь пуста — снимаем
+        # воркер атомарно с продюсером (enqueue_reply держит тот же лок), иначе
+        # сообщение, пришедшее между проверкой и снятием, потерялось бы.
+        if queue.empty():
+            async with _get_user_lock(user_id):
+                if queue.empty():
+                    _user_queues.pop(user_id, None)
+                    _user_workers.pop(user_id, None)
+                    _user_queue_locks.pop(user_id, None)
+                    return
+                # Иначе: сообщение успело прийти — продолжаем обработку.
+
         request = await queue.get()
         
         # Rolling debounce: ждём до 5с, каждое новое сообщение сбрасывает таймер
@@ -568,10 +611,7 @@ async def _user_text_worker(user_id: int):
             finally:
                 unregister_running_task(chat_id, sub_task)
                 queue.task_done()
-    
-    # Очищаем ресурсы после завершения
-    _user_queues.pop(user_id, None)
-    _user_workers.pop(user_id, None)
+    # Выход из цикла — только через lock-guarded return при пустой очереди (RACE-02).
 
 
 # Паттерны с границей начала слова (\b<стем>), чтобы не ловить подстроки
