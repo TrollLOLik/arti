@@ -584,10 +584,19 @@ class MemoryChunk:
             """, chunk_id, _vector_to_pg(vector), model)
 
     @staticmethod
-    async def search_vector(chat_id: int, mode: str, query_vector: List[float], limit: int = 5) -> List[dict]:
+    async def search_vector(
+        chat_id: int,
+        mode: str,
+        query_vector: List[float],
+        limit: int = 5,
+        min_similarity: float = 0.0,
+    ) -> List[dict]:
         if not query_vector:
             return []
 
+        # min_similarity отсекает заведомо нерелевантные чанки: без порога ORDER BY
+        # всегда вернёт top-k ближайших, даже если ближайший фрагмент не имеет
+        # отношения к запросу, и мусор попадёт в контекст ответа.
         async with get_db() as conn:
             rows = await conn.fetch("""
                 SELECT *,
@@ -596,9 +605,10 @@ class MemoryChunk:
                 WHERE chat_id = $1
                 AND mode = $2
                 AND embedding IS NOT NULL
+                AND (1 - (embedding <=> $3::vector)) >= $5
                 ORDER BY embedding <=> $3::vector
                 LIMIT $4
-            """, chat_id, mode, _vector_to_pg(query_vector), limit)
+            """, chat_id, mode, _vector_to_pg(query_vector), limit, float(min_similarity))
             return [dict(row) for row in rows]
 
     @staticmethod

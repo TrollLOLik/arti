@@ -4,12 +4,15 @@ from datetime import datetime
 from typing import Any, Dict, List
 
 from config import (
+    MEMORY_CHUNK_MIN_SIMILARITY,
     MEMORY_CONSOLIDATION_APPLY,
     MEMORY_CONSOLIDATION_AUTO,
     MEMORY_CONSOLIDATION_INTERVAL,
     MEMORY_PROFILE_AUTO,
     MEMORY_PROFILE_MIN_INTERVAL_SEC,
     MEMORY_PROFILES_ENABLED,
+    MEMORY_TIMELINE_APPLY,
+    MEMORY_TIMELINE_CHECK_INTERVAL,
     MEMORY_TIMELINE_ENABLED,
 )
 from database.models import MemoryChunk, MemoryEntity, MemoryFact, MemoryMessage, MemoryRelation, MemoryWikiPage
@@ -19,7 +22,7 @@ from memory.embeddings import EMBEDDING_MODEL, embed_document, embed_query
 from memory.extractor import extract_memory
 from memory.normalizer import compact_text, keyword_query, normalize_entity_name, text_contains_entity
 from memory.profiles import get_profile_context, maybe_refresh_user_profile
-from memory.timeline import get_timeline_context
+from memory.timeline import build_timeline_events, get_timeline_context
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +35,12 @@ _BACKGROUND_TASKS: set = set()
 # обслуживания чата зависела от трафика других чатов. Память процесса; сброс при
 # рестарте лишь отложит ближайшую консолидацию (безопасно).
 _consolidation_counters: dict = {}
+
+# Счётчик экзченджей ПО ЧАТУ (chat_id, mode) -> int с момента последней ПОПЫТКИ
+# построить timeline. Раз в MEMORY_TIMELINE_CHECK_INTERVAL экзченджей дёргаем
+# build_timeline_events; сама функция пропускает работу, пока новых сообщений
+# меньше MEMORY_TIMELINE_MIN_MESSAGES, поэтому LLM-вызов происходит редко.
+_timeline_counters: dict = {}
 
 
 def _track_background_task(task) -> None:
@@ -129,6 +138,7 @@ async def build_memory_context(
                     mode=mode,
                     query_vector=query_vector,
                     limit=log_limit,
+                    min_similarity=MEMORY_CHUNK_MIN_SIMILARITY,
                 )
             except Exception as e:
                 logger.warning(f"Vector retrieval недоступен, fallback на text retrieval: {e}")
@@ -441,6 +451,32 @@ async def remember_exchange(
                 logger.exception("Ошибка фоновой консолидации памяти")
 
         consolidation_task.add_done_callback(_log_consolidation_error)
+
+    # Авто-построение сжатой хронологии (memory_timeline). Раньше таблица заполнялась
+    # ТОЛЬКО вручную (`maintain_memory.py --timeline --apply`) и потому всегда была
+    # пустой. Триггерим раз в MEMORY_TIMELINE_CHECK_INTERVAL экзченджей: попытка дёшева,
+    # т.к. build_timeline_events сам пропускает работу, пока новых сообщений < порога.
+    if MEMORY_TIMELINE_ENABLED and MEMORY_TIMELINE_CHECK_INTERVAL > 0:
+        timeline_key = (chat_id, mode)
+        _timeline_counters[timeline_key] = _timeline_counters.get(timeline_key, 0) + 1
+        if _timeline_counters[timeline_key] >= MEMORY_TIMELINE_CHECK_INTERVAL:
+            _timeline_counters[timeline_key] = 0
+            timeline_task = asyncio.create_task(
+                build_timeline_events(
+                    chat_id=chat_id,
+                    mode=mode,
+                    dry_run=not MEMORY_TIMELINE_APPLY,
+                )
+            )
+            _track_background_task(timeline_task)
+
+            def _log_timeline_error(task):
+                try:
+                    task.result()
+                except Exception:
+                    logger.exception("Ошибка фонового построения timeline")
+
+            timeline_task.add_done_callback(_log_timeline_error)
 
     # Авто-перестроение смыслового профиля пользователя из накопленных фактов.
     # Без этого profile_json содержит только аффективный блок, а /my_profile показывает

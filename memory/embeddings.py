@@ -12,15 +12,23 @@ logger = logging.getLogger(__name__)
 EMBEDDING_MODEL = "gemini-embedding-2"
 
 
-async def _embed(text: str) -> List[float]:
+async def _embed(text: str, task_type: str) -> List[float]:
     if not text or not text.strip():
         return []
 
+    # task_type сообщает модели, ассиметрично кодировать запрос (RETRIEVAL_QUERY)
+    # или документ (RETRIEVAL_DOCUMENT). Это нативный параметр API — раньше тип задачи
+    # «передавался» текстовым префиксом ("task: retrieval_query | ..."), который
+    # на деле просто попадал в эмбеддируемый текст и пачкал вектор, а не включал
+    # task-specific режим модели → запрос и документ кодировались хуже и расходились.
     response = await asyncio.to_thread(
         genai_client.models.embed_content,
         model=EMBEDDING_MODEL,
         contents=compact_text(text, 8000),
-        config=types.EmbedContentConfig(output_dimensionality=EMBEDDING_DIMENSIONS),
+        config=types.EmbedContentConfig(
+            output_dimensionality=EMBEDDING_DIMENSIONS,
+            task_type=task_type,
+        ),
     )
 
     if not response or not getattr(response, "embeddings", None):
@@ -44,7 +52,7 @@ async def _embed(text: str) -> List[float]:
 
 async def embed_query(text: str) -> List[float]:
     try:
-        return await _embed(f"task: retrieval_query | {text}")
+        return await _embed(text, task_type="RETRIEVAL_QUERY")
     except Exception as e:
         logger.warning(f"Ошибка embedding query: {e}")
         return []
@@ -52,7 +60,7 @@ async def embed_query(text: str) -> List[float]:
 
 async def embed_document(text: str) -> List[float]:
     try:
-        return await _embed(f"task: retrieval_document | {text}")
+        return await _embed(text, task_type="RETRIEVAL_DOCUMENT")
     except Exception as e:
         logger.warning(f"Ошибка embedding document: {e}")
         return []

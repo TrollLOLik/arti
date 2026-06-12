@@ -140,18 +140,32 @@ MEDIA_RATE_WINDOW = int(os.getenv("MEDIA_RATE_WINDOW", "300"))
 # (VoxCPM Demo/локальный/Fish). Настраивается через .env: TTS_ENABLED=True.
 TTS_ENABLED = os.getenv("TTS_ENABLED", "False").strip().lower() == "true"
 MEMORY_CONSOLIDATION_AUTO = True
-MEMORY_CONSOLIDATION_APPLY = False
+# Применять план консолидации (объединение дублей фактов + перенос знаний в Wiki),
+# а не только строить его и выбрасывать. Раньше было False — авто-консолидация
+# жгла LLM-вызов каждые MEMORY_CONSOLIDATION_INTERVAL фактов и отбрасывала результат.
+MEMORY_CONSOLIDATION_APPLY = True
 MEMORY_CONSOLIDATION_INTERVAL = 50
 MEMORY_PROFILES_ENABLED = True
 MEMORY_TIMELINE_ENABLED = True
-MEMORY_PROFILE_APPLY = False
 # Авто-перестроение смыслового профиля пользователя в живом диалоге (а не только
 # вручную через maintain_memory.py). Троттлится интервалом ниже, чтобы не дёргать LLM
 # на каждом сообщении: первый раз профиль строится сразу, как появились факты.
 MEMORY_PROFILE_AUTO = True
 MEMORY_PROFILE_MIN_INTERVAL_SEC = 1800
-MEMORY_TIMELINE_APPLY = False
+# Применять построение сжатой хронологии (memory_timeline) автоматически в живом
+# диалоге. Раньше флаг был объявлен, но нигде не использовался, а запись в таблицу
+# шла ТОЛЬКО вручную через `maintain_memory.py --timeline --apply` → таблица всегда
+# оставалась пустой. Теперь build_timeline_events вызывается из remember_exchange.
+MEMORY_TIMELINE_APPLY = True
 MEMORY_TIMELINE_MIN_MESSAGES = 30
+# Как часто (раз в N экзченджей на чат) пытаться построить timeline. Сама попытка
+# дёшева: build_timeline_events само пропускает работу, пока новых сообщений
+# меньше MEMORY_TIMELINE_MIN_MESSAGES, поэтому LLM-вызов происходит редко.
+MEMORY_TIMELINE_CHECK_INTERVAL = 10
+# Минимальная косинусная близость чанка к запросу, ниже которой фрагмент считается
+# нерелевантным и НЕ подмешивается в контекст. Без порога vector search всегда
+# возвращал top-k, даже если ближайший чанк не имеет отношения к вопросу.
+MEMORY_CHUNK_MIN_SIMILARITY = float(os.getenv("MEMORY_CHUNK_MIN_SIMILARITY", "0.35"))
 STICKERS_ENABLED = os.getenv("STICKERS_ENABLED", "True").strip().lower() == "true"
 ARTI_STICKER_SET = os.getenv("ARTI_STICKER_SET", "arti_stickers").strip()
 
