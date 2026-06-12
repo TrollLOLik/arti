@@ -1480,11 +1480,16 @@ def crop_reference_audio(
     reference_dir.mkdir(parents=True, exist_ok=True)
     ref_start, ref_end = find_reference_bounds(phrase, turns, min_duration)
     contained = words_fully_inside(words, ref_start, ref_end)
-    if contained:
+    snapped_start = max(ref_start, contained[0].start - 0.1) if contained else ref_start
+    snapped_end = min(ref_end, contained[-1].end + 0.1) if contained else ref_end
+    if contained and snapped_end - snapped_start >= min_duration * 0.5:
         # Snap clip bounds to word edges so the audio matches ref_text exactly.
-        ref_start = max(ref_start, contained[0].start - 0.1)
-        ref_end = min(ref_end, contained[-1].end + 0.1)
-    ref_text = normalize_text(" ".join(w.text for w in contained))
+        ref_start, ref_end = snapped_start, snapped_end
+        ref_text = normalize_text(" ".join(w.text for w in contained))
+    else:
+        # Too few fully-contained words: keep the full clip for voice cloning and
+        # send no prompt text rather than text that mismatches the audio.
+        ref_text = ""
     output_path = reference_dir / f"ref_{phrase.id:05d}_{phrase.speaker}.wav"
     stream = ffmpeg.input(str(audio_path), ss=max(0.0, ref_start), t=max(0.01, ref_end - ref_start)).output(
         str(output_path),
