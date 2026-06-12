@@ -84,12 +84,13 @@ class Phrase:
     def duration(self) -> float:
         return max(0.01, self.end - self.start)
 
-    def to_llm_payload(self) -> dict[str, Any]:
+    def to_llm_payload(self, chars_per_sec: float = 15.0) -> dict[str, Any]:
         return {
             "id": self.id,
             "start": round(self.start, 3),
             "end": round(self.end, 3),
             "duration": round(self.duration, 3),
+            "char_budget": max(8, int(round(self.duration * chars_per_sec))),
             "text": self.text,
             "speaker": self.speaker,
             "word_confidence_min": round(self.word_confidence_min, 3) if self.word_confidence_min is not None else None,
@@ -179,6 +180,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-speedup", type=float, default=1.8)
     parser.add_argument("--max-overflow", type=float, default=1.0, help="Max seconds a sped-up phrase may overlap the next slot before being hard-clipped")
     parser.add_argument("--tts-runaway-retries", type=int, default=2, help="Regeneration attempts when TTS output is anomalously long for its slot")
+    parser.add_argument("--translation-chars-per-sec", type=float, default=15.0, help="Russian speech rate used to compute per-phrase character budget for translation")
+    parser.add_argument("--tts-shorten-retries", type=int, default=2, help="LLM shorten-and-regenerate attempts when TTS output overshoots its slot")
+    parser.add_argument("--tts-shorten-trigger", type=float, default=1.25, help="Shorten the line when raw TTS duration exceeds the slot by this factor")
+    parser.add_argument("--snap-window", type=float, default=0.4, help="Max seconds each phrase boundary may shift towards real silence on the vocals track")
+    parser.add_argument("--no-snap-boundaries", action="store_true", help="Disable snapping phrase boundaries to silence on the vocals track")
+    parser.add_argument("--per-phrase-reference", action="store_true", help="Crop a fresh TTS reference around every phrase instead of one cached reference per speaker")
     parser.add_argument("--cookies", default=None, help="Path to cookies file for yt-dlp (e.g. exported from browser)")
     parser.add_argument("--cookies-from-browser", default=None, help="Browser to extract cookies from (e.g. chrome, firefox, edge)")
     parser.add_argument("--dub-plan", default="outputs/dub_plan.json")
@@ -754,6 +761,108 @@ def merge_words_into_phrases(
     return phrases
 
 
+def shorten_line_with_llm(text: str, target_chars: int, args: argparse.Namespace) -> str:
+    # Asks the LLM to compress one dubbing line to fit its time slot; returns the
+    # original text unchanged if the model fails or does not actually shorten it.
+    prompt = (
+        "Сократи реплику русского дубляжа так, чтобы она укладывалась в "
+        f"{target_chars} символов (включая пробелы), сохранив смысл и разговорное звучание. "
+        "Убирай вводные слова, используй короткие синонимы. "
+        "Верни ТОЛЬКО JSON вида {\"text\": \"...\"} без пояснений.\n"
+        f"Реплика: {json.dumps(text, ensure_ascii=False)}"
+    )
+    try:
+        parsed = extract_json_object(call_llm(prompt, args))
+        shortened = normalize_text(str(parsed.get("text", "")))
+    except Exception as exc:
+        logging.warning("Shorten LLM call failed: %s", str(exc)[:200])
+        return text
+    if not shortened or len(shortened) >= len(text):
+        return text
+    return shortened
+
+
+def _clone_phrase_with_bounds(phrase: Phrase, start: float, end: float) -> Phrase:
+    return Phrase(
+        id=phrase.id,
+        start=start,
+        end=end,
+        text=phrase.text,
+        speaker=phrase.speaker,
+        word_confidence_min=phrase.word_confidence_min,
+        word_confidence_avg=phrase.word_confidence_avg,
+        needs_review=phrase.needs_review,
+        review_reason=phrase.review_reason,
+        words=phrase.words,
+    )
+
+
+def snap_phrases_to_silence(
+    phrases: list[Phrase],
+    vocals_path: Path,
+    window: float = 0.4,
+    pad: float = 0.05,
+    sample_rate: int = 16000,
+) -> list[Phrase]:
+    # ASR word timings drift by 100-300ms; this snaps each phrase boundary to the
+    # actual speech onset/offset found on the separated vocals track (RMS energy),
+    # so dub slots line up with real speech instead of the ASR estimate.
+    if not phrases or window <= 0:
+        return phrases
+    audio = read_audio_mono(vocals_path, sample_rate)
+    if audio.size == 0:
+        return phrases
+    hop = max(1, int(sample_rate * 0.010))
+    frame = max(hop, int(sample_rate * 0.025))
+    rms = librosa.feature.rms(y=audio, frame_length=frame, hop_length=hop)[0]
+    if rms.size == 0:
+        return phrases
+    noise_floor = float(np.percentile(rms, 10))
+    threshold = max(noise_floor * 4.0, float(rms.max()) * 0.04)
+    times = np.arange(rms.size) * (hop / sample_rate)
+    is_speech = rms >= threshold
+
+    def speech_onset(lo: float, hi: float) -> float | None:
+        mask = (times >= lo) & (times <= hi)
+        idx = np.flatnonzero(mask & is_speech)
+        if idx.size == 0:
+            return None
+        return float(times[idx[0]])
+
+    def speech_offset(lo: float, hi: float) -> float | None:
+        mask = (times >= lo) & (times <= hi)
+        idx = np.flatnonzero(mask & is_speech)
+        if idx.size == 0:
+            return None
+        return float(times[idx[-1]]) + hop / sample_rate
+
+    snapped: list[Phrase] = []
+    moved = 0
+    total_shift = 0.0
+    for i, phrase in enumerate(phrases):
+        prev_end = snapped[-1].end if snapped else 0.0
+        next_start = phrases[i + 1].start if i + 1 < len(phrases) else float("inf")
+        onset = speech_onset(phrase.start - window, phrase.start + window)
+        offset = speech_offset(phrase.end - window, phrase.end + window)
+        new_start = phrase.start if onset is None else max(0.0, onset - pad)
+        new_end = phrase.end if offset is None else offset + pad
+        new_start = max(new_start, prev_end + 0.01)
+        new_end = min(new_end, next_start - 0.01) if next_start != float("inf") else new_end
+        if new_end - new_start < 0.1:
+            snapped.append(phrase)
+            continue
+        shift = abs(new_start - phrase.start) + abs(new_end - phrase.end)
+        if shift > 0.005:
+            moved += 1
+            total_shift += shift
+        snapped.append(_clone_phrase_with_bounds(phrase, new_start, new_end))
+    logging.info(
+        "Snapped phrase boundaries to silence: %d/%d adjusted (avg shift %.0fms, window %.2fs)",
+        moved, len(phrases), (total_shift / moved * 1000.0) if moved else 0.0, window,
+    )
+    return snapped
+
+
 def _build_gemini_client() -> genai.Client:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
@@ -825,8 +934,8 @@ def extract_json_object(text: str) -> dict[str, Any]:
     return parsed
 
 
-def build_translation_prompt(phrases: list[Phrase]) -> str:
-    payload = [phrase.to_llm_payload() for phrase in phrases]
+def build_translation_prompt(phrases: list[Phrase], chars_per_sec: float = 15.0) -> str:
+    payload = [phrase.to_llm_payload(chars_per_sec) for phrase in phrases]
     return (
         "You are an expert anime dubbing director, Russian script adapter, and ASR cleanup specialist.\n"
         "I will provide a JSON list of transcribed phrase objects. Return ONLY a valid JSON array with one object for every input id.\n\n"
@@ -842,7 +951,11 @@ def build_translation_prompt(phrases: list[Phrase]) -> str:
         "Do NOT skip short real lines such as \"No!\", \"Fuck!\", \"Release!\", \"Found it!\", \"Oh no.\", \"Wow, everyone is here.\", \"Huh, I see.\", \"Hey, stop!\". "
         "For speech, translated_text must be a natural Russian dubbing line.\n\n"
         "translated_text rules for speech:\n"
-        "Translate/adapt into natural Russian, not literal Russian. Keep it concise enough for the original duration. "
+        "Translate/adapt into natural Russian, not literal Russian. "
+        "HARD LENGTH BUDGET: each phrase object has a char_budget field — the maximum number of characters (including spaces) "
+        "that fits the original duration at natural Russian speech rate. translated_text MUST NOT exceed char_budget; "
+        "if a literal translation is longer, compress it: drop filler words, use shorter synonyms, restructure the sentence. "
+        "A line slightly under budget is always better than one over budget. "
         "Fix obvious ASR hallucinations, wrong words, broken names, malformed catchphrases, and language switches using nearby context in the batch. "
         "Remove profanity censorship based on context, e.g. F*** -> Блядь/Чёрт/нахрен. "
         "Make the line sound like real spoken anime/dialogue performance.\n\n"
@@ -871,7 +984,7 @@ def parse_translation_response(content: str) -> dict[int, tuple[str, bool]]:
 
 
 def translate_batch_with_retries(batch: list[Phrase], args: argparse.Namespace, batch_index: int) -> dict[int, tuple[str, bool]]:
-    prompt = build_translation_prompt(batch)
+    prompt = build_translation_prompt(batch, args.translation_chars_per_sec)
     content = call_llm(prompt, args)
     by_id = parse_translation_response(content)
     missing = [phrase for phrase in batch if phrase.id not in by_id]
@@ -883,7 +996,7 @@ def translate_batch_with_retries(batch: list[Phrase], args: argparse.Namespace, 
         )
     for phrase in missing:
         try:
-            retry_content = call_llm(build_translation_prompt([phrase]), args)
+            retry_content = call_llm(build_translation_prompt([phrase], args.translation_chars_per_sec), args)
             retry_by_id = parse_translation_response(retry_content)
             retry_item = retry_by_id.get(phrase.id)
             if retry_item:
@@ -915,7 +1028,7 @@ def polish_dub_plan(phrases: list[TranslatedPhrase], args: argparse.Namespace) -
     polished: list[TranslatedPhrase] = []
     for batch_index, batch in enumerate(chunked(phrases, args.translation_batch_size), start=1):
         logging.info("Polishing dub plan batch %d", batch_index)
-        prompt = build_translation_prompt([item.phrase for item in batch])
+        prompt = build_translation_prompt([item.phrase for item in batch], args.translation_chars_per_sec)
         draft_payload = []
         for item in batch:
             payload = item.to_json()
@@ -1632,6 +1745,61 @@ def generate_omnivoice_audio(text: str, ref_audio_path: Path, ref_text: str, out
     _save_tts_response(response.content, output_path, args.dub_sample_rate)
 
 
+def build_speaker_references(
+    speaker_turns: list[SpeakerTurn],
+    words: list[WordTiming],
+    source_audio_path: Path,
+    reference_dir: Path,
+    args: argparse.Namespace,
+) -> dict[str, tuple[Path, str]]:
+    # One cached reference per speaker keeps the cloned voice timbre stable across
+    # phrases (per-phrase crops give the TTS a different prompt every time).
+    references: dict[str, tuple[Path, str]] = {}
+    if not speaker_turns:
+        return references
+    reference_dir.mkdir(parents=True, exist_ok=True)
+    min_dur = max(2.0, args.reference_min_seconds)
+    max_dur = 8.0
+    for speaker in sorted({turn.speaker for turn in speaker_turns}):
+        best_turn: SpeakerTurn | None = None
+        best_score = -1.0
+        for turn in speaker_turns:
+            if turn.speaker != speaker:
+                continue
+            duration = turn.end - turn.start
+            if duration < min_dur:
+                continue
+            turn_words = [w for w in words if w.start >= turn.start - 0.05 and w.end <= turn.end + 0.05]
+            if not turn_words:
+                continue
+            confidences = [w.confidence for w in turn_words if w.confidence is not None]
+            avg_conf = sum(confidences) / len(confidences) if confidences else 0.5
+            score = min(duration, max_dur) + 3.0 * avg_conf
+            if score > best_score:
+                best_score = score
+                best_turn = turn
+        if best_turn is None:
+            continue
+        ref_start = best_turn.start
+        ref_end = min(best_turn.end, best_turn.start + max_dur)
+        ref_text = text_for_window(words, ref_start, ref_end, "")
+        output_path = reference_dir / f"speaker_ref_{speaker}.wav"
+        stream = ffmpeg.input(str(source_audio_path), ss=max(0.0, ref_start), t=max(0.01, ref_end - ref_start)).output(
+            str(output_path),
+            acodec="pcm_s16le",
+            ac=1,
+            ar=args.dub_sample_rate,
+        )
+        run_ffmpeg(stream)
+        normalized = normalize_audio(output_path, reference_dir / f"speaker_ref_{speaker}_norm.wav")
+        references[speaker] = (normalized, ref_text)
+        logging.info(
+            "Cached speaker reference %s: %.2fs-%.2fs (%.2fs), text=%r",
+            speaker, ref_start, ref_end, ref_end - ref_start, ref_text[:80],
+        )
+    return references
+
+
 def resolve_tts_reference(
     translated: TranslatedPhrase,
     source_audio_path: Path,
@@ -1639,6 +1807,7 @@ def resolve_tts_reference(
     words: list[WordTiming],
     reference_dir: Path,
     args: argparse.Namespace,
+    speaker_references: dict[str, tuple[Path, str]] | None = None,
 ) -> tuple[Path, str]:
     if translated.reference_audio_path is not None:
         reference_path = validate_reference_audio_path(translated.reference_audio_path, translated.phrase.id)
@@ -1648,6 +1817,8 @@ def resolve_tts_reference(
     voice = translated.tts_voice.strip()
     if voice and voice != "default_voice.pt":
         logging.info("TTS voice label for segment %d: %s", translated.phrase.id, voice)
+    if speaker_references and translated.phrase.speaker in speaker_references:
+        return speaker_references[translated.phrase.speaker]
     ref_path, ref_text = crop_reference_audio(
         audio_path=source_audio_path,
         phrase=translated.phrase,
@@ -1674,6 +1845,11 @@ def synthesize_and_sync(
     safety_margin = 0.05
     trailing_gap = 2.0
     synced: list[TranslatedPhrase] = []
+    speaker_references: dict[str, tuple[Path, str]] = {}
+    if not args.per_phrase_reference:
+        speaker_references = build_speaker_references(
+            speaker_turns, words, source_audio_path, reference_dir, args,
+        )
     for index, translated in enumerate(phrases, start=1):
         phrase = translated.phrase
         if translated.skip_tts:
@@ -1711,25 +1887,40 @@ def synthesize_and_sync(
             words,
             reference_dir,
             args,
+            speaker_references=speaker_references,
         )
         runaway_limit = tts_runaway_threshold(available_duration, args.max_speedup)
-        max_generation_attempts = max(1, args.tts_runaway_retries + 1)
+        current_text = translated.translated_text
+        shorten_attempts_left = max(0, args.tts_shorten_retries)
+        max_generation_attempts = max(1, args.tts_runaway_retries + 1) + shorten_attempts_left
         for generation_attempt in range(1, max_generation_attempts + 1):
             generate_tts_audio(
-                text=translated.translated_text,
+                text=current_text,
                 ref_audio_path=ref_path,
                 ref_text=ref_text,
                 output_path=raw_path,
                 args=args,
             )
             raw_duration = audio_duration(raw_path)
-            if raw_duration <= runaway_limit:
-                break
-            logging.warning(
-                "Runaway TTS for segment %d: %.2fs for %.2fs slot (limit %.2fs), attempt %d/%d",
-                phrase.id, raw_duration, available_duration, runaway_limit,
-                generation_attempt, max_generation_attempts,
-            )
+            if raw_duration > runaway_limit:
+                logging.warning(
+                    "Runaway TTS for segment %d: %.2fs for %.2fs slot (limit %.2fs), attempt %d/%d",
+                    phrase.id, raw_duration, available_duration, runaway_limit,
+                    generation_attempt, max_generation_attempts,
+                )
+                continue
+            if raw_duration > available_duration * args.tts_shorten_trigger and shorten_attempts_left > 0:
+                shorten_attempts_left -= 1
+                target_chars = max(8, int(len(current_text) * available_duration / raw_duration * 0.95))
+                shortened = shorten_line_with_llm(current_text, target_chars, args)
+                if shortened != current_text:
+                    logging.info(
+                        "Shortening segment %d: %.2fs > %.2fs slot; %d -> %d chars, regenerating",
+                        phrase.id, raw_duration, available_duration, len(current_text), len(shortened),
+                    )
+                    current_text = shortened
+                    continue
+            break
         process_phrase_audio(
             raw_path=raw_path,
             processed_path=processed_path,
@@ -1742,7 +1933,7 @@ def synthesize_and_sync(
         synced.append(
             TranslatedPhrase(
                 phrase=phrase,
-                translated_text=translated.translated_text,
+                translated_text=current_text,
                 skip_tts=translated.skip_tts,
                 tts_voice=translated.tts_voice,
                 reference_audio_path=translated.reference_audio_path,
@@ -2008,6 +2199,11 @@ def run_pipeline(args: argparse.Namespace) -> None:
             critical_confidence_threshold=args.asr_critical_confidence_threshold,
             min_tts_duration=args.min_tts_duration,
         )
+        if not args.no_snap_boundaries:
+            try:
+                phrases = snap_phrases_to_silence(phrases, vocals_path, window=args.snap_window)
+            except Exception as exc:
+                logging.warning("Boundary snapping failed; keeping ASR timings: %s", exc)
         save_json(transcript_path, [phrase.to_json() for phrase in phrases])
         logging.info("Original transcript saved: %s", transcript_path)
         save_json(diarization_path, [turn.to_json() for turn in speaker_turns])
