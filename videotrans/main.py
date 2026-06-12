@@ -177,6 +177,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-phrase-duration", type=float, default=0.4, help="Drop single-word phrases shorter than this (seconds) as likely hallucinations")
     parser.add_argument("--word-min-overlap", type=float, default=0.5, help="Minimum fraction of word duration that must overlap with a pyannote turn to assign a speaker")
     parser.add_argument("--max-speedup", type=float, default=1.8)
+    parser.add_argument("--max-overflow", type=float, default=1.0, help="Max seconds a sped-up phrase may overlap the next slot before being hard-clipped")
+    parser.add_argument("--tts-runaway-retries", type=int, default=2, help="Regeneration attempts when TTS output is anomalously long for its slot")
     parser.add_argument("--cookies", default=None, help="Path to cookies file for yt-dlp (e.g. exported from browser)")
     parser.add_argument("--cookies-from-browser", default=None, help="Browser to extract cookies from (e.g. chrome, firefox, edge)")
     parser.add_argument("--dub-plan", default="outputs/dub_plan.json")
@@ -1240,6 +1242,12 @@ def pad_or_clip(input_path: Path, output_path: Path, duration: float, sample_rat
     write_audio(output_path, audio, sample_rate)
 
 
+def tts_runaway_threshold(available_duration: float, max_speedup: float) -> float:
+    # Anything longer cannot fit even at max speedup plus a small overlap allowance,
+    # which indicates a degenerate TTS generation (e.g. an endless vowel artifact).
+    return max(available_duration * max_speedup + 2.0, available_duration * 2.0, 4.0)
+
+
 def process_phrase_audio(
     raw_path: Path,
     processed_path: Path,
@@ -1247,6 +1255,7 @@ def process_phrase_audio(
     duration: float,
     sample_rate: int,
     max_speedup: float,
+    max_overflow: float = 1.0,
 ) -> None:
     # Always trim leading/trailing silence first to prevent the next phrase from overlaying a dead tail.
     raw_duration = audio_duration(raw_path)
@@ -1272,15 +1281,25 @@ def process_phrase_audio(
         logging.info("Atempo %s: %.3fx, result %.2fs", raw_path.name, tempo, current_duration)
         if current_duration > duration:
             overflow = current_duration - duration
+            allowed_overflow = min(overflow, max(0.0, max_overflow))
             logging.info(
-                "Overflow %s: required %.3fx but capped at %.3fx; %.2fs will overlap next slot",
+                "Overflow %s: required %.3fx but capped at %.3fx; %.2fs over slot, keeping %.2fs overlap",
                 raw_path.name,
                 required_tempo,
                 tempo,
                 overflow,
+                allowed_overflow,
             )
-            # Keep full audio (overlay handles overlap) but apply fade-out to avoid clicks at the tail.
-            apply_fade_out(current_path, processed_path, sample_rate)
+            if overflow > allowed_overflow:
+                logging.warning(
+                    "Clipping %s: %.2fs exceeds slot by %.2fs (max overlap %.2fs); hard-clipping tail",
+                    raw_path.name,
+                    current_duration,
+                    overflow,
+                    allowed_overflow,
+                )
+            # pad_or_clip applies a tail fade-out, suppressing clicks at the clip point.
+            pad_or_clip(current_path, processed_path, duration + allowed_overflow, sample_rate)
             return
     pad_or_clip(current_path, processed_path, duration, sample_rate)
 
@@ -1693,13 +1712,24 @@ def synthesize_and_sync(
             reference_dir,
             args,
         )
-        generate_tts_audio(
-            text=translated.translated_text,
-            ref_audio_path=ref_path,
-            ref_text=ref_text,
-            output_path=raw_path,
-            args=args,
-        )
+        runaway_limit = tts_runaway_threshold(available_duration, args.max_speedup)
+        max_generation_attempts = max(1, args.tts_runaway_retries + 1)
+        for generation_attempt in range(1, max_generation_attempts + 1):
+            generate_tts_audio(
+                text=translated.translated_text,
+                ref_audio_path=ref_path,
+                ref_text=ref_text,
+                output_path=raw_path,
+                args=args,
+            )
+            raw_duration = audio_duration(raw_path)
+            if raw_duration <= runaway_limit:
+                break
+            logging.warning(
+                "Runaway TTS for segment %d: %.2fs for %.2fs slot (limit %.2fs), attempt %d/%d",
+                phrase.id, raw_duration, available_duration, runaway_limit,
+                generation_attempt, max_generation_attempts,
+            )
         process_phrase_audio(
             raw_path=raw_path,
             processed_path=processed_path,
@@ -1707,6 +1737,7 @@ def synthesize_and_sync(
             duration=available_duration,
             sample_rate=args.dub_sample_rate,
             max_speedup=args.max_speedup,
+            max_overflow=args.max_overflow,
         )
         synced.append(
             TranslatedPhrase(
@@ -1733,9 +1764,9 @@ def probe_video_duration(video_path: Path) -> float:
 
 def mix_final_audio(phrases: list[TranslatedPhrase], output_path: Path, total_video_duration: float) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    # Pre-load all phrase segments so we can extend the canvas to fit overflow tails.
+    # The canvas is clamped to the video duration; overlay drops any tail past the end,
+    # so phrase overflow can never grow the final track (and thus the video).
     loaded: list[tuple[int, AudioSegment]] = []
-    longest_end_ms = 0
     for translated in phrases:
         if translated.skip_tts:
             continue
@@ -1744,8 +1775,7 @@ def mix_final_audio(phrases: list[TranslatedPhrase], output_path: Path, total_vi
         phrase_audio = AudioSegment.from_file(translated.processed_audio_path)
         start_ms = max(0, int(round(translated.phrase.start * 1000)))
         loaded.append((start_ms, phrase_audio))
-        longest_end_ms = max(longest_end_ms, start_ms + len(phrase_audio))
-    total_duration_ms = max(1, int(math.ceil(total_video_duration * 1000)), longest_end_ms)
+    total_duration_ms = max(1, int(math.ceil(total_video_duration * 1000)))
     canvas = AudioSegment.silent(duration=total_duration_ms)
     for start_ms, phrase_audio in loaded:
         canvas = canvas.overlay(phrase_audio, position=start_ms)
