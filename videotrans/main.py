@@ -101,6 +101,7 @@ class Phrase:
 
     def to_json(self) -> dict[str, Any]:
         payload = self.to_llm_payload()
+        payload.pop("char_budget", None)
         payload["duration"] = round(self.duration, 3)
         payload["words"] = [word.to_json() for word in self.words]
         return payload
@@ -1909,7 +1910,11 @@ def synthesize_and_sync(
                     generation_attempt, max_generation_attempts,
                 )
                 continue
-            if raw_duration > available_duration * args.tts_shorten_trigger and shorten_attempts_left > 0:
+            if (
+                raw_duration > available_duration * args.tts_shorten_trigger
+                and shorten_attempts_left > 0
+                and generation_attempt < max_generation_attempts
+            ):
                 shorten_attempts_left -= 1
                 target_chars = max(8, int(len(current_text) * available_duration / raw_duration * 0.95))
                 shortened = shorten_line_with_llm(current_text, target_chars, args)
