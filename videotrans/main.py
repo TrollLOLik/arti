@@ -1459,6 +1459,14 @@ def text_for_window(words: list[WordTiming], start: float, end: float, fallback:
     return text or fallback
 
 
+def words_fully_inside(words: list[WordTiming], start: float, end: float, slack: float = 0.05) -> list[WordTiming]:
+    # Only words whose audio is fully contained in [start, end]. Prompt text for
+    # voice-cloning TTS must exactly match the reference audio: a word that is cut
+    # off in the clip but present in the text gets spoken aloud before the target
+    # line (reference text leaking into every generated phrase).
+    return [w for w in words if w.start >= start - slack and w.end <= end + slack]
+
+
 def crop_reference_audio(
     audio_path: Path,
     phrase: Phrase,
@@ -1471,7 +1479,17 @@ def crop_reference_audio(
     # Creates a speaker-safe reference WAV for OmniVoice and matching prompt text.
     reference_dir.mkdir(parents=True, exist_ok=True)
     ref_start, ref_end = find_reference_bounds(phrase, turns, min_duration)
-    ref_text = text_for_window(words, ref_start, ref_end, phrase.text)
+    contained = words_fully_inside(words, ref_start, ref_end)
+    snapped_start = max(ref_start, contained[0].start - 0.1) if contained else ref_start
+    snapped_end = min(ref_end, contained[-1].end + 0.1) if contained else ref_end
+    if contained and snapped_end - snapped_start >= min_duration * 0.5:
+        # Snap clip bounds to word edges so the audio matches ref_text exactly.
+        ref_start, ref_end = snapped_start, snapped_end
+        ref_text = normalize_text(" ".join(w.text for w in contained))
+    else:
+        # Too few fully-contained words: keep the full clip for voice cloning and
+        # send no prompt text rather than text that mismatches the audio.
+        ref_text = ""
     output_path = reference_dir / f"ref_{phrase.id:05d}_{phrase.speaker}.wav"
     stream = ffmpeg.input(str(audio_path), ss=max(0.0, ref_start), t=max(0.01, ref_end - ref_start)).output(
         str(output_path),
@@ -1783,7 +1801,14 @@ def build_speaker_references(
             continue
         ref_start = best_turn.start
         ref_end = min(best_turn.end, best_turn.start + max_dur)
-        ref_text = text_for_window(words, ref_start, ref_end, "")
+        contained = words_fully_inside(words, ref_start, ref_end)
+        if not contained:
+            continue
+        ref_start = max(ref_start, contained[0].start - 0.1)
+        ref_end = min(ref_end, contained[-1].end + 0.1)
+        if ref_end - ref_start < min_dur * 0.5:
+            continue
+        ref_text = normalize_text(" ".join(w.text for w in contained))
         output_path = reference_dir / f"speaker_ref_{speaker}.wav"
         stream = ffmpeg.input(str(source_audio_path), ss=max(0.0, ref_start), t=max(0.01, ref_end - ref_start)).output(
             str(output_path),
