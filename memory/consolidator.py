@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import math
 from typing import Any, Dict, List
 
 from google.genai import types
@@ -62,6 +63,7 @@ def _serialize_candidates(facts: List[dict]) -> str:
         created_at = fact.get("created_at")
         payload.append({
             "id": fact.get("id"),
+            "user_id": fact.get("user_id"),
             "fact_text": compact_text(fact.get("fact_text") or "", 500),
             "summary": compact_text(fact.get("summary") or "", 240),
             "importance": float(fact.get("importance") or 0.5),
@@ -71,12 +73,16 @@ def _serialize_candidates(facts: List[dict]) -> str:
 
 
 def _normalize_plan(payload: Dict[str, Any], allowed_ids: set[int]) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        payload = {}
     raw_facts = payload.get("facts") or []
     raw_archive_ids = payload.get("archive_ids") or []
     raw_suggestions = payload.get("wiki_suggestions") or []
 
     archive_ids = []
     for item in raw_archive_ids:
+        if isinstance(item, bool) or not isinstance(item, (int, str)):
+            continue
         try:
             fact_id = int(item)
         except (TypeError, ValueError):
@@ -100,6 +106,8 @@ def _normalize_plan(payload: Dict[str, Any], allowed_ids: set[int]) -> Dict[str,
 
             source_ids = []
             for source_id in item.get("source_ids") or []:
+                if isinstance(source_id, bool) or not isinstance(source_id, (int, str)):
+                    continue
                 try:
                     source_id = int(source_id)
                 except (TypeError, ValueError):
@@ -113,6 +121,8 @@ def _normalize_plan(payload: Dict[str, Any], allowed_ids: set[int]) -> Dict[str,
                 importance = float(item.get("importance", 0.5))
             except (TypeError, ValueError):
                 importance = 0.5
+            if not source_ids or not math.isfinite(importance):
+                continue
             importance = max(0.0, min(importance, 0.79))
             facts.append({"text": text, "importance": importance, "source_ids": source_ids})
 
@@ -130,6 +140,8 @@ def _normalize_plan(payload: Dict[str, Any], allowed_ids: set[int]) -> Dict[str,
             
             source_ids = []
             for source_id in item.get("source_fact_ids") or []:
+                if isinstance(source_id, bool) or not isinstance(source_id, (int, str)):
+                    continue
                 try:
                     source_id = int(source_id)
                 except (TypeError, ValueError):
@@ -139,6 +151,8 @@ def _normalize_plan(payload: Dict[str, Any], allowed_ids: set[int]) -> Dict[str,
                     if source_id not in archive_ids:
                         archive_ids.append(source_id)
                         
+            if not source_ids:
+                continue
             suggestions.append({
                 "page_key": page_key,
                 "title": title,
@@ -217,7 +231,20 @@ async def consolidate_chat_facts(
             # Advisory-лок держится до конца транзакции (commit/rollback).
             await conn.execute("SELECT pg_advisory_xact_lock($1)", int(chat_id))
 
-            # 1. Wiki-предложения (M-05: не перезаписываем верифицированные вручную).
+            # LLM work was outside the transaction. Reject a stale plan before effects.
+            rows = await conn.fetch("""
+                SELECT f.*, ARRAY(SELECT entity_id FROM memory_fact_entities WHERE fact_id=f.id) AS entity_ids
+                FROM memory_facts f WHERE id=ANY($1::bigint[]) AND chat_id=$2 AND mode=$3
+                AND archived_at IS NULL FOR UPDATE
+            """, sorted(allowed_ids), chat_id, mode)
+            sources = {row['id']: dict(row) for row in rows}
+            if any(fid not in sources or any(sources[fid].get(k) != old.get(k)
+                   for k in ('fact_text', 'summary', 'user_id', 'importance', 'source_message_id', 'created_at', 'metadata'))
+                   for old in candidates for fid in [old['id']]):
+                report['status'] = 'stale'
+                return report
+
+            # Draft Wiki is not an accepted replacement. Its evidence stays active.
             for sug in plan["wiki_suggestions"]:
                 existing = await MemoryWikiPage.get_by_key(
                     chat_id=chat_id, mode=mode, page_key=sug["page_key"], conn=conn,
@@ -226,51 +253,40 @@ async def consolidate_chat_facts(
                     skipped_verified += 1
                     continue
                 page_id = await MemoryWikiPage.save(
-                    page_key=sug["page_key"],
-                    title=sug["title"],
-                    content=sug["content"],
-                    category=sug["category"],
-                    chat_id=chat_id,
-                    mode=mode,
-                    importance=0.6,
-                    is_verified=False,  # Требуется ручное подтверждение!
-                    conn=conn,
+                    page_key=sug["page_key"], title=sug["title"], content=sug["content"],
+                    category=sug["category"], chat_id=chat_id, mode=mode,
+                    importance=0.6, is_verified=False, conn=conn,
                 )
                 if page_id:
                     suggested_wiki_ids.append(page_id)
 
-            # 2. Создаём консолидированные факты и архивируем ИХ источники, привязывая
-            #    superseded_by к КОНКРЕТНОМУ новому факту (а не к первому — корректный
-            #    провенанс). Создаём факты всегда, независимо от archive_ids.
-            archived_via_facts: set[int] = set()
+            # Preserve one owner and every entity link. Cross-owner merging is invalid.
+            replacements = []
+            reused_ids = []
             for fact in plan["facts"]:
-                new_id = await MemoryFact.create(
-                    chat_id=chat_id,
-                    mode=mode,
-                    fact_text=fact["text"],
-                    summary="Сконсолидированный факт памяти",
-                    importance=fact["importance"],
-                    metadata={"kind": "consolidated", "source_ids": fact.get("source_ids") or []},
-                    conn=conn,
-                )
-                if not new_id:
+                source_rows = [sources[sid] for sid in fact['source_ids'] if sid in sources]
+                owners = {row['user_id'] for row in source_rows}
+                if not source_rows or len(owners) != 1:
                     continue
-                created_ids.append(new_id)
-                # Не архивируем сам новый факт (на случай dedup-совпадения по тексту).
-                src_ids = [int(s) for s in (fact.get("source_ids") or []) if s and int(s) != new_id]
-                if src_ids:
-                    archived_count += await MemoryFact.archive_many(
-                        src_ids, reason="consolidated", superseded_by=new_id, conn=conn,
-                    )
-                    archived_via_facts.update(src_ids)
-
-            # 3. Остальные факты, помеченные к архивации, но не привязанные к новому
-            #    факту, архивируем как шум (без superseded_by).
-            leftover = [int(fid) for fid in plan["archive_ids"] if int(fid) not in archived_via_facts]
-            if leftover:
-                archived_count += await MemoryFact.archive_many(
-                    leftover, reason="consolidated", superseded_by=None, conn=conn,
+                result = await MemoryFact.create_with_status(
+                    chat_id=chat_id, user_id=next(iter(owners)), mode=mode,
+                    fact_text=fact['text'], summary='Consolidated memory', importance=fact['importance'],
+                    metadata={'kind': 'consolidated', 'source_ids': fact['source_ids']},
+                    entity_ids=sorted({eid for row in source_rows for eid in row['entity_ids']}), conn=conn,
                 )
+                if result.id is None:
+                    continue
+                (created_ids if result.created else reused_ids).append(result.id)
+                replacements.append((result.id, fact['source_ids']))
+            protected = {fid for fid, _ in replacements}
+            for replacement_id, source_ids in replacements:
+                archive_ids = [sid for sid in source_ids if sid not in protected]
+                archived_count += await MemoryFact.archive_many(
+                    archive_ids, reason='consolidated', superseded_by=replacement_id, conn=conn,
+                )
+            # Unattached archive_ids never authorize destructive effects.
+            report['reused_ids'] = sorted(set(reused_ids))
+            report['new_fact_count'] = len(set(created_ids))
 
     report["suggested_wiki_ids"] = suggested_wiki_ids
     report["skipped_verified_wiki"] = skipped_verified
@@ -287,7 +303,9 @@ async def maybe_consolidate(
 ) -> Dict[str, Any]:
     try:
         report = await consolidate_chat_facts(chat_id=chat_id, mode=mode, limit=limit, dry_run=dry_run)
-        logger.info("Memory consolidation report: %s", json.dumps(report, ensure_ascii=False)[:1200])
+        logger.info("Memory consolidation: status=%s candidates=%s created=%s archived=%s",
+                    report.get("status"), report.get("candidate_count"),
+                    report.get("new_fact_count"), report.get("archived_count", 0))
         return report
     except Exception as e:
         logger.warning(f"Ошибка консолидации памяти: {e}")

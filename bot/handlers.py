@@ -474,7 +474,8 @@ async def _process_images(
         from database.models import strip_introspection_tags
         user_caption = strip_introspection_tags(user_caption)
         # defer_sentiment=True: словарный сдвиг отложен до apply_turn_sentiment пост-генерации.
-        img_state = await ChatEmotionalState.update_state(chat_id, user_caption, closeness, user_id=user_id, defer_sentiment=True)
+        emotion_source_key = f"photo:{mode}:{message_id}" if message_id is not None else None
+        img_state = await ChatEmotionalState.update_state(chat_id, user_caption, closeness, user_id=user_id, defer_sentiment=True, source_key=emotion_source_key)
 
         image_details = "изображение" if len(base64_images) == 1 else f"{len(base64_images)} изображений"
         await _save_message(chat_id, user_name, f"Пользователь прислал {image_details}. Подпись: {user_caption}", user_id=user_id)
@@ -486,8 +487,6 @@ async def _process_images(
             user_message=user_caption,
             mode="rp" if rp_mode_state.get(chat_id) else "default",
         )
-        if memory_context:
-            dialog_history_str = f"{dialog_history_str}\n\n{memory_context}" if dialog_history_str else memory_context
         await bot.send_chat_action(chat_id=chat_id, action="typing")
 
         response_text, used_search, grounding_links, found_search_images = await generate_response_stream(
@@ -500,6 +499,7 @@ async def _process_images(
             is_rp_mode=rp_mode_state.get(chat_id, False),
             enable_introspection=True,
             emotional_state=img_state,
+            memory_context=memory_context,
         )
         logger.debug(f"RAW ИИ ОТВЕТ (фото, {len(base64_images)} шт): {response_text}")  # PRIV-01
 
@@ -517,8 +517,8 @@ async def _process_images(
             sticker_mood = sticker_match.group(1).strip().lower()
 
         # Гибридный сентимент: интроспекция LLM > словарный фолбэк; затем вырезаем служебный тег.
-        introspection_sticker = await ChatEmotionalState.apply_turn_sentiment(
-            chat_id, response_text, img_state.get("keyword_mood_delta")
+        introspection_sticker = None if generation_failed else await ChatEmotionalState.apply_turn_sentiment(
+            chat_id, response_text, img_state.get("keyword_mood_delta"), source_key=emotion_source_key
         )
         if not sticker_mood and introspection_sticker:
             sticker_mood = introspection_sticker

@@ -874,13 +874,15 @@ async def process_user_reply(request, bot):
     # defer_sentiment=True: словарный сдвиг НЕ применяется здесь (до генерации) — его применит
     # apply_turn_sentiment пост-генерации, отдав приоритет интроспекции самой LLM, а словарь
     # оставив как fail-closed фолбэк. Распад/заряд/циркадная база считаются как раньше.
-    updated_state = await ChatEmotionalState.update_state(chat_id, user_message, closeness, user_id=profile_user_id, defer_sentiment=True)
+    emotion_source_key = f"message:{mode}:{message_id}" if message_id is not None else None
+    updated_state = await ChatEmotionalState.update_state(chat_id, user_message, closeness, user_id=profile_user_id, defer_sentiment=True, source_key=emotion_source_key)
     # Рост близости от ОБЫЧНОГО общения (+ бонус за ответ на проактивный пуш),
     # а не только от эмодзи-реакций — иначе closeness почти никогда не растёт.
-    await MemoryUserProfile.grow_closeness(
-        chat_id, profile_user_id, mode,
-        proactive_reply=updated_state.get("was_proactive_reply", False),
-    )
+    if not updated_state.get("repeated_input"):
+        await MemoryUserProfile.grow_closeness(
+            chat_id, profile_user_id, mode,
+            proactive_reply=updated_state.get("was_proactive_reply", False),
+        )
     user_tz = updated_state.get("user_tz")
     # Экстрактор событий: если tz ещё не определён, берём фолбэк (UTC) —
     # абсолютные даты резолвятся корректно, иначе раннее событие потерялось бы.
@@ -1016,8 +1018,6 @@ async def process_user_reply(request, bot):
             user_message=user_message,
             mode="rp" if rp_mode_state.get(chat_id) else "default",
         )
-        if memory_context:
-            chat_context = f"{chat_context}\n\n{memory_context}" if chat_context else memory_context
         
         # Если есть контекст из документа — склеиваем
         final_prompt = user_message
@@ -1054,6 +1054,7 @@ async def process_user_reply(request, bot):
             is_rp_mode=is_rp,
             enable_introspection=True,
             emotional_state=updated_state,
+            memory_context=memory_context,
         )
         
         if uploaded_video_file:
@@ -1085,8 +1086,8 @@ async def process_user_reply(request, bot):
         # Парсим тег ТОЛЬКО из сгенерированного текста Арти (инъекции из ввода юзера сюда не попадают).
         # apply_turn_sentiment: при валидном теге применяет дельты LLM, иначе fail-closed фолбэк на словарь.
         from database.models import strip_introspection_tags
-        introspection_sticker = await ChatEmotionalState.apply_turn_sentiment(
-            chat_id, response_text, updated_state.get("keyword_mood_delta")
+        introspection_sticker = None if generation_failed else await ChatEmotionalState.apply_turn_sentiment(
+            chat_id, response_text, updated_state.get("keyword_mood_delta"), source_key=emotion_source_key
         )
         if not sticker_mood and introspection_sticker:
             sticker_mood = introspection_sticker

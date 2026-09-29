@@ -4,8 +4,9 @@
 import json
 import logging
 import re
+import math
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Optional, List, Tuple, Dict, Any, NamedTuple
 import asyncpg
 
 from .connection import get_db
@@ -816,9 +817,19 @@ class MemoryEntity:
             return [dict(row) for row in rows]
 
 
+class FactWriteResult(NamedTuple):
+    id: Optional[int]
+    created: bool
+
+
 class MemoryFact:
     @staticmethod
-    async def create(
+    async def create(*args, **kwargs) -> Optional[int]:
+        """Compatibility API; callers counting insertions use create_with_status."""
+        return (await MemoryFact.create_with_status(*args, **kwargs)).id
+
+    @staticmethod
+    async def create_with_status(
         chat_id: int,
         fact_text: str,
         user_id: int = None,
@@ -829,8 +840,8 @@ class MemoryFact:
         metadata: Dict[str, Any] = None,
         entity_ids: List[int] = None,
         conn=None,
-    ) -> Optional[int]:
-        """Создаёт факт (с дедупом по lower(fact_text)).
+    ) -> FactWriteResult:
+        """Создаёт активный факт с дедупом в контексте владельца.
 
         conn: если передано соединение — работаем в нём (для атомарной консолидации
         в одной транзакции, MEM-01). Внутренний conn.transaction() в этом случае
@@ -838,10 +849,13 @@ class MemoryFact:
         """
         fact_text = (fact_text or "").strip()
         if not fact_text:
-            return None
+            return FactWriteResult(None, False)
 
         metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
-        importance_value = max(0.0, min(float(importance or 0.5), 1.0))
+        importance_value = float(importance if importance is not None else 0.5)
+        if not math.isfinite(importance_value):
+            raise ValueError("Fact importance must be finite")
+        importance_value = max(0.0, min(importance_value, 1.0))
 
         async def _do(c):
             async with c.transaction():
@@ -851,35 +865,46 @@ class MemoryFact:
                     WHERE chat_id = $1
                     AND mode = $2
                     AND lower(fact_text) = lower($3)
+                    AND user_id IS NOT DISTINCT FROM $4
+                    AND archived_at IS NULL
                     LIMIT 1
-                """, chat_id, mode, fact_text)
+                """, chat_id, mode, fact_text, user_id)
 
                 if existing_id:
-                    return existing_id
+                    fact_id = existing_id
+                    created = False
+                else:
+                    fact_id = None
+                    created = True
 
                 # MEM-07: ON CONFLICT по partial-unique индексу активных фактов —
                 # закрывает гонку двух параллельных вставок одинакового факта.
-                row = await c.fetchrow("""
+                row = None if fact_id else await c.fetchrow("""
                     INSERT INTO memory_facts (
                         chat_id, user_id, mode, summary, fact_text, importance,
                         source_message_id, metadata, created_at
                     )
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, NOW())
-                    ON CONFLICT (chat_id, mode, lower(fact_text)) WHERE archived_at IS NULL
+                    ON CONFLICT (chat_id, mode, (user_id IS NULL), (COALESCE(user_id, 0)), lower(fact_text)) WHERE archived_at IS NULL
                     DO NOTHING
                     RETURNING id
                 """, chat_id, user_id, mode, summary, fact_text, importance_value, source_message_id, metadata_json)
 
-                if not row:
+                if not row and not fact_id:
                     # Проиграли гонку — возвращаем id уже вставленного активного факта.
-                    return await c.fetchval("""
+                    fact_id = await c.fetchval("""
                         SELECT id FROM memory_facts
                         WHERE chat_id = $1 AND mode = $2
                         AND lower(fact_text) = lower($3) AND archived_at IS NULL
+                        AND user_id IS NOT DISTINCT FROM $4
                         ORDER BY id LIMIT 1
-                    """, chat_id, mode, fact_text)
+                    """, chat_id, mode, fact_text, user_id)
+                    created = False
 
-                fact_id = row["id"]
+                if row:
+                    fact_id = row["id"]
+                if fact_id is None:
+                    return FactWriteResult(None, False)
                 for entity_id in entity_ids or []:
                     if not entity_id:
                         continue
@@ -889,7 +914,7 @@ class MemoryFact:
                         ON CONFLICT DO NOTHING
                     """, fact_id, entity_id)
 
-                return fact_id
+                return FactWriteResult(fact_id, created)
 
         if conn is not None:
             return await _do(conn)
@@ -897,129 +922,23 @@ class MemoryFact:
             return await _do(db_conn)
 
     @staticmethod
-    async def search(chat_id: int, query: str, mode: str = "default", limit: int = 5) -> List[dict]:
+    async def search(chat_id: int, query: str, mode: str = "default", limit: int = 5,
+                     user_id: Optional[int] = None) -> List[dict]:
+        """Explicit retrieval ignores expression cooldown; unscoped graph is quarantined."""
         query = (query or "").strip()
-        if not query:
-            async with get_db() as conn:
-                rows = await conn.fetch("""
-                    SELECT *
-                    FROM memory_facts
-                    WHERE chat_id = $1
-                    AND mode = $2
-                    AND archived_at IS NULL
-                    AND (cooldown_until IS NULL OR cooldown_until < NOW())
-                    ORDER BY importance DESC, created_at DESC
-                    LIMIT $3
-                """, chat_id, mode, limit)
-                return [dict(row) for row in rows]
-
         async with get_db() as conn:
             rows = await conn.fetch("""
-                WITH q AS (
-                    SELECT plainto_tsquery('russian', $2) AS query
-                ),
-                -- 1. Находим непосредственно упомянутые сущности
-                hop1 AS (
-                    SELECT DISTINCT e.id, 10.0 AS score
-                    FROM memory_entities e
-                    LEFT JOIN memory_entity_aliases a ON a.entity_id = e.id
-                    WHERE e.chat_id = $1
-                    AND (
-                        $4 ILIKE '%' || e.normalized_name || '%'
-                        OR e.normalized_name ILIKE '%' || $4 || '%'
-                        OR $4 ILIKE '%' || a.normalized_alias || '%'
-                        OR a.normalized_alias ILIKE '%' || $4 || '%'
-                    )
-                ),
-                -- 2. Находим 1-hop связи
-                hop1_relations AS (
-                    SELECT 
-                        CASE 
-                            WHEN source_entity_id IN (SELECT id FROM hop1) THEN target_entity_id
-                            ELSE source_entity_id
-                        END AS entity_id,
-                        weight
-                    FROM memory_relations 
-                    WHERE (source_entity_id IN (SELECT id FROM hop1) OR target_entity_id IN (SELECT id FROM hop1))
-                    AND chat_id = $1
-                ),
-                hop1_neighbors AS (
-                    SELECT entity_id AS id, MAX(weight) AS weight
-                    FROM hop1_relations
-                    WHERE entity_id NOT IN (SELECT id FROM hop1)
-                    GROUP BY entity_id
-                ),
-                -- 3. Находим 2-hop связи
-                hop2_relations AS (
-                    SELECT 
-                        CASE 
-                            WHEN source_entity_id IN (SELECT id FROM hop1_neighbors) THEN target_entity_id
-                            ELSE source_entity_id
-                        END AS entity_id,
-                        r.weight * hn.weight AS weight
-                    FROM memory_relations r
-                    JOIN hop1_neighbors hn ON (hn.id = r.source_entity_id OR hn.id = r.target_entity_id)
-                    WHERE r.chat_id = $1
-                ),
-                hop2_neighbors AS (
-                    SELECT entity_id AS id, MAX(weight) AS weight
-                    FROM hop2_relations
-                    WHERE entity_id NOT IN (SELECT id FROM hop1)
-                    AND entity_id NOT IN (SELECT id FROM hop1_neighbors)
-                    GROUP BY entity_id
-                ),
-                all_entities AS (
-                    SELECT id, 10.0 AS score FROM hop1
-                    UNION ALL
-                    SELECT id, weight AS score FROM hop1_neighbors
-                    UNION ALL
-                    SELECT id, weight * 0.5 AS score FROM hop2_neighbors
-                ),
-                ranked_facts AS (
-                    SELECT f.*,
-                        ts_rank(
-                            to_tsvector('russian', coalesce(f.summary, '') || ' ' || coalesce(f.fact_text, '')),
-                            q.query
-                        ) AS rank,
-                        (
-                            f.fact_text ILIKE '%' || $2 || '%'
-                            OR f.summary ILIKE '%' || $2 || '%'
-                        ) AS is_direct_match,
-                        COALESCE((
-                            SELECT SUM(ae.score)
-                            FROM memory_fact_entities fe
-                            JOIN all_entities ae ON ae.id = fe.entity_id
-                            WHERE fe.fact_id = f.id
-                        ), 0.0) AS entity_boost
-                    FROM memory_facts f
-                    CROSS JOIN q
-                    WHERE f.chat_id = $1
-                    AND f.mode = $3
-                    AND f.archived_at IS NULL
-                    AND (
-                        to_tsvector('russian', coalesce(f.summary, '') || ' ' || coalesce(f.fact_text, '')) @@ q.query
-                        OR f.fact_text ILIKE '%' || $2 || '%'
-                        OR f.summary ILIKE '%' || $2 || '%'
-                        OR EXISTS (
-                            SELECT 1 FROM memory_fact_entities fe
-                            WHERE fe.fact_id = f.id
-                            AND fe.entity_id IN (SELECT id FROM all_entities)
-                        )
-                    )
-                )
-                SELECT *
-                FROM ranked_facts
-                WHERE (
-                    cooldown_until IS NULL
-                    OR cooldown_until < NOW()
-                    -- L-22: bypass cooldown по rank убран — даже релевантный факт «остывает»
-                    -- после использования. Релевантность всё равно учтена в ORDER BY
-                    -- (rank*2.0), а recency-штраф (- used_count*0.05) мягко понижает
-                    -- надоевшие факты.
-                )
-                ORDER BY (rank * 2.0 + importance + (entity_boost * 0.15) - (used_count * 0.05)) DESC, created_at DESC
-                LIMIT $5
-            """, chat_id, query, mode, query.lower().replace("ё", "е"), limit)
+                WITH q AS (SELECT plainto_tsquery('russian', $2) AS query)
+                SELECT f.*, ts_rank(to_tsvector('russian', coalesce(f.summary, '') || ' ' || f.fact_text), q.query) AS rank
+                FROM memory_facts f CROSS JOIN q
+                WHERE f.chat_id = $1 AND f.mode = $3 AND f.archived_at IS NULL
+                  AND ($5::bigint IS NULL OR f.user_id = $5 OR f.user_id IS NULL)
+                  AND ($2 = '' OR to_tsvector('russian', coalesce(f.summary, '') || ' ' || f.fact_text) @@ q.query
+                       OR f.fact_text ILIKE '%' || $2 || '%' OR f.summary ILIKE '%' || $2 || '%')
+                ORDER BY ts_rank(to_tsvector('russian', coalesce(f.summary, '') || ' ' || f.fact_text), q.query) * 2.0 + f.importance DESC,
+                         created_at DESC, id DESC
+                LIMIT $4
+            """, chat_id, query, mode, max(1, min(int(limit), 100)), user_id)
             return [dict(row) for row in rows]
 
     @staticmethod
@@ -1600,7 +1519,7 @@ class MemoryWikiPage:
             return await _do(db_conn)
 
     @staticmethod
-    async def get_by_key(chat_id: Optional[int], mode: str, page_key: str, conn=None) -> Optional[dict]:
+    async def get_by_key(chat_id: Optional[int], mode: str, page_key: str, conn=None, verified_only: bool = False) -> Optional[dict]:
         async def _do(c):
             row = await c.fetchrow("""
                 SELECT *
@@ -1608,7 +1527,8 @@ class MemoryWikiPage:
                 WHERE (chat_id = $1 OR (chat_id IS NULL AND $1 IS NULL))
                 AND mode = $2
                 AND page_key = $3
-            """, chat_id, mode, page_key)
+                AND (NOT $4::boolean OR is_verified IS TRUE)
+            """, chat_id, mode, page_key, verified_only)
             return dict(row) if row else None
 
         if conn is not None:
@@ -1626,6 +1546,7 @@ class MemoryWikiPage:
                     FROM memory_wiki_pages
                     WHERE (chat_id = $1 OR chat_id IS NULL)
                     AND mode = $2
+                    AND is_verified IS TRUE
                     ORDER BY importance DESC, created_at DESC
                     LIMIT $3
                 """, chat_id, mode, limit)
@@ -1642,6 +1563,7 @@ class MemoryWikiPage:
                 CROSS JOIN q
                 WHERE (w.chat_id = $1 OR w.chat_id IS NULL)
                 AND w.mode = $2
+                AND w.is_verified IS TRUE
                 AND (
                     to_tsvector('russian', coalesce(w.title, '') || ' ' || coalesce(w.content, '')) @@ q.query
                     OR w.title ILIKE '%' || $3 || '%'
@@ -1801,7 +1723,7 @@ class ChatEmotionalState:
             return dict(row)
 
     @staticmethod
-    async def update_state(chat_id: int, user_message: str, closeness: float = 0.0, user_id: Optional[int] = None, defer_sentiment: bool = False) -> dict:
+    async def update_state(chat_id: int, user_message: str, closeness: float = 0.0, user_id: Optional[int] = None, defer_sentiment: bool = False, source_key: Optional[str] = None) -> dict:
         import math
         user_message = user_message or ""
         async with get_db() as conn:
@@ -1825,6 +1747,18 @@ class ChatEmotionalState:
                         RETURNING *, EXTRACT(EPOCH FROM (NOW() - last_activity_time))::float8 AS delta_t_seconds
                     """, chat_id)
                 
+                if source_key is not None:
+                    cached = await conn.fetchval("""
+                        SELECT result FROM legacy_emotional_effects
+                        WHERE chat_id=$1 AND source_key=$2 AND phase='input'
+                    """, chat_id, source_key)
+                    if cached is not None:
+                        result = dict(state)
+                        result.update(json.loads(cached) if isinstance(cached,str) else cached)
+                        result['was_proactive_reply'] = False
+                        result['repeated_input'] = True
+                        return result
+
                 # Запоминаем, был ли это первый ответ юзера на проактивный пуш
                 # (для бонуса близости — сильный позитивный сигнал)
                 was_proactive_reply = (state["conversation_stage"] == 'proactive_sent')
@@ -2036,18 +1970,25 @@ class ChatEmotionalState:
                 result["was_proactive_reply"] = was_proactive_reply
                 # Словарный сдвиг отдаём наружу как fail-closed фолбэк для apply_turn_sentiment.
                 result["keyword_mood_delta"] = keyword_mood_delta
+                result['repeated_input'] = False
+                if source_key is not None:
+                    await conn.execute("""
+                        INSERT INTO legacy_emotional_effects(chat_id,source_key,phase,result)
+                        VALUES($1,$2,'input',$3::jsonb)
+                    """, chat_id, source_key, json.dumps({'keyword_mood_delta':keyword_mood_delta},ensure_ascii=False))
                 return result
 
     @staticmethod
-    async def apply_mood_delta(chat_id: int, mood_delta: dict, source: str = "llm") -> None:
+    async def apply_mood_delta(chat_id: int, mood_delta: dict, source: str = "llm", source_key: Optional[str] = None) -> None:
         """Применяет ограниченные дельты к вектору настроения (БЕЗ распада/заряда/времени).
 
         Используется пост-генерации: приоритетный источник — интроспекция LLM (source="llm"),
         иначе fail-closed фолбэк на словарь (source="keyword"). Каждая дельта клампится в
         [-0.25, 0.25], итоговое значение — в [0, 1]; ключи вне whitelist из 9 эмоций игнорируются.
         """
-        if not mood_delta:
+        if not mood_delta and source_key is None:
             return
+        mood_delta = mood_delta or {}
         applied: dict = {}
         async with get_db() as conn:
             async with conn.transaction():
@@ -2057,11 +1998,20 @@ class ChatEmotionalState:
                 )
                 if not state:
                     return
+                if source_key is not None:
+                    inserted = await conn.fetchval("""
+                        INSERT INTO legacy_emotional_effects(chat_id,source_key,phase)
+                        VALUES($1,$2,'sentiment') ON CONFLICT DO NOTHING RETURNING 1
+                    """, chat_id, source_key)
+                    if inserted is None:
+                        return
                 mood_dict = json.loads(state["mood_state"]) if isinstance(state["mood_state"], str) else state["mood_state"]
                 for emotion, d in mood_delta.items():
                     if emotion not in SUPPORTED_MOODS or emotion not in mood_dict:
                         continue
                     if not isinstance(d, (int, float)) or isinstance(d, bool):
+                        continue
+                    if not math.isfinite(d):
                         continue
                     d = max(-0.25, min(0.25, float(d)))
                     new_val = min(max(mood_dict[emotion] + d, 0.0), 1.0)
@@ -2080,7 +2030,7 @@ class ChatEmotionalState:
         emotional_logger.info(f"[MOOD_DELTA] chat_id={chat_id} | source={source} | applied={applied}")
 
     @staticmethod
-    async def apply_turn_sentiment(chat_id: int, arti_response_text: str, keyword_mood_delta: Optional[dict] = None) -> Optional[str]:
+    async def apply_turn_sentiment(chat_id: int, arti_response_text: str, keyword_mood_delta: Optional[dict] = None, source_key: Optional[str] = None) -> Optional[str]:
         """Гибридный сентимент пост-генерации.
 
         Приоритет — интроспекция самой LLM (тег <!-- emotional_introspection --> из ответа Арти).
@@ -2091,15 +2041,16 @@ class ChatEmotionalState:
         parsed = parse_emotional_introspection(arti_response_text)
         if parsed is not None:
             if parsed["mood_delta"]:
-                await ChatEmotionalState.apply_mood_delta(chat_id, parsed["mood_delta"], source="llm")
+                await ChatEmotionalState.apply_mood_delta(chat_id, parsed["mood_delta"], source="llm", source_key=source_key)
             else:
+                await ChatEmotionalState.apply_mood_delta(chat_id, {}, source_key=source_key)
                 emotional_logger.info(
                     f"[INTROSPECTION] chat_id={chat_id} | mood_delta пуст, sticker_suggest={parsed['sticker_mood_suggest']}"
                 )
             return parsed["sticker_mood_suggest"]
         # Тег отсутствует/битый -> словарный фолбэк (fail-closed)
         if keyword_mood_delta:
-            await ChatEmotionalState.apply_mood_delta(chat_id, keyword_mood_delta, source="keyword")
+            await ChatEmotionalState.apply_mood_delta(chat_id, keyword_mood_delta, source="keyword", source_key=source_key)
         return None
 
     @staticmethod
@@ -2121,33 +2072,14 @@ class ChatEmotionalState:
                 history.append(file_id)
                 history = history[-3:]
                 
-                mood_dict = json.loads(state["mood_state"]) if isinstance(state["mood_state"], str) else state["mood_state"]
-                # Бустим вес отправленного настроения
-                if mood in mood_dict:
-                    mood_dict[mood] = min(mood_dict[mood] + 0.4, 1.0)
-                
-                # Сброс заряда (эмоциональный катарсис)
-                charge = 0.05
-                
-                # Логируем отправленный стикер и сброс заряда
-                log_entry = (
-                    f"[STICKER_SENT] chat_id={chat_id} | "
-                    f"Sticker={file_id} | "
-                    f"Mood={mood} | "
-                    f"Charge Reset to 0.05"
-                )
-                logger.info(f"🔮 [ЭМОЦИОНАЛЬНАЯ МАШИНА] {log_entry}")
-                emotional_logger.info(log_entry)
-                
+                # Delivery affects expression history only; it is not an emotional cause.
                 await conn.execute("""
                     UPDATE chat_emotional_states
-                    SET charge = $2,
-                        mood_state = $3::jsonb,
-                        last_sticker_time = NOW(),
-                        sticker_history = $4::jsonb,
-                        last_sent_sticker_mood = $5
+                    SET last_sticker_time = NOW(), sticker_history = $2::jsonb,
+                        last_sent_sticker_mood = $3
                     WHERE chat_id = $1
-                """, chat_id, charge, json.dumps(mood_dict, ensure_ascii=False), json.dumps(history, ensure_ascii=False), mood)
+                """, chat_id, json.dumps(history, ensure_ascii=False), mood)
+
 
 
 class AIModel:

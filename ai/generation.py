@@ -401,6 +401,7 @@ async def generate_response_stream(
     is_rp_mode=False,
     enable_introspection=False,
     emotional_state=None,
+    memory_context="",
 ):
     """
     Генерация ответа: гибридный роутинг (Google AI Studio + OmniRoute для Qwen)
@@ -467,10 +468,8 @@ async def generate_response_stream(
                 logger.info("🎭 Подмешиваем директиву тона по эмоц. состоянию")
 
     # --- 1. ОБЩАЯ ПОДГОТОВКА КОНТЕКСТА ---
-    context_lines = chat_context.split("\n")
-    if context_lines and context_lines[-1].strip() == prompt.strip():
-        context_lines = context_lines[:-1]
-    formatted_context = "\n".join(context_lines[-20:])
+    from memory.context import generation_context
+    formatted_context = generation_context(chat_context, memory_context, prompt)
     
     final_prompt = f"Контекст:\n{formatted_context}\n\nПользователь ({user_name}) говорит:\n{prompt}"
 

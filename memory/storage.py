@@ -16,6 +16,7 @@ from config import (
     MEMORY_TIMELINE_ENABLED,
 )
 from database.models import MemoryChunk, MemoryEntity, MemoryFact, MemoryMessage, MemoryRelation, MemoryWikiPage
+from memory.context import memory_payload
 from memory.chunking import build_compact_chunks
 from memory.consolidator import maybe_consolidate
 from memory.embeddings import EMBEDDING_MODEL, embed_document, embed_query
@@ -48,16 +49,6 @@ def _track_background_task(task) -> None:
     task.add_done_callback(_BACKGROUND_TASKS.discard)
 
 
-def _format_relation(row: Dict[str, Any]) -> str:
-    source = compact_text(row.get("source_name") or "Сущность", 80)
-    target = compact_text(row.get("target_name") or "Сущность", 80)
-    relation_type = compact_text(row.get("relation_type") or "связано с", 80)
-    description = compact_text(row.get("description") or "", 180)
-    if description:
-        return f"{source} — {description} — {target}"
-    return f"{source} — {relation_type} — {target}"
-
-
 async def build_memory_context(
     chat_id: int,
     user_id: int,
@@ -75,7 +66,7 @@ async def build_memory_context(
         wiki_personality = None
         relevant_wiki = None
         try:
-            wiki_personality = await MemoryWikiPage.get_by_key(chat_id=None, mode=mode, page_key="personality")
+            wiki_personality = await MemoryWikiPage.get_by_key(chat_id=None, mode=mode, page_key="personality", verified_only=True)
             wiki_pages = await MemoryWikiPage.search(chat_id=chat_id, mode=mode, query=user_message, limit=1)
             if wiki_pages:
                 candidate = wiki_pages[0]
@@ -98,30 +89,12 @@ async def build_memory_context(
             except Exception as e:
                 logger.warning(f"Timeline retrieval недоступен: {e}")
 
-        graph_entities = []
-        graph_relations = []
-        all_related_entities = []
-        try:
-            graph_entities = await MemoryEntity.find_mentions(chat_id=chat_id, text=user_message, limit=5)
-            if graph_entities:
-                entity_ids = [entity.get("id") for entity in graph_entities]
-                # Находим 1-hop и 2-hop связанные сущности
-                all_related_entities = await MemoryEntity.find_related_entities(chat_id=chat_id, entity_ids=entity_ids, limit=10)
-                all_entity_ids = [entity.get("id") for entity in all_related_entities]
-
-                # Находим связи для всех этих сущностей (включая связи 2-го порядка)
-                graph_relations = await MemoryRelation.find_for_entities(
-                    chat_id=chat_id,
-                    entity_ids=all_entity_ids,
-                    limit=10,
-                )
-        except Exception as e:
-            logger.warning(f"Graph retrieval недоступен: {e}")
-            graph_entities, graph_relations, all_related_entities = [], [], []
+        # The legacy entity graph lacks mode/owner scope. Until B02/B17 migration
+        # it must not inject RP relations or another participant's associations.
 
         facts = []
         try:
-            facts = await MemoryFact.search(chat_id=chat_id, query=query, mode=mode, limit=fact_limit)
+            facts = await MemoryFact.search(chat_id=chat_id, query=query, mode=mode, limit=fact_limit, user_id=user_id)
         except Exception as e:
             logger.warning(f"Fact retrieval недоступен: {e}")
 
@@ -199,100 +172,25 @@ async def build_memory_context(
             f"- Твой последний отправленный стикер: настроение {last_sent_mood}."
         )
 
-        if not wiki_personality and not relevant_wiki and not profile_context and not timeline_context and not graph_entities and not graph_relations and not facts and not chunks and not messages:
+        if not wiki_personality and not relevant_wiki and not profile_context and not timeline_context and not facts and not chunks and not messages:
             return emo_line
 
-        lines = ["[Долговременная память Арти: используй только если релевантно текущему ответу]"]
-        
-        # Инжектируем характер из Wiki
+        # Each source receives its own quota; profiles cannot crowd out facts.
+        # Retrieval does not mean expression, so it never calls mark_used.
+        sections = [
+            ('Relevant facts', '\n'.join('- ' + compact_text(f.get('fact_text') or f.get('summary') or '', 360) for f in facts), 2100),
+            ('Historical excerpts', '\n'.join('- ' + compact_text(c.get('chunk_text') or '', 500) for c in chunks), 1100),
+            ('User profile', profile_context, 850),
+            ('Timeline', timeline_context, 600),
+            ('Past messages', '\n'.join(compact_text(m.get('user_name') or 'Participant', 60) + ': ' + compact_text(m.get('message_text') or '', 250) for m in messages), 600),
+        ]
         if wiki_personality:
-            personality_title = "Характер Арти" if mode == "default" else "Характер и канон Телемы"
-            lines.append(f"[{personality_title}]:\n{compact_text(wiki_personality.get('content') or '', 1500)}")
-
-        # Встраиваем эмоциональный статус
-        lines.append(emo_line)
-
-        # Инжектируем релевантный лор
+            sections.append(('Verified persona', wiki_personality.get('content') or '', 1200))
         if relevant_wiki:
-            lines.append(f"[Релевантный лор вселенной ({relevant_wiki.get('title')})]:\n{compact_text(relevant_wiki.get('content') or '', 1500)}")
+            sections.append(('Verified lore', relevant_wiki.get('content') or '', 700))
+        payload = memory_payload(sections, limit=6000)
+        return emo_line + '\n' + payload
 
-        # --- Пользовательские данные (профиль, сущности, факты, фрагменты) ---
-        # Оборачиваем в <user_memory> fencing (S-02: prompt injection protection).
-        user_data_lines: list[str] = []
-
-        if profile_context:
-            user_data_lines.append(profile_context)
-
-        if timeline_context:
-            user_data_lines.append(timeline_context)
-
-        if all_related_entities:
-            # Разделяем на непосредственно упомянутые (score >= 10.0) и связанные (score < 10.0)
-            direct_names = []
-            related_names = []
-            for entity in all_related_entities:
-                name = compact_text(entity.get("canonical_name") or entity.get("normalized_name") or "", 80)
-                if not name:
-                    continue
-                score = entity.get("score") or 0.0
-                if score >= 10.0:
-                    if name not in direct_names:
-                        direct_names.append(name)
-                else:
-                    if name not in related_names and name not in direct_names:
-                        related_names.append(name)
-            
-            if direct_names:
-                user_data_lines.append("Сущности в текущем контексте: " + ", ".join(direct_names))
-            if related_names:
-                user_data_lines.append("Связанные сущности: " + ", ".join(related_names))
-
-        if graph_relations:
-            user_data_lines.append("Связи в текущем контексте:")
-            seen_relations = set()
-            for relation in graph_relations[:8]:
-                text = _format_relation(relation)
-                if not text or text in seen_relations:
-                    continue
-                seen_relations.add(text)
-                user_data_lines.append(f"- {text}")
-
-        fact_ids = []
-        if facts:
-            user_data_lines.append("Ассоциации:")
-            for fact in facts:
-                fact_ids.append(fact.get("id"))
-                text = compact_text(fact.get("fact_text") or fact.get("summary") or "", 320)
-                if text:
-                    user_data_lines.append(f"- {text}")
-
-        if chunks:
-            user_data_lines.append("Семантически похожие фрагменты истории:")
-            for chunk in chunks:
-                text = compact_text(chunk.get("chunk_text") or "", 420)
-                if text:
-                    similarity = chunk.get("similarity")
-                    suffix = f" (similarity={similarity:.3f})" if isinstance(similarity, float) else ""
-                    user_data_lines.append(f"- {text}{suffix}")
-
-        if messages:
-            user_data_lines.append("Похожие прошлые сообщения:")
-            for message in messages:
-                user_name = message.get("user_name") or "Участник"
-                text = compact_text(message.get("message_text") or "", 240)
-                if text:
-                    user_data_lines.append(f"- {user_name}: {text}")
-
-        # Fence user-sourced data to prevent prompt injection
-        if user_data_lines:
-            lines.append("<user_memory>")
-            lines.extend(user_data_lines[:10])
-            lines.append("</user_memory>")
-
-        if fact_ids:
-            await MemoryFact.mark_used(fact_ids)
-
-        return "\n".join(lines)
     except Exception as e:
         logger.warning(f"Ошибка чтения памяти: {e}")
         return ""
@@ -315,7 +213,6 @@ async def remember_exchange(
     facts = payload.get("facts") or []
     entities = payload.get("entities") or []
     relations = payload.get("relations") or []
-    is_fallback = bool(payload.get("fallback"))
 
     if not summary and not facts and not entities and not relations:
         return
@@ -385,7 +282,7 @@ async def remember_exchange(
             continue
         seen_fact_texts.add(fact_key)
         linked_entity_ids = [entity_id for normalized, entity_id in entity_by_name.items() if text_contains_entity(text, normalized)]
-        fact_id = await MemoryFact.create(
+        result = await MemoryFact.create_with_status(
             chat_id=chat_id,
             user_id=user_id,
             mode=mode,
@@ -396,21 +293,10 @@ async def remember_exchange(
             metadata=metadata or {},
             entity_ids=list(dict.fromkeys(linked_entity_ids)),
         )
-        if fact_id:
+        if result.created:
             created_facts += 1
 
-    if summary and not facts and not is_fallback:
-        await MemoryFact.create(
-            chat_id=chat_id,
-            user_id=user_id,
-            mode=mode,
-            summary=summary,
-            fact_text=summary,
-            importance=0.35,
-            source_message_id=source_message_id,
-            metadata=metadata or {},
-            entity_ids=list(dict.fromkeys(entity_by_name.values())),
-        )
+    # An exchange summary is episodic context, not a new personal fact.
 
     for relation in relations:
         source_id = entity_by_name.get(normalize_entity_name(relation.get("source") or ""))

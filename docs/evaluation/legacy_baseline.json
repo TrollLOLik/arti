@@ -1,0 +1,17 @@
+{
+  "date": "2026-09-30",
+  "scope": "pre-change implementation, disposable PostgreSQL 18.1, synthetic records only",
+  "suite": "tests.test_memory_regressions (initial 10 tests)",
+  "tests": 10,
+  "failures": 9,
+  "passed": ["entity_word_boundary"],
+  "duration_seconds": 7.957,
+  "network_model_smoke": {
+    "model": "stealth/space-bunny-alpha",
+    "successful": true,
+    "prompt_tokens": 169,
+    "completion_tokens": 6,
+    "reported_cost_usd": 0
+  },
+  "limitations": "A targeted bug baseline, not an unbiased estimate of overall conversational quality. LLM behavioral latency and held-out evaluation are measured separately."
+}
