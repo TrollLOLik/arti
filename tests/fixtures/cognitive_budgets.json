@@ -1,0 +1,19 @@
+{
+  "version": "2026-09-30.1",
+  "seed": 7319,
+  "llm_model": "stealth/space-bunny-alpha",
+  "llm_calls_per_observation": 1,
+  "llm_timeout_seconds": 90,
+  "llm_max_attempts": 3,
+  "llm_max_output_tokens": 8192,
+  "llm_reasoning_effort": "medium",
+  "job_lease_seconds": 300,
+  "max_appraisal_passes": 2,
+  "numerical_transition_p95_ms": 20,
+  "context_dialogue_characters": 12000,
+  "context_memory_characters": 6000,
+  "context_total_characters": 24000,
+  "max_active_emotion_episodes": 64,
+  "max_retained_diagnostics": 100,
+  "notes": "Engineering budgets, not fitted psychological constants. Network latency is reported separately; no biological equivalence is claimed."
+}

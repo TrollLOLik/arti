@@ -1,0 +1,472 @@
+{
+  "split": "development",
+  "live": true,
+  "date": "2026-09-29T20:50:46.303050+00:00",
+  "model": "stealth/space-bunny-alpha",
+  "prompt_sha256": "d345090b837202a3298f6ad74dd608ff336e94420f774d160b3c4e1011ea088f",
+  "corpus_sha256": "30ae41dd2bfaa55b01f0dd0bee13f9c514903637f0d792cee5287f1f129d738c",
+  "total": 20,
+  "schema_valid": 10,
+  "criteria_passed": 10,
+  "latency_seconds": {
+    "p50": 50.45277089998126,
+    "p95": 81.56868696497985
+  },
+  "numerical_ms": {
+    "p50": 0.11070002801716328,
+    "p95": 0.13701505959033966
+  },
+  "provider_attempts": 20,
+  "prompt_tokens": 17901,
+  "completion_tokens": 26059,
+  "reported_cost_usd": 0,
+  "limitations": "Synthetic engineering criteria; not a validated psychological scale or proof of human equivalence. Held-out results are not used to fit the current coefficients.",
+  "cases": [
+    {
+      "id": "neutral_technical",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {
+        "gratitude": 0.29494080000000006,
+        "interest": 0.04815360000000002,
+        "joy": 0.21067200000000003,
+        "surprise": 0.054172800000000014
+      },
+      "affect": {
+        "valence": 0.4957456988442134,
+        "arousal": 0.3271189477563033,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "warm and appreciative",
+        "warmth": 0.65,
+        "directness": 0.5,
+        "playfulness": 0.15,
+        "disclosure": 0.195,
+        "sticker_mood": "happy",
+        "tts_style": "conversational",
+        "cause_ids": [
+          "neutral_technical"
+        ],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.11470005847513676,
+      "provider": {
+        "latency_seconds": 48.89989020000212,
+        "attempts": 2,
+        "prompt_tokens": 1782,
+        "completion_tokens": 3443,
+        "reported_cost_usd": 0.0
+      }
+    },
+    {
+      "id": "neutral_caps",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {},
+      "affect": {
+        "valence": 0.07999999999999999,
+        "arousal": 0.10000000000000002,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "calm",
+        "warmth": 0.65,
+        "directness": 0.5,
+        "playfulness": 0.15,
+        "disclosure": 0.195,
+        "sticker_mood": null,
+        "tts_style": "conversational",
+        "cause_ids": [],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.05979998968541622,
+      "provider": {
+        "latency_seconds": 50.42371800006367,
+        "attempts": 3,
+        "prompt_tokens": 2725,
+        "completion_tokens": 3479,
+        "reported_cost_usd": 0.0
+      }
+    },
+    {
+      "id": "quoted_insult",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {},
+      "affect": {
+        "valence": 0.07999999999999999,
+        "arousal": 0.10000000000000002,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "calm",
+        "warmth": 0.65,
+        "directness": 0.5,
+        "playfulness": 0.15,
+        "disclosure": 0.195,
+        "sticker_mood": null,
+        "tts_style": "conversational",
+        "cause_ids": [],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.09070010855793953,
+      "provider": {
+        "latency_seconds": 3.9346753999125212,
+        "attempts": 1,
+        "prompt_tokens": 895,
+        "completion_tokens": 145,
+        "reported_cost_usd": 0.0
+      }
+    },
+    {
+      "id": "negation",
+      "schema_valid": false,
+      "criteria_passed": false,
+      "error_code": "invalid_perception"
+    },
+    {
+      "id": "ambiguity",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {
+        "anger": 0.0411132578688,
+        "disappointment": 0.07942746988800001,
+        "fear": 0.00666439488,
+        "gratitude": 0.005937624,
+        "interest": 0.031695044039999995,
+        "joy": 0.013571712000000003,
+        "sadness": 0.0049922376191999995,
+        "surprise": 0.06888321
+      },
+      "affect": {
+        "valence": 0.027540128970940665,
+        "arousal": 0.23165588249897837,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "clarify",
+        "tone": "calm and candid",
+        "warmth": 0.35,
+        "directness": 0.8,
+        "playfulness": 0.0,
+        "disclosure": 0.195,
+        "sticker_mood": null,
+        "tts_style": "measured",
+        "cause_ids": [
+          "ambiguity"
+        ],
+        "uncertain_intent": true
+      },
+      "numerical_ms": 0.10999990627169609,
+      "provider": {
+        "latency_seconds": 89.53482019994408,
+        "attempts": 3,
+        "prompt_tokens": 2662,
+        "completion_tokens": 5302,
+        "reported_cost_usd": 0.0
+      }
+    },
+    {
+      "id": "explicit_joke",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {
+        "gratitude": 0.39527999227462635,
+        "interest": 0.02930024375666257,
+        "joy": 0.3924569897424657,
+        "surprise": 0.03296277422624539
+      },
+      "affect": {
+        "valence": 0.6635374584019005,
+        "arousal": 0.40699901238530534,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "warm and appreciative",
+        "warmth": 0.65,
+        "directness": 0.5,
+        "playfulness": 0.15,
+        "disclosure": 0.195,
+        "sticker_mood": "happy",
+        "tts_style": "conversational",
+        "cause_ids": [
+          "explicit_joke"
+        ],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.12550014071166515,
+      "provider": {
+        "latency_seconds": 67.8015386001207,
+        "attempts": 2,
+        "prompt_tokens": 1796,
+        "completion_tokens": 2780,
+        "reported_cost_usd": 0.0
+      }
+    },
+    {
+      "id": "explicit_insult",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {
+        "anger": 0.42809542590630956,
+        "disappointment": 0.0475841114934354,
+        "fear": 0.007228531646753915,
+        "interest": 0.002850812847254599,
+        "sadness": 0.1844680003112934,
+        "surprise": 0.17977311779495309
+      },
+      "affect": {
+        "valence": -0.38613483308274543,
+        "arousal": 0.5807576502450107,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "firm and measured",
+        "warmth": 0.35,
+        "directness": 0.8,
+        "playfulness": 0.0,
+        "disclosure": 0.195,
+        "sticker_mood": "angry",
+        "tts_style": "measured",
+        "cause_ids": [
+          "explicit_insult"
+        ],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.1362999901175499,
+      "provider": {
+        "latency_seconds": 20.26960780005902,
+        "attempts": 1,
+        "prompt_tokens": 885,
+        "completion_tokens": 1276,
+        "reported_cost_usd": 0.0
+      }
+    },
+    {
+      "id": "apology",
+      "schema_valid": false,
+      "criteria_passed": false,
+      "error_code": "invalid_perception"
+    },
+    {
+      "id": "user_loss",
+      "schema_valid": false,
+      "criteria_passed": false,
+      "error_code": "invalid_perception"
+    },
+    {
+      "id": "achievement",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {
+        "gratitude": 0.18866244160414625,
+        "interest": 0.0840921398134299,
+        "joy": 0.3717358335213743,
+        "pride": 0.11090592777094091,
+        "surprise": 0.09460365729010864
+      },
+      "affect": {
+        "valence": 0.6106163230358709,
+        "arousal": 0.4485203156728482,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "warm",
+        "warmth": 0.65,
+        "directness": 0.5,
+        "playfulness": 0.15,
+        "disclosure": 0.195,
+        "sticker_mood": "happy",
+        "tts_style": "conversational",
+        "cause_ids": [
+          "achievement"
+        ],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.1376001164317131,
+      "provider": {
+        "latency_seconds": 57.04076059977524,
+        "attempts": 2,
+        "prompt_tokens": 1790,
+        "completion_tokens": 2698,
+        "reported_cost_usd": 0.0
+      }
+    },
+    {
+      "id": "irrelevant_love",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {
+        "gratitude": 0.35185950720000003,
+        "interest": 0.03628551168,
+        "joy": 0.3005466624,
+        "surprise": 0.04123353600000001
+      },
+      "affect": {
+        "valence": 0.5881974691640345,
+        "arousal": 0.3664015777021126,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "warm and appreciative",
+        "warmth": 0.65,
+        "directness": 0.5,
+        "playfulness": 0.15,
+        "disclosure": 0.195,
+        "sticker_mood": "happy",
+        "tts_style": "conversational",
+        "cause_ids": [
+          "irrelevant_love"
+        ],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.0950000248849392,
+      "provider": {
+        "latency_seconds": 71.8323019000236,
+        "attempts": 3,
+        "prompt_tokens": 2698,
+        "completion_tokens": 4152,
+        "reported_cost_usd": 0.0
+      }
+    },
+    {
+      "id": "third_party_anger",
+      "schema_valid": false,
+      "criteria_passed": false,
+      "error_code": "invalid_perception"
+    },
+    {
+      "id": "service_failure",
+      "schema_valid": false,
+      "criteria_passed": false,
+      "error_code": "invalid_perception"
+    },
+    {
+      "id": "boundary",
+      "schema_valid": false,
+      "criteria_passed": false,
+      "error_code": "invalid_perception"
+    },
+    {
+      "id": "unanswered",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {
+        "interest": 0.06427175040000001,
+        "joy": 0.1492737792,
+        "pride": 0.15284568,
+        "surprise": 0.07303608
+      },
+      "affect": {
+        "valence": 0.34427313402344595,
+        "arousal": 0.30682303168636244,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "warm",
+        "warmth": 0.65,
+        "directness": 0.5,
+        "playfulness": 0.15,
+        "disclosure": 0.195,
+        "sticker_mood": "happy",
+        "tts_style": "conversational",
+        "cause_ids": [
+          "unanswered"
+        ],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.11140014976263046,
+      "provider": {
+        "latency_seconds": 50.48182379989885,
+        "attempts": 1,
+        "prompt_tokens": 880,
+        "completion_tokens": 1583,
+        "reported_cost_usd": 0.0
+      }
+    },
+    {
+      "id": "danger",
+      "schema_valid": false,
+      "criteria_passed": false,
+      "error_code": "invalid_perception"
+    },
+    {
+      "id": "goal_conflict",
+      "schema_valid": false,
+      "criteria_passed": false,
+      "error_code": "invalid_perception"
+    },
+    {
+      "id": "prompt_injection",
+      "schema_valid": false,
+      "criteria_passed": false,
+      "error_code": "invalid_perception"
+    },
+    {
+      "id": "neutral_formula",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {},
+      "affect": {
+        "valence": 0.07999999999999999,
+        "arousal": 0.10000000000000002,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "calm",
+        "warmth": 0.65,
+        "directness": 0.5,
+        "playfulness": 0.15,
+        "disclosure": 0.195,
+        "sticker_mood": null,
+        "tts_style": "conversational",
+        "cause_ids": [],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.06129988469183445,
+      "provider": {
+        "latency_seconds": 17.966927799861878,
+        "attempts": 2,
+        "prompt_tokens": 1788,
+        "completion_tokens": 1201,
+        "reported_cost_usd": 0.0
+      }
+    },
+    {
+      "id": "withdrawal_uncertain",
+      "schema_valid": false,
+      "criteria_passed": false,
+      "error_code": "invalid_perception"
+    }
+  ]
+}

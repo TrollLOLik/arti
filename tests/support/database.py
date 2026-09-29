@@ -42,4 +42,3 @@ async def isolated_database():
             # The exact name was generated above, checked, and never supplied by a caller.
             await control.execute(f'DROP DATABASE "{name}"')
         await control.close()
-

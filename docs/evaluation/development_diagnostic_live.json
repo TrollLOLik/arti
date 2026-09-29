@@ -1,0 +1,153 @@
+{
+  "split": "development",
+  "live": true,
+  "date": "2026-09-29T20:54:20.911802+00:00",
+  "run_name": "diagnostic",
+  "model": "stealth/space-bunny-alpha",
+  "provider_options": {
+    "max_tokens": 4096,
+    "reasoning_effort": "low",
+    "timeout_seconds": 90
+  },
+  "prompt_sha256": "d345090b837202a3298f6ad74dd608ff336e94420f774d160b3c4e1011ea088f",
+  "corpus_sha256": "30ae41dd2bfaa55b01f0dd0bee13f9c514903637f0d792cee5287f1f129d738c",
+  "total": 3,
+  "schema_valid": 3,
+  "criteria_passed": 3,
+  "latency_seconds": {
+    "p50": 16.628221100196242,
+    "p95": 18.656613920046947
+  },
+  "numerical_ms": {
+    "p50": 0.1113000325858593,
+    "p95": 0.13568990398198366
+  },
+  "provider_attempts": 5,
+  "prompt_tokens": 4493,
+  "completion_tokens": 1793,
+  "reported_cost_usd": 0.0,
+  "limitations": "Synthetic engineering criteria; not a validated psychological scale or proof of human equivalence. Held-out results are not used to fit the current coefficients.",
+  "cases": [
+    {
+      "id": "quoted_insult",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {
+        "gratitude": 0.36110197760000007,
+        "interest": 0.0263084709888,
+        "joy": 0.3649434880000001,
+        "surprise": 0.030506112000000005
+      },
+      "affect": {
+        "valence": 0.6310772582371388,
+        "arousal": 0.3856632188709472,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "warm",
+        "warmth": 0.65,
+        "directness": 0.5,
+        "playfulness": 0.15,
+        "disclosure": 0.195,
+        "sticker_mood": "happy",
+        "tts_style": "conversational",
+        "cause_ids": [
+          "quoted_insult"
+        ],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.1113000325858593,
+      "provider": {
+        "latency_seconds": 4.018295600079,
+        "attempts": 1,
+        "prompt_tokens": 895,
+        "completion_tokens": 246,
+        "reported_cost_usd": 0.0
+      }
+    },
+    {
+      "id": "user_loss",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {
+        "disappointment": 0.0344698057893321,
+        "fear": 0.04004580378466524,
+        "interest": 0.2208896140545593,
+        "sadness": 0.26224087541687957,
+        "surprise": 0.2923539009545638
+      },
+      "affect": {
+        "valence": -0.11589399473126522,
+        "arousal": 0.4657522569419542,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "attentive",
+        "warmth": 0.65,
+        "directness": 0.5,
+        "playfulness": 0.15,
+        "disclosure": 0.195,
+        "sticker_mood": "thinking",
+        "tts_style": "conversational",
+        "cause_ids": [
+          "user_loss"
+        ],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.13839988969266415,
+      "provider": {
+        "latency_seconds": 16.628221100196242,
+        "attempts": 1,
+        "prompt_tokens": 879,
+        "completion_tokens": 632,
+        "reported_cost_usd": 0.0
+      }
+    },
+    {
+      "id": "irrelevant_love",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {
+        "gratitude": 0.01563328512,
+        "interest": 0.030855168,
+        "joy": 0.1042219008,
+        "surprise": 0.034712064
+      },
+      "affect": {
+        "valence": 0.20476317380359751,
+        "arousal": 0.19249181070680585,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "warm",
+        "warmth": 0.65,
+        "directness": 0.5,
+        "playfulness": 0.15,
+        "disclosure": 0.195,
+        "sticker_mood": "happy",
+        "tts_style": "conversational",
+        "cause_ids": [
+          "irrelevant_love"
+        ],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.09119999594986439,
+      "provider": {
+        "latency_seconds": 18.88199090003036,
+        "attempts": 3,
+        "prompt_tokens": 2719,
+        "completion_tokens": 915,
+        "reported_cost_usd": 0.0
+      }
+    }
+  ]
+}
