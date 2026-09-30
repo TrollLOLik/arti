@@ -169,6 +169,10 @@ def run_with_restart():
             from bot.group_commands import proactivity_command,quiet_command
             application.add_handler(CommandHandler('proactivity',proactivity_command))
             application.add_handler(CommandHandler('quiet',quiet_command))
+            from bot.table_commands import dataset_command,calc_command,datafix_command
+            application.add_handler(CommandHandler('dataset',dataset_command))
+            application.add_handler(CommandHandler('calc',calc_command))
+            application.add_handler(CommandHandler('datafix',datafix_command))
             from bot.commands import handle_memory_archive_command
             application.add_handler(CommandHandler("memory_archive",handle_memory_archive_command))
             application.add_handler(CommandHandler("arti_commands", arti_commands))

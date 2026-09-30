@@ -15,7 +15,7 @@ MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
 
 async def extract_document_bytes(data, file_name, declared_mime=None):
     mime = await asyncio.to_thread(inspect_bytes, data, file_name, declared_mime, MAX_DOCUMENT_BYTES)
-    extractor = configured_extractor()
+    extractor = configured_extractor(mime)
     if hasattr(extractor, 'extract_async'):
         bundle = await extractor.extract_async('transient-document', 1, data, mime)
     else:

@@ -158,7 +158,7 @@ class ExtractionManifest:
             raise MaterialError('invalid_manifest')
         if self.coverage == 'complete' and self.total_units != self.processed_units:
             raise MaterialError('false_complete_coverage')
-        if self.unit_kind not in ('native_unit', 'page', 'body_node', 'paragraph'):
+        if self.unit_kind not in ('native_unit', 'page', 'body_node', 'paragraph', 'row', 'cell'):
             raise MaterialError('invalid_manifest_unit')
 
 

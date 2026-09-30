@@ -457,7 +457,12 @@ class DocumentExtractor:
             working.close()
 
 
-def configured_extractor():
+def configured_extractor(mime=None):
+    if mime in ('text/csv','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'):
+        if os.getenv('ARTI_TABLES_ENABLED','1').lower() in ('0','false','off'):
+            raise MaterialError('table_extraction_disabled')
+        from materials.extractors.tables import TableExtractor
+        return TableExtractor()
     if os.getenv('ARTI_DOCUMENTS_ENABLED','1').lower() in ('0','false','off'):
         return IsolatedNativeExtractor()
     return DocumentExtractor(ocr_enabled=os.getenv('ARTI_OCR_ENABLED','1').lower() not in ('0','false','off'))

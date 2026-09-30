@@ -105,3 +105,72 @@ class MaterialService:
             result['extraction_id'] = await self.repository.save_extraction(actor,bundle,row['generation'])
             result['bundle'] = bundle.to_dict()
         return result
+
+    async def datasets(self, aid, actor, *, policy=None, extractor=None):
+        from materials.dataset_repository import DatasetRepository
+        from materials.datasets import datasets_from_bundle
+        from materials.extractors.documents import configured_extractor
+        if extractor is None:
+            _, rev = await self.repository.read(aid, actor)
+            extractor = configured_extractor(rev['mime'])
+        eid, bundle = await self.extract(aid, actor, extractor)
+        snapshots = datasets_from_bundle(eid, bundle, policy)
+        repository = DatasetRepository(self.repository)
+        return tuple([await repository.save_dataset(actor,snapshot) for snapshot in snapshots])
+
+    async def compute(self, dataset_id, actor, spec, *, formula_dataset_ids=()):
+        from dataclasses import asdict,replace
+        from artifacts.computation import compute
+        from materials.dataset_repository import DatasetRepository
+        from materials.datasets import ColumnPolicy, normalize, decimal
+        from materials.types import EvidenceRef, Locator, MaterialError
+        repository = DatasetRepository(self.repository)
+        dataset = await repository.load_dataset(dataset_id,actor)
+        snapshots = [dataset] + [await repository.load_dataset(id,actor) for id in formula_dataset_ids if id!=dataset_id]
+        # A cross-sheet reference cannot pick arbitrary data from another file.
+        identity={(ref.asset_id,ref.asset_version) for ref in dataset.source_refs}
+        if any({(ref.asset_id,ref.asset_version) for ref in s.source_refs}!=identity for s in snapshots):
+            raise MaterialError('formula_workbook_mismatch')
+        environment={}
+        for snapshot in snapshots:
+            for cell in snapshot.cells:
+                key=(snapshot.name,cell.address)
+                if key in environment and environment[key]!=cell: raise MaterialError('formula_environment_conflict')
+                environment[key]=cell
+        rate_snapshots=[]; rate_warnings=[]
+        for rate in spec.conversions:
+            ref=EvidenceRef(**{**rate.source,'locator':Locator.from_dict(rate.source['locator'])})
+            block=await self.repository.resolve(ref,actor)
+            if block.metadata.get('role')!='table_cell': raise MaterialError('conversion_requires_cell_evidence')
+            quality=block.quality
+            if rate.dataset_id:
+                rate_dataset=await repository.load_dataset(rate.dataset_id,actor)
+                cell=next((c for c in rate_dataset.cells if c.source==ref),None)
+                if cell is None: raise MaterialError('conversion_requires_cell_evidence')
+                value=cell.normalized; quality=cell.quality; rate_snapshots.append(rate_dataset)
+            else:
+                raw=block.metadata.get('raw',block.text)
+                value=normalize(raw,ColumnPolicy(0,locale='en'),native_kind=block.metadata.get('native_kind'))
+            if value.kind!='number' or value.unit!='1' or decimal(value.value)!=decimal(rate.factor) or decimal(value.lower or value.value)!=decimal(rate.lower or rate.factor) or decimal(value.upper or value.value)!=decimal(rate.upper or rate.factor):
+                raise MaterialError('conversion_rate_not_verified')
+            if quality in ('uncertain','unreadable'):
+                if not spec.allow_uncertain: raise MaterialError('uncertain_conversion_source')
+                rate_warnings.append('uncertain_conversion_source')
+        result=await asyncio.to_thread(compute,dataset,spec,formula_cells=environment)
+        all_snapshots={s.id:s for s in snapshots+rate_snapshots}
+        result=replace(result,dependency_datasets=tuple(sorted(all_snapshots)),warnings=tuple(dict.fromkeys(result.warnings+tuple(rate_warnings))))
+        # Verify all current sheets after CPU work, including corrected formula leaves.
+        for snapshot in all_snapshots.values():
+            await repository.load_dataset(snapshot.id,actor)
+        await repository.save_computation(actor,result,formula_dataset_ids=tuple(all_snapshots))
+        return result
+
+    async def propose_correction(self, dataset_id, actor, address, replacement):
+        from materials.dataset_repository import DatasetRepository
+        from materials.datasets import correction_proposal
+        dataset=await DatasetRepository(self.repository).load_dataset(dataset_id,actor)
+        return correction_proposal(dataset,address,replacement)
+
+    async def confirm_correction(self, actor, proposal):
+        from materials.dataset_repository import DatasetRepository
+        return await DatasetRepository(self.repository).confirm(actor,proposal)

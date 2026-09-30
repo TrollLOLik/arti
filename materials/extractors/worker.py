@@ -16,7 +16,10 @@ def main():
         job = apply_resource_limits(request['limits'])
         from materials.extractors.documents import DocumentExtractor, IsolatedNativeExtractor
         data = (root / 'original').read_bytes()
-        if request['operation'] == 'native_extract':
+        if request['operation'] == 'table_extract':
+            from materials.extractors.tables import TableExtractor
+            result = TableExtractor(**request['options']).extract(request['asset_id'], request['version'], data, request['mime']).to_dict()
+        elif request['operation'] == 'native_extract':
             extractor = IsolatedNativeExtractor(**request['options'])
             result = extractor.extract(request['asset_id'], request['version'], data, request['mime']).to_dict()
         elif request['operation'] == 'extract':

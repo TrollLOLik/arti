@@ -63,6 +63,7 @@ python -m tools.run_materials_tests --all
 python -m tools.evaluate_materials
 python -m tools.check_document_stack
 python -m tools.evaluate_documents
+python -m tools.evaluate_datasets
 python -m tools.probe_material_provider --model stealth/space-bunny-alpha
 ```
 
@@ -91,3 +92,25 @@ Python-библиотеки устанавливаются обычным `pytho
 `MaterialService.evidence_region(ref, actor, extractor, reread=True)` возвращает crop и отдельное immutable региональное наблюдение. Требуется реальный `EvidenceRef`; произвольная координата не заменяет проверку доступа. Наблюдение не автоматически исправляет число в старом extraction. Полный Telegram-интерфейс просмотра и правок относится к A16; сейчас API доступен другим внутренним инструментам.
 
 Используемые методы описаны в [pdfplumber](https://github.com/jsvine/pdfplumber), [pypdfium2](https://pypdfium2.readthedocs.io/en/stable/python_api.html) и [Tesseract TSV/OSD](https://tesseract-ocr.github.io/tessdoc/Command-Line-Usage.html). Локальный стек имеет MIT/Apache/BSD-компоненты; условия и notices PDFium и его зависимостей поставляются с pypdfium2. Лицензии компонентов сохранять при распространении.
+
+## A06: datasets и расчёты
+
+Зависимость: openpyxl >=3.1.5,<4. `ARTI_TABLES_ENABLED=0` отключает CSV/XLSX extractor; команды дополнительно требуют включённого `ARTI_MATERIALS_ENABLED`. Настройки окружения не менялись в ходе разработки. Миграция 011 применяется обычным `ensure_schema`; уже применённые 009/010 не переписаны. Рабочая база в этой сессии не мигрировалась.
+
+Ответом на исходный файл:
+
+```text
+/dataset
+/dataset sheet=1
+/calc sum B2:B4 sheet=1
+/calc percent B2 reference=B2:B4 sheet=1
+/calc mean B2:B4 locale=ru missing=exclude sheet=1
+/calc convert B2 unit=m sheet=1
+/datafix B2 1300 sheet=1
+```
+
+`/datafix` — явное подтверждение автором, а не автоматическое предложение LLM. `locale` и `date_order` создают отдельную series нормализации; применяйте те же параметры при продолжении работы с этой series. Предложение через `propose_correction` само по себе не изменяет данные. Оригинал всегда доступен через EvidenceRef, confirmed override хранится отдельно. Currency conversion API требует EvidenceRef коэффициента, точного factor и при исправленном коэффициенте `dataset_id`; Telegram пока поддерживает только совместимые встроенные единицы, без угадывания курсов.
+
+Стандартные лимиты: 3000 ячеек, 128 столбцов, 16 листов; фактически сохранённая сетка до 100000 ячеек, огромная объявленная dimension не используется. Неполная выборка помечается partial, диапазон с неизвлечёнными ячейками не считается. CSV загружается как UTF-8; явно настроенный CP1251 extractor доступен для importer, durable intake требует предварительного декодирования. Макросы не исполняются, внешние ссылки не открываются, formula-like CSV остаётся текстом.
+
+Engine поддерживает закрытое подмножество Excel; [openpyxl не вычисляет формулы](https://openpyxl.readthedocs.io/en/3.1.2/simple_formulae.html). Кеш сохраняется как исходное наблюдение, сравнивается с новым результатом и не подменяет его. Нет `eval` или исполнения кода файла. COUNT поддерживает извлечённые числовые/blank ссылки; текстовые ссылки дают явный отказ, а не полную семантику Excel. Точность — 50 цифр, пределы числа и выражения ограничены; добавляются source refs, formula trace, engine version и dataset dependencies. Для проверки: `python -m tools.evaluate_datasets`, затем общий suite. Quota — до 2000 non-erased derivative payloads в realm; истёкшие/забытые источники исключаются до физической очистки.

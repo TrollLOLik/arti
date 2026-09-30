@@ -1,5 +1,6 @@
 """Optional Telegram intake and late access checks for derived responses."""
 import contextvars
+import asyncio
 from dataclasses import dataclass
 import logging
 import os
@@ -12,6 +13,7 @@ from materials.extractors.basic import render_text
 from materials.extractors.documents import configured_extractor
 
 CURRENT_MATERIAL_USE = contextvars.ContextVar('arti_material_use', default=())
+CURRENT_COMPUTATION_USE = contextvars.ContextVar('arti_computation_use', default=())
 logger = logging.getLogger(__name__)
 
 
@@ -36,6 +38,15 @@ class MaterialUse:
         row, _ = await self.service.repository.read(self.asset_id, self.actor, self.version)
         if row['generation'] != self.generation or row['current_version'] != self.version:
             raise MaterialError('stale_material_result')
+
+
+@dataclass(frozen=True)
+class ComputationUse:
+    computation_id: str
+    actor: AccessContext
+    repository: object
+    async def validate(self):
+        await self.repository.load_computation(self.computation_id,self.actor)
 
 
 def enabled():
@@ -112,7 +123,9 @@ async def capture_document(context, document, message):
                 message.message_id,actor.scope.mode,origin=Origin.SYSTEM if sender_chat else Origin.USER)
         finally:
             CURRENT_SCOPE.reset(token)
-    eid, bundle = await service.extract(asset['id'], actor, configured_extractor())
+    from materials.validation import inspect_bytes
+    mime = await asyncio.to_thread(inspect_bytes,data,document.file_name or 'document',getattr(document,'mime_type',None))
+    eid, bundle = await service.extract(asset['id'], actor, configured_extractor(mime))
     if not any(b.text.strip() for b in bundle.blocks):
         raise MaterialError('document_has_no_readable_text')
     use = MaterialUse(asset['id'], actor, bundle.asset_version, asset['generation'], service,cid,event_id)
@@ -123,7 +136,7 @@ async def capture_document(context, document, message):
 async def guard_current(destination=None):
     from cognition.scope import CURRENT_SCOPE
     scope = CURRENT_SCOPE.get()
-    for use in CURRENT_MATERIAL_USE.get():
+    for use in CURRENT_MATERIAL_USE.get()+CURRENT_COMPUTATION_USE.get():
         if destination is not None and destination != use.actor.scope.chat_id:
             raise MaterialError('material_destination_mismatch')
         if scope is not None and (scope.chat_id != use.actor.scope.chat_id or scope.topic_id != use.actor.scope.topic_id):
