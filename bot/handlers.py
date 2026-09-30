@@ -68,12 +68,12 @@ def _is_text_rate_limited(user_id: int) -> bool:
     return False
 
 
-async def _save_message(chat_id: int, user_name: str, message_text: str, user_id: int = None):
+async def _save_message(chat_id: int, user_name: str, message_text: str, user_id: int = None, **source):
     """Сохраняет сообщение в обычную или RP-историю в зависимости от режима."""
     if rp_mode_state.get(chat_id):
-        await save_chat_message_rp(chat_id, user_name, message_text, user_id=user_id)
+        await save_chat_message_rp(chat_id, user_name, message_text, user_id=user_id, **source)
     else:
-        await save_chat_message(chat_id, user_name, message_text, user_id=user_id)
+        await save_chat_message(chat_id, user_name, message_text, user_id=user_id, **source)
 
 
 async def _get_dialog_history(chat_id: int) -> str:
@@ -109,6 +109,12 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     if _is_text_rate_limited(user_id):
         logger.warning(f"Rate limit: user {user_id} в чате {chat_id} превысил лимит текстовых запросов")
         return
+
+    from cognition.runtime import get_runtime
+    runtime = get_runtime()
+    if runtime and runtime.mode!='legacy' and update.message.text:
+        await runtime.ingest(chat_id,user_id,update.message.text,message_id,
+                             'rp' if rp_mode_state.get(chat_id) else 'default',occurred_at=update.message.date)
 
     user_text = update.message.text or ""
 
@@ -294,7 +300,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             if not user_message:
                 user_message = "Проанализируй это видео."
 
-    await _save_message(chat_id, user_name, user_message, user_id=user_id)
+    await _save_message(chat_id, user_name, user_message, user_id=user_id,message_id=message_id,occurred_at=update.message.date)
 
     # === Перехват одиночного URL на видео: предлагаем инлайн-меню ===
     # Условия: ЛС, сообщение — только URL, известный видеохост, нет reply/forward/упоминания.
@@ -465,6 +471,10 @@ async def _process_images(
         
         closeness = 0.1
         mode = "rp" if rp_mode_state.get(chat_id) else "default"
+        from cognition.runtime import prepare_turn
+        cognitive_turn = await prepare_turn(chat_id,user_id,user_caption,message_id,mode)
+        if cognitive_turn is not None and cognitive_turn.active and cognitive_turn.repeated_delivery:
+            return
         user_profile = await MemoryUserProfile.get(chat_id, user_id, mode)
         if user_profile and user_profile.get("profile_json"):
             prof_json = json.loads(user_profile["profile_json"]) if isinstance(user_profile["profile_json"], str) else user_profile["profile_json"]
@@ -475,13 +485,13 @@ async def _process_images(
         user_caption = strip_introspection_tags(user_caption)
         # defer_sentiment=True: словарный сдвиг отложен до apply_turn_sentiment пост-генерации.
         emotion_source_key = f"photo:{mode}:{message_id}" if message_id is not None else None
-        img_state = await ChatEmotionalState.update_state(chat_id, user_caption, closeness, user_id=user_id, defer_sentiment=True, source_key=emotion_source_key)
+        img_state = {} if cognitive_turn is not None and cognitive_turn.active else await ChatEmotionalState.update_state(chat_id, user_caption, closeness, user_id=user_id, defer_sentiment=True, source_key=emotion_source_key)
 
         image_details = "изображение" if len(base64_images) == 1 else f"{len(base64_images)} изображений"
-        await _save_message(chat_id, user_name, f"Пользователь прислал {image_details}. Подпись: {user_caption}", user_id=user_id)
+        await _save_message(chat_id, user_name, f"Пользователь прислал {image_details}. Подпись: {user_caption}", user_id=user_id,message_id=update.message.message_id,occurred_at=update.message.date)
 
         dialog_history_str = await _get_dialog_history(chat_id)
-        memory_context = await build_memory_context(
+        memory_context = cognitive_turn.memory if cognitive_turn is not None and cognitive_turn.active else await build_memory_context(
             chat_id=chat_id,
             user_id=user_id,
             user_message=user_caption,
@@ -500,6 +510,7 @@ async def _process_images(
             enable_introspection=True,
             emotional_state=img_state,
             memory_context=memory_context,
+            expression_plan=cognitive_turn.expression if cognitive_turn is not None and cognitive_turn.active else None,
         )
         logger.debug(f"RAW ИИ ОТВЕТ (фото, {len(base64_images)} шт): {response_text}")  # PRIV-01
 
@@ -517,11 +528,14 @@ async def _process_images(
             sticker_mood = sticker_match.group(1).strip().lower()
 
         # Гибридный сентимент: интроспекция LLM > словарный фолбэк; затем вырезаем служебный тег.
-        introspection_sticker = None if generation_failed else await ChatEmotionalState.apply_turn_sentiment(
+        introspection_sticker = None if generation_failed or (cognitive_turn is not None and cognitive_turn.active) else await ChatEmotionalState.apply_turn_sentiment(
             chat_id, response_text, img_state.get("keyword_mood_delta"), source_key=emotion_source_key
         )
         if not sticker_mood and introspection_sticker:
             sticker_mood = introspection_sticker
+        if cognitive_turn is not None and cognitive_turn.active:
+            sticker_mood = None if generation_failed else cognitive_turn.expression.sticker_mood
+            response_text = '[' + cognitive_turn.expression.tts_style + '] ' + response_text
         response_text = strip_introspection_tags(response_text)
 
         # Очищаем все теги стикеров из ответа
@@ -571,7 +585,7 @@ async def _process_images(
             history_response_text = f"[Стикер: {sticker_mood}]"
 
         # MEM-06: заглушку об ошибке не пишем в историю.
-        if not generation_failed:
+        if not generation_failed and (cognitive_turn is None or not cognitive_turn.active):
             await _save_message(chat_id, "Арти", history_response_text)
 
         # === ОТПРАВКА СООБЩЕНИЯ (ТЕКСТ/ГОЛОС) ===
@@ -579,7 +593,8 @@ async def _process_images(
         has_text = bool(display_text.strip())
 
         if has_text:
-            if used_search or not TTS_ENABLED:
+            text_preference = cognitive_turn is not None and cognitive_turn.active and (cognitive_turn.preferences.get('voice') is False or cognitive_turn.preferences.get('text') is True)
+            if used_search or not TTS_ENABLED or text_preference:
                 sent_msg = await bot.send_message(
                     chat_id=chat_id, text=display_text,
                     reply_to_message_id=message_id,
@@ -644,7 +659,7 @@ async def _process_images(
             )
 
         # MEM-06: не учим память на заглушке об ошибке.
-        if not generation_failed:
+        if not generation_failed and (cognitive_turn is None or not cognitive_turn.active):
             memory_task = asyncio.create_task(
                 remember_exchange(
                     chat_id=chat_id,
@@ -1080,7 +1095,7 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return
 
-        await _save_message(chat_id, update.message.from_user.first_name, transcription, user_id=user_id)
+        await _save_message(chat_id, update.message.from_user.first_name, transcription, user_id=user_id,message_id=update.message.message_id,occurred_at=update.message.date)
 
         is_private = update.effective_chat.type == "private"
         replied_to_bot = bool(
@@ -1184,7 +1199,7 @@ async def handle_video_upload_message(update: Update, context: ContextTypes.DEFA
     is_private = update.effective_chat.type == "private"
 
     if is_private or bool(re.search(r'\bарти\b', user_caption.lower())) or replied_to_bot:
-        await _save_message(chat_id, user_name, user_caption, user_id=user_id)
+        await _save_message(chat_id, user_name, user_caption, user_id=user_id,message_id=update.message.message_id,occurred_at=update.message.date)
         await enqueue_reply(chat_id, user_id, user_name, user_caption, message_id, context, is_voice=True, video_file_id=video_file_id)
     else:
         logger.info("Видео сообщение не требует ответа")
@@ -1227,7 +1242,7 @@ async def handle_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # У круглешков нет подписей, поэтому используем дефолтный промпт
     user_prompt = "Проанализируй этот круглешочек."
     
-    await _save_message(chat_id, user_name, "[Прислал видеосообщение]", user_id=user_id)
+    await _save_message(chat_id, user_name, "[Прислал видеосообщение]", user_id=user_id,message_id=update.message.message_id,occurred_at=update.message.date)
     
     # Видеозаметки всегда обрабатываем как видео для Gemini
     await enqueue_reply(
@@ -1939,6 +1954,17 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
 
     added_emojis = [e for e in new_emojis if e not in old_emojis]
     if not added_emojis:
+        return
+
+    from cognition.runtime import get_runtime
+    runtime = get_runtime()
+    from cognition.diagnostics import active_context
+    active_cid = await active_context(runtime,chat_id,'rp' if rp_mode_state.get(chat_id) else 'default') if runtime else None
+    if runtime and (active_cid is not None or runtime.mode=='active'):
+        source_key = f"reaction:{message_id}:{user_id}:{reaction_update.date.isoformat()}:{','.join(added_emojis)}"
+        await runtime.ingest(chat_id,user_id,','.join(added_emojis),source_key,
+                             'rp' if rp_mode_state.get(chat_id) else 'default',
+                             occurred_at=reaction_update.date,event_kind='reaction')
         return
 
     from bot.reactions import classify_reactions

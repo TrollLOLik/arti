@@ -1,0 +1,225 @@
+{
+  "model_version": "cognition-2026-09-30.4",
+  "criteria": "predeclared-mechanism-contrasts-v1",
+  "hypotheses": {
+    "E1": {
+      "passed": true,
+      "anger": [
+        0.34012224000000013,
+        0,
+        0.01682804674457429
+      ]
+    },
+    "E2": {
+      "passed": true,
+      "initial": {
+        "valence": -0.30066095150451605,
+        "arousal": 0.46450978219006267,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002,
+        "attention": 1.0,
+        "circadian": 0.042426406871192854
+      },
+      "later": {
+        "valence": 0.07179200024994419,
+        "arousal": 0.10415714506537706,
+        "mood_valence": 0.06131094011897109,
+        "mood_arousal": 0.10916011212238345,
+        "attention": 1.0,
+        "circadian": 0.06
+      }
+    },
+    "E3": {
+      "passed": true,
+      "expression_changes_state": false
+    },
+    "E4": {
+      "passed": true
+    },
+    "E5": {
+      "passed": true,
+      "suppression_changes_feeling": false,
+      "reappraised_anger": 0.0008503056000000016
+    },
+    "E6": {
+      "passed": true,
+      "emotions": [
+        "anger",
+        "gratitude",
+        "interest",
+        "joy",
+        "sadness",
+        "surprise"
+      ]
+    },
+    "E7": {
+      "passed": true,
+      "new_witness_from_replay": false
+    },
+    "E10": {
+      "passed": true
+    },
+    "M1": {
+      "passed": true,
+      "broad_details": 1,
+      "specific_details": 2
+    },
+    "M2": {
+      "passed": true
+    },
+    "M3": {
+      "passed": true
+    },
+    "E8": {
+      "passed": true,
+      "warm_ids": [
+        63,
+        671,
+        659,
+        419,
+        575,
+        57,
+        51,
+        39
+      ],
+      "cold_ids": [
+        124,
+        671,
+        659,
+        419,
+        575,
+        57,
+        51,
+        45
+      ],
+      "bias_max": 0.05,
+      "counterevidence_slot": true
+    },
+    "E9": {
+      "passed": true
+    },
+    "M4": {
+      "passed": true,
+      "historical_versions": 1
+    },
+    "M5": {
+      "passed": true,
+      "deleted_after_replay": true
+    }
+  },
+  "ablations": {
+    "without_appraisal": {
+      "full_anger": 0.34012224000000013,
+      "ablated_anger": 0.0,
+      "lost": "causal attribution"
+    },
+    "sentiment_only": {
+      "equal_negative_label_for_all_three": true,
+      "full_anger": [
+        0.34012224000000013,
+        0,
+        0.01682804674457429
+      ],
+      "lost": "intentional versus accidental harm"
+    },
+    "without_slow_mood": {
+      "full_mood": 0.06131094011897109,
+      "ablated_mood": 0.07999999999999999,
+      "lost": "lasting affect after a fast episode"
+    },
+    "collapsed_relationship": {
+      "full_dimensions": {
+        "familiarity": {
+          "alpha": 4.071925000000007,
+          "beta": 1.0
+        },
+        "warmth": {
+          "alpha": 1.0,
+          "beta": 1.0
+        },
+        "reliability": {
+          "alpha": 1.0,
+          "beta": 1.0
+        },
+        "benevolence": {
+          "alpha": 1.0,
+          "beta": 1.0
+        },
+        "predictability": {
+          "alpha": 1.0,
+          "beta": 1.0
+        },
+        "openness": {
+          "alpha": 1.0,
+          "beta": 1.0
+        }
+      },
+      "scalar_cannot_separate_familiarity_and_reliability": true
+    },
+    "without_regulation": {
+      "full_tone": "calm and concrete",
+      "ablated_tone": "firm and measured",
+      "lost": "appropriate expression under a serious task"
+    },
+    "without_replay": {
+      "full_stability": 72.67218749999999,
+      "ablated_stability": 66.825
+    },
+    "without_emotional_retrieval_bias": {
+      "full_order": [
+        63,
+        671,
+        659,
+        419,
+        575,
+        57,
+        51,
+        39
+      ],
+      "ablated_order": [
+        671,
+        659,
+        419,
+        575,
+        57,
+        51,
+        45,
+        33
+      ],
+      "maximum_score_contribution": 0.05
+    },
+    "without_memory_in_appraisal": {
+      "full_reappraisal": true,
+      "ablated_reappraisal": false,
+      "lost": "grounded connection to the earlier cause"
+    }
+  },
+  "long_trajectory": {
+    "events": 3000,
+    "seed": 728194,
+    "simulated_days": 64.58333333333333,
+    "maximum_working_episodes": 128,
+    "final_working_episodes": 16,
+    "pure_p50_ms": 0.1034000888466835,
+    "pure_p95_ms": 0.125400023534894,
+    "final": {
+      "valence": -0.08427852115265315,
+      "arousal": 0.5703615360661054,
+      "mood_valence": -0.040832003849162295,
+      "mood_arousal": 0.191774024556833,
+      "attention": 0.9017695302963248,
+      "circadian": -0.05533205830022712
+    }
+  },
+  "database_trajectory": {
+    "events": 124,
+    "interpreter_calls": 124,
+    "external_provider_calls": 0,
+    "end_to_end_p50_ms": 19.289399962872267,
+    "end_to_end_p95_ms": 23.408500012010336
+  },
+  "human_naturalness_validated": false,
+  "biological_validity_claimed": false,
+  "passed": 15,
+  "total": 15
+}

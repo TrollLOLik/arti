@@ -604,6 +604,9 @@ async def _create_tables_internal(conn):
                 ON memory_chunks (message_ids)
             """)
             logger.info("MEM-07: UNIQUE-индекс чанков по message_ids создан")
+    if vector_available:
+        await conn.execute('ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS embedding_attempts INTEGER NOT NULL DEFAULT 0')
+        await conn.execute('ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS embedding_error_code TEXT')
     # Таблица эмоциональных состояний чата
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS chat_emotional_states (

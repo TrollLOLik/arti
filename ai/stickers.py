@@ -276,6 +276,23 @@ async def send_mood_sticker_task(bot: Bot, chat_id: int, user_id: int, mood: str
     if not STICKERS_ENABLED or mood not in SUPPORTED_MOODS:
         return
 
+    from cognition.runtime import CURRENT_TURN,get_runtime
+    from cognition.diagnostics import active_context
+    turn = CURRENT_TURN.get()
+    runtime = get_runtime()
+    if turn is not None and turn.active:
+        if turn.expression.sticker_mood!=mood:
+            return
+        pack = await load_sticker_pack(bot)
+        choices = (pack or {}).get(mood,[])
+        if choices:
+            import hashlib
+            index = int.from_bytes(hashlib.sha256(turn.event.event_id.encode()).digest()[:4],'big')%len(choices)
+            await bot.send_sticker(chat_id=chat_id,sticker=choices[index],reply_to_message_id=message_id)
+        return
+    if runtime and await active_context(runtime,chat_id,mode) is not None:
+        return
+
     try:
         # 1. Загружаем эмоциональное состояние
         emo_state = await ChatEmotionalState.get_or_create(chat_id)

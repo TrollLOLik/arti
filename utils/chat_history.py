@@ -33,18 +33,34 @@ def _memory_role(user_name: str) -> str:
     return "user"
 
 
-async def save_chat_message(chat_id: int, user_name: str, message_text: str, user_id: int = None) -> None:
+async def _save_cognitive_history(chat_id,user_name,text,user_id,message_id,mode,occurred_at):
+    from cognition.runtime import get_runtime
+    runtime = get_runtime()
+    if not runtime or runtime.mode=='legacy' or message_id is None or user_id is None:
+        return False
+    cid,eid,event = await runtime.ingest(chat_id,user_id,text,message_id,mode,occurred_at)
+    from cognition.history import save_source_history,invalidate_history
+    async with runtime.pool.acquire() as conn,conn.transaction():
+        await conn.fetchval('SELECT revision FROM cognitive_contexts WHERE id=$1 FOR UPDATE',cid)
+        await save_source_history(conn,cid,eid,event,user_name,event.text,message_id)
+    invalidate_history(chat_id)
+    return True
+
+
+async def save_chat_message(chat_id: int, user_name: str, message_text: str, user_id: int = None, *, message_id=None,occurred_at=None) -> None:
     """
     Унифицированная функция, которая:
     1) Сохраняет сообщение (с датой) в chat_history (до 30 сообщений).
     2) Инвалидирует кеш для этого чата.
     """
+    if await _save_cognitive_history(chat_id,user_name,message_text,user_id,message_id,'default',occurred_at):
+        return
     try:
         timestamp = datetime.now()
 
         # Сохраняем в базу данных (только в chat_history)
         await ChatHistoryModel.save(chat_id, user_name, message_text, timestamp)
-        await MemoryMessage.save(
+        memory_id = await MemoryMessage.save(
             chat_id=chat_id,
             user_id=user_id,
             user_name=user_name,
@@ -95,12 +111,14 @@ async def get_chat_context(chat_id, limit=20) -> str:
         return ""
 
 
-async def save_chat_message_rp(chat_id: int, user_name: str, message_text: str, user_id: int = None) -> None:
+async def save_chat_message_rp(chat_id: int, user_name: str, message_text: str, user_id: int = None, *, message_id=None,occurred_at=None) -> None:
     """Сохраняет сообщение в RP-историю чата (до 30 сообщений) и инвалидирует кеш."""
+    if await _save_cognitive_history(chat_id,user_name,message_text,user_id,message_id,'rp',occurred_at):
+        return
     try:
         timestamp = datetime.now()
         await ChatHistoryRPModel.save(chat_id, user_name, message_text, timestamp)
-        await MemoryMessage.save(
+        memory_id = await MemoryMessage.save(
             chat_id=chat_id,
             user_id=user_id,
             user_name=user_name,

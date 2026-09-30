@@ -3,7 +3,7 @@ import json
 from dataclasses import asdict
 from datetime import datetime
 
-from cognition.types import (CognitiveEvent, CognitiveState, ContextKey, EmotionEpisode,
+from cognition.types import (CognitiveEvent, CognitiveState, ContextKey, EmotionEpisode,AffectiveResidue,
                              EvidenceRef, Origin)
 
 
@@ -27,7 +27,7 @@ def load_event(value) -> CognitiveEvent:
     return CognitiveEvent(data['event_id'], ContextKey(**data['context']),
                           EvidenceRef(**{**data['evidence'], 'origin': Origin(data['evidence']['origin'])}),
                           datetime.fromisoformat(data['occurred_at']), datetime.fromisoformat(data['observed_at']),
-                          data['text'], data['actor_id'], data.get('target_id'))
+                          data['text'], data['actor_id'], data.get('target_id'),data.get('event_kind','utterance'))
 
 
 def load_state(value) -> CognitiveState:
@@ -36,4 +36,8 @@ def load_state(value) -> CognitiveState:
     data['last_at'] = datetime.fromisoformat(data['last_at'])
     data['episodes'] = tuple(EmotionEpisode(**{**ep, 'created_at': datetime.fromisoformat(ep['created_at'])}) for ep in data['episodes'])
     data['applied_groups'] = frozenset(data['applied_groups'])
+    data['archived_episode_ids'] = tuple(data.get('archived_episode_ids', ()))
+    data['situational_goals'] = tuple(data.get('situational_goals',()))
+    data['concerns'] = tuple(data.get('concerns',()))
+    data['residues'] = tuple(AffectiveResidue(**r) for r in data.get('residues',()))
     return CognitiveState(**data)

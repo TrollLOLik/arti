@@ -31,6 +31,14 @@ class RetryBot(ExtBot):
     MAX_ATTEMPTS = 3
 
     async def _call_with_retry(self, method, *args, **kwargs):
+        from cognition.runtime import CURRENT_TURN
+        turn = CURRENT_TURN.get()
+        name = getattr(method,'__name__','')
+        if turn is not None and turn.active and name.startswith('send_') and name!='send_chat_action':
+            from cognition.delivery import send_with_receipt
+            result = await send_with_receipt(method,args,kwargs,name[5:])
+            _maybe_record_sent(result)
+            return result
         last_exc: Exception | None = None
         for attempt in range(self.MAX_ATTEMPTS):
             try:
@@ -70,6 +78,12 @@ class RetryBot(ExtBot):
 
     async def send_document(self, *args, **kwargs):
         return await self._call_with_retry(super().send_document, *args, **kwargs)
+
+    async def send_sticker(self,*args,**kwargs):
+        return await self._call_with_retry(super().send_sticker,*args,**kwargs)
+
+    async def send_media_group(self,*args,**kwargs):
+        return await self._call_with_retry(super().send_media_group,*args,**kwargs)
 
     # --- Чтения ---
     # get_file/edit_*/copy/forward тоже бывают подвержены TimedOut на flaky-сети.

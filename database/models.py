@@ -501,20 +501,24 @@ class MemoryMessage:
             return [dict(row) for row in rows]
 
     @staticmethod
-    async def fetch_for_chunking(limit: int = 5000, after_id: int = 0) -> List[dict]:
+    async def fetch_for_chunking(limit: int = 5000, after_id: int = 0, snapshot_id: int = None) -> List[dict]:
         async with get_db() as conn:
             rows = await conn.fetch("""
                 SELECT id, chat_id, user_id, user_name, role, mode, message_text, created_at
                 FROM memory_messages
                 WHERE id > $1
+                AND ($3::bigint IS NULL OR id <= $3)
                 AND role IN ('user', 'assistant', 'memory')
-                ORDER BY chat_id, mode, created_at, id
+                ORDER BY id
                 LIMIT $2
-            """, after_id, limit)
+            """, after_id, limit, snapshot_id)
             return [dict(row) for row in rows]
 
 
 def _vector_to_pg(value: List[float]) -> str:
+    import math
+    if not value or any(type(item) not in (int,float) or not math.isfinite(item) for item in value):
+        raise ValueError('Embedding must contain finite numeric values')
     return "[" + ",".join(f"{float(item):.8f}" for item in value) + "]"
 
 
@@ -591,9 +595,14 @@ class MemoryChunk:
         query_vector: List[float],
         limit: int = 5,
         min_similarity: float = 0.0,
+        embedding_model: str = None,
+        user_id: int = None,
     ) -> List[dict]:
         if not query_vector:
             return []
+        if embedding_model is None:
+            from memory.embeddings import EMBEDDING_MODEL
+            embedding_model = EMBEDDING_MODEL
 
         # min_similarity отсекает заведомо нерелевантные чанки: без порога ORDER BY
         # всегда вернёт top-k ближайших, даже если ближайший фрагмент не имеет
@@ -606,10 +615,12 @@ class MemoryChunk:
                 WHERE chat_id = $1
                 AND mode = $2
                 AND embedding IS NOT NULL
+                AND embedding_model = $6
+                AND ($7::bigint IS NULL OR user_id IS NULL OR user_id=$7)
                 AND (1 - (embedding <=> $3::vector)) >= $5
                 ORDER BY embedding <=> $3::vector
                 LIMIT $4
-            """, chat_id, mode, _vector_to_pg(query_vector), limit, float(min_similarity))
+            """, chat_id, mode, _vector_to_pg(query_vector), limit, float(min_similarity),embedding_model,user_id)
             return [dict(row) for row in rows]
 
     @staticmethod
@@ -645,10 +656,16 @@ class MemoryChunk:
                 SELECT *
                 FROM memory_chunks
                 WHERE embedding IS NULL
+                AND embedding_attempts < 3
                 ORDER BY created_at ASC, id ASC
                 LIMIT $1
             """, limit)
             return [dict(row) for row in rows]
+
+    @staticmethod
+    async def record_embedding_failure(chunk_id: int):
+        async with get_db() as conn:
+            await conn.execute("UPDATE memory_chunks SET embedding_attempts=embedding_attempts+1,embedding_error_code='provider_unavailable' WHERE id=$1 AND embedding IS NULL",chunk_id)
 
     @staticmethod
     async def latest_message_id() -> int:
@@ -950,7 +967,6 @@ class MemoryFact:
                 WHERE chat_id = $1
                 AND mode = $2
                 AND archived_at IS NULL
-                AND importance < 0.8
                 ORDER BY created_at ASC, id ASC
                 LIMIT $3
             """, chat_id, mode, limit)
@@ -1276,6 +1292,9 @@ class MemoryUserProfile:
         чтобы серия быстрых сообщений не накручивала близость. Бонус за ответ на проактивный
         пуш начисляется без троттлинга как сильный позитивный сигнал.
         """
+        from cognition.authority import legacy_permitted
+        if not await legacy_permitted(chat_id,mode):
+            return
         if not chat_id or not user_id:
             return
         async with get_db() as conn:
@@ -1725,6 +1744,9 @@ class ChatEmotionalState:
     @staticmethod
     async def update_state(chat_id: int, user_message: str, closeness: float = 0.0, user_id: Optional[int] = None, defer_sentiment: bool = False, source_key: Optional[str] = None) -> dict:
         import math
+        from cognition.authority import legacy_permitted
+        if not await legacy_permitted(chat_id):
+            return dict(charge=0.,mood_state={},user_tz=None,repeated_input=True,keyword_mood_delta={},authority='cognitive')
         user_message = user_message or ""
         async with get_db() as conn:
             async with conn.transaction():
@@ -1980,6 +2002,9 @@ class ChatEmotionalState:
 
     @staticmethod
     async def apply_mood_delta(chat_id: int, mood_delta: dict, source: str = "llm", source_key: Optional[str] = None) -> None:
+        from cognition.authority import legacy_permitted
+        if not await legacy_permitted(chat_id):
+            return
         """Применяет ограниченные дельты к вектору настроения (БЕЗ распада/заряда/времени).
 
         Используется пост-генерации: приоритетный источник — интроспекция LLM (source="llm"),
@@ -2038,6 +2063,9 @@ class ChatEmotionalState:
         keyword_mood_delta (посчитанный в update_state). Возвращает предложенный моод стикера
         (sticker_mood_suggest) или None.
         """
+        from cognition.authority import legacy_permitted
+        if not await legacy_permitted(chat_id):
+            return None
         parsed = parse_emotional_introspection(arti_response_text)
         if parsed is not None:
             if parsed["mood_delta"]:
@@ -2055,6 +2083,9 @@ class ChatEmotionalState:
 
     @staticmethod
     async def record_sticker_sent(chat_id: int, file_id: str, mood: str):
+        from cognition.authority import legacy_permitted
+        if not await legacy_permitted(chat_id):
+            return
         async with get_db() as conn:
             async with conn.transaction():
                 state = await conn.fetchrow("""

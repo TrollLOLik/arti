@@ -65,6 +65,13 @@ class InterpreterTests(unittest.IsolatedAsyncioTestCase):
             await client.interpret(event())
         self.assertEqual(str(ctx.exception),'provider_rejected')
 
+    async def test_http_200_error_envelope_is_a_bounded_provider_failure(self):
+        client = await self.client(lambda request:httpx.Response(200,json={'error':{'message':'private detail'}}))
+        with self.assertRaises(InterpreterFailure) as ctx:
+            await client.interpret(event())
+        self.assertEqual(ctx.exception.code,'provider_unavailable')
+        self.assertNotIn('private',str(ctx.exception))
+
     async def test_timeout_is_not_a_user_emotion(self):
         def handler(request):
             raise httpx.ReadTimeout('synthetic timeout',request=request)

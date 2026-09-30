@@ -4,7 +4,7 @@ from enum import Enum
 from math import isfinite
 from typing import Any
 
-MODEL_VERSION = 'cognition-2026-09-30.2'
+MODEL_VERSION = 'cognition-2026-09-30.4'
 PERCEPTION_VERSION = 'appraisal-2026-09-30.1'
 
 
@@ -80,12 +80,15 @@ class CognitiveEvent:
     text: str
     actor_id: int | None
     target_id: int | None = None
+    event_kind: str = 'utterance'
 
     def __post_init__(self):
         if not self.event_id or len(self.event_id) > 200 or not isinstance(self.text, str):
             raise ValueError('Invalid event')
         if len(self.text) > 100000:
             raise ValueError('Event text budget exceeded')
+        if self.event_kind not in ('utterance','reaction','media_request','delivery','system','historical'):
+            raise ValueError('Invalid event kind')
         for name in ('actor_id','target_id'):
             value = getattr(self,name)
             if value is not None and (isinstance(value,bool) or not isinstance(value,int)):
@@ -103,11 +106,15 @@ class Goal:
     id: str
     description: str
     priority: float
+    expectation: float | None = None
+    evidence_group: str | None = None
 
     def __post_init__(self):
         if not self.id or not self.description:
             raise ValueError('Goal identity and meaning are required')
         finite(self.priority, 'priority', 0, 1)
+        if self.expectation is not None:
+            finite(self.expectation,'expectation',0,1)
 
 
 DEFAULT_GOALS = (
@@ -179,6 +186,7 @@ class Perception:
     event_id: str
     version: str
     appraisals: tuple[Appraisal, ...]
+    situation: Any = None
 
     def validate_for(self, event: CognitiveEvent, goals: tuple[Goal, ...]):
         if self.event_id != event.event_id or self.version != PERCEPTION_VERSION:
@@ -198,11 +206,16 @@ class Perception:
 
     @classmethod
     def from_dict(cls, data: dict):
-        if not isinstance(data, dict) or set(data) != {'event_id', 'version', 'appraisals'}:
+        if not isinstance(data, dict) or set(data) not in ({'event_id', 'version', 'appraisals'}, {'event_id', 'version', 'appraisals', 'situation'}):
             raise ValueError('Invalid perception envelope')
         if not isinstance(data['appraisals'], list):
             raise ValueError('appraisals must be a list')
-        return cls(data['event_id'], data['version'], tuple(Appraisal.from_dict(a) for a in data['appraisals']))
+        situation = data.get('situation')
+        if situation is not None:
+            from cognition.situations import Situation, SourceSpan
+            situation = Situation(**{**situation,'spans':tuple(SourceSpan(**s) for s in situation['spans']),
+                                     **{k:tuple(situation[k]) for k in ('details','beliefs','intentions','revisions')}})
+        return cls(data['event_id'], data['version'], tuple(Appraisal.from_dict(a) for a in data['appraisals']), situation)
 
 
 @dataclass(frozen=True)
@@ -247,6 +260,21 @@ class EmotionEpisode:
 
 
 @dataclass(frozen=True)
+class AffectiveResidue:
+    """Exact exponential aggregate of causes outside working episodic capacity."""
+    emotion: str
+    intensity: float
+    tau_seconds: float
+    cause_count: int
+
+    def __post_init__(self):
+        finite(self.intensity,'residual intensity',0,1e9)
+        finite(self.tau_seconds,'residual time constant',1,30*86400)
+        if type(self.cause_count) is not int or self.cause_count<1:
+            raise ValueError('Invalid residual cause count')
+
+
+@dataclass(frozen=True)
 class CognitiveState:
     context: ContextKey
     last_at: datetime
@@ -258,13 +286,25 @@ class CognitiveState:
     episodes: tuple[EmotionEpisode, ...] = ()
     # Durable causal ledger in B03; never evicted based on a short-term window.
     applied_groups: frozenset[str] = frozenset()
+    effort_load: float = 0.
+    archived_episode_ids: tuple[str, ...] = ()
+    situational_goals: tuple[dict, ...] = ()
+    concerns: tuple[dict, ...] = ()
+    residues: tuple[AffectiveResidue, ...] = ()
 
     def __post_init__(self):
         utc(self.last_at)
         if self.revision < 0 or self.model_version != MODEL_VERSION or not self.temperament_version:
             raise ValueError('Invalid state revision or version')
-        finite(self.mood_valence_latent, 'mood_valence_latent', -1000, 1000)
-        finite(self.mood_arousal_latent, 'mood_arousal_latent', 0, 1000)
+        finite(self.mood_valence_latent, 'mood_valence_latent', -1e9, 1e9)
+        finite(self.mood_arousal_latent, 'mood_arousal_latent', 0, 1e9)
+        finite(self.effort_load, 'effort_load', 0, 1)
+        if len(self.situational_goals)>32 or len(self.concerns)>128:
+            raise ValueError('Working goals/concerns exceed their bounds')
+        if len(self.episodes)>128 or len(self.residues)>11:
+            raise ValueError('Working affect capacity exceeded')
+        for goal in self.situational_goals:
+            finite(goal['priority'],'goal priority',0,1)
 
 
 @dataclass(frozen=True)
@@ -286,6 +326,12 @@ class ExpressionPlan:
 
     def instruction(self) -> str:
         """A projection used by the generator; it never changes numerical state."""
+        warmth = ('Use restrained, respectful warmth.' if self.warmth<.4 else 'Use a friendly, attentive manner.' if self.warmth<.7 else 'Express care naturally, without claiming intimacy.')
+        directness = ('Be concise and concrete.' if self.directness>=.6 else 'Allow a little reflective explanation.')
+        play = ('Avoid jokes in this reply.' if self.playfulness<.2 else 'Light humour is welcome when relevant.')
+        disclosure = ('Keep personal emotional disclosure minimal.' if self.disclosure<.15 else 'A brief cause-related feeling may be expressed without demanding reassurance.')
         return (f'Tone: {self.tone}. Regulation: {self.regulation}. Voice: {self.tts_style}. '
+                + warmth+' '+directness+' '+play+' '+disclosure+' '
                 + ('Ask briefly before attributing a hostile intention. ' if self.uncertain_intent else '')
+                + ('Ask for the missing information needed to carry out this request. ' if self.regulation=='clarify' and not self.uncertain_intent else '')
                 + 'Keep the reply relevant. Do not describe internal scores or demand attention.')

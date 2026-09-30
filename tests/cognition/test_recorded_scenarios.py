@@ -23,8 +23,10 @@ class RecordedScenarioTests(unittest.TestCase):
                     p = Perception.from_dict(json.loads((ROOT/'tests/fixtures/perceptions'/split/'uncertainty_v2'/f"{case['id']}.json").read_text(encoding='utf-8')))
                     ev = CognitiveEvent(case['id'],ContextKey('arti',10),EvidenceRef(case['id'],case['id'],Origin.USER,1),at,at,case['text'],1)
                     state = appraise(initial_state(ev.context,at),ev,p)
-                    for key,value in affect(state).items():
-                        self.assertAlmostEqual(value,results[case['id']]['affect'][key],places=12)
+                    # Historical reports cover the four original affect axes.
+                    # New resource/circadian observables have separate scenarios.
+                    for key,value in results[case['id']]['affect'].items():
+                        self.assertAlmostEqual(value,affect(state)[key],places=12)
                     self.assertEqual(expression(state).tone,results[case['id']]['expression']['tone'])
 
     def test_heldout_failures_remain_in_the_evaluation_record(self):
@@ -34,3 +36,19 @@ class RecordedScenarioTests(unittest.TestCase):
         self.assertEqual(report['criteria_passed'],6)
         self.assertEqual({r['id'] for r in report['cases'] if not r['criteria_passed']},
                          {'heldout_ambiguous','heldout_boundary'})
+
+    def test_frozen_final_rich_results_replay_and_previous_failures_are_preserved(self):
+        from tools.evaluate_full_cognition import FINAL_HELD_OUT
+        report = json.loads((ROOT/'docs/evaluation/full_final_held_out_frozen_final_v4_live.json').read_text(encoding='utf-8'))
+        rows = {r['id']:r for r in report['results']}
+        at = datetime(2026,9,30,12,tzinfo=timezone.utc)
+        for name,text,_,_ in FINAL_HELD_OUT:
+            with self.subTest(case=name):
+                source = 'synthetic:'+name
+                ev = CognitiveEvent(source,ContextKey('arti',1),EvidenceRef(source,source,Origin.USER,1),at,at,text,1)
+                p = Perception.from_dict(json.loads((ROOT/'tests/fixtures/full_perceptions/frozen_final_v4/final_held_out'/f'{name}.json').read_text(encoding='utf-8')))
+                state = appraise(initial_state(ev.context,at),ev,p)
+                self.assertAlmostEqual(sum(e.intensity for e in state.episodes),rows[name]['impulse'],places=12)
+                self.assertEqual(expression(state).instruction(),rows[name]['expression'])
+        previous = json.loads((ROOT/'docs/evaluation/full_held_out_frozen_full_v3_live.json').read_text(encoding='utf-8'))
+        self.assertEqual((previous['passed'],previous['total']),(14,16))

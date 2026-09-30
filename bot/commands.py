@@ -419,6 +419,9 @@ async def clear_context(update, context):
 
     # Очищаем историю в БД
     await ChatHistory.clear(chat_id)
+    from cognition.runtime import get_runtime
+    if get_runtime() and rp_mode_state.get(chat_id):
+        await get_runtime().new_scene(chat_id)
     logger.info(f"Контекст чата {chat_id} успешно очищен.")
     
     if await is_responses_enabled(chat_id):
@@ -585,6 +588,9 @@ async def handle_rp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     rp_mode_state[chat_id] = True
+    from cognition.runtime import get_runtime
+    if get_runtime():
+        await get_runtime().new_scene(chat_id)
     logger.info(f"RP-режим включен для чата {chat_id}")
     await update.message.reply_text(
         "<i>включает режим погружения...</i>\n\n"
@@ -3627,6 +3633,13 @@ async def handle_my_profile_command(update: Update, context: ContextTypes.DEFAUL
         return
         
     mode = "rp" if rp_mode_state.get(chat_id) else "default"
+    from cognition.runtime import get_runtime
+    from cognition.diagnostics import active_context,profile_text
+    runtime = get_runtime()
+    cid = await active_context(runtime,chat_id,mode) if runtime else None
+    if cid is not None:
+        await update.message.reply_text(await profile_text(runtime,cid,user_id),parse_mode='HTML')
+        return
     
     # 1. Загрузка профиля
     profile = await MemoryUserProfile.get(chat_id, user_id, mode)
@@ -3726,6 +3739,17 @@ async def profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     mode = "rp" if rp_mode_state.get(chat_id) else "default"
+    from cognition.runtime import get_runtime
+    from cognition.diagnostics import active_context,profile_text
+    runtime = get_runtime()
+    cid = await active_context(runtime,chat_id,mode) if runtime else None
+    if cid is not None:
+        text = await profile_text(runtime,cid,target_user_id)
+        if query.message.photo:
+            await query.edit_message_caption(caption=text[:950],parse_mode='HTML',reply_markup=None)
+        else:
+            await query.edit_message_text(text=text,parse_mode='HTML',reply_markup=None)
+        return
     
     profile = await MemoryUserProfile.get(chat_id, target_user_id, mode)
     if not profile:
@@ -3793,6 +3817,36 @@ async def handle_forget_command(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     mode = "rp" if rp_mode_state.get(chat_id) else "default"
+    from cognition.runtime import get_runtime
+    runtime = get_runtime()
+    from cognition.diagnostics import active_context
+    active_cid = await active_context(runtime,chat_id,mode) if runtime else None
+    if runtime and active_cid is not None:
+        ctx = await runtime.context(chat_id,mode)
+        async with runtime.pool.acquire() as conn:
+            rows = await conn.fetch('''SELECT e.id,e.context_id,e.payload FROM cognitive_events e JOIN cognitive_contexts c ON c.id=e.context_id
+                WHERE c.persona_id=$1 AND c.chat_id=$2 AND c.mode=$3 AND c.scene_id=$4
+                AND e.owner_id=$5 AND e.origin='user' AND e.suppressed_at IS NULL
+                AND (e.payload->>'text' ILIKE '%' || $6 || '%'
+                    OR to_tsvector('russian',e.payload->>'text') @@ websearch_to_tsquery('russian',$6))
+                ORDER BY e.id DESC LIMIT 2000''',*ctx.identity(),user_id,topic)
+        if rows:
+            keyboard,lines = [],[]
+            for i,row in enumerate(rows[:5],1):
+                from cognition.serialization import object_value
+                text = object_value(row['payload'])['text']
+                lines.append(f'{i}. {_html.escape(text[:160])}')
+                keyboard.append([InlineKeyboardButton(f'Стереть {i}',callback_data=f"forget_source:{row['context_id']}:{row['id']}:{user_id}")])
+            if len(rows)>1:
+                import secrets,time
+                nonce = secrets.token_hex(8)
+                selections = context.user_data.setdefault('forget_selections',{})
+                selections.clear()
+                selections[nonce] = dict(cid=rows[0]['context_id'],chat_id=chat_id,owner=user_id,ids=[r['id'] for r in rows],expires=time.time()+600)
+                keyboard.append([InlineKeyboardButton(f'Стереть все найденные источники ({len(rows)})',callback_data=f'forget_set:{nonce}:{user_id}')])
+                lines.append(f'Найдено источников: {len(rows)}. Показаны первые {min(5,len(rows))}.')
+            await update.message.reply_text('\n'.join(lines),reply_markup=InlineKeyboardMarkup(keyboard),parse_mode='HTML')
+            return
     
     # Ищем подходящие воспоминания (лимит 5). Показываем только факты этого
     # пользователя или общие факты чата (user_id IS NULL) — чтобы участник группы
@@ -3835,6 +3889,26 @@ async def handle_forget_command(update: Update, context: ContextTypes.DEFAULT_TY
     )
 
 
+async def handle_memory_archive_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from cognition.runtime import get_runtime
+    from cognition.diagnostics import active_context
+    if not await is_responses_enabled(update.effective_chat.id):
+        return
+    runtime = get_runtime()
+    mode = 'rp' if rp_mode_state.get(update.effective_chat.id) else 'default'
+    cid = await active_context(runtime,update.effective_chat.id,mode) if runtime else None
+    query = ' '.join(context.args or []).strip()
+    if cid is None or not query:
+        await update.message.reply_text('Для проверки исходных записей укажи тему: /memory_archive тема')
+        return
+    rows = await runtime.memory.retrieve(cid,update.effective_user.id,query,runtime.clock(),'archive:'+str(update.message.message_id),archive=True,limit=3)
+    if not rows:
+        await update.message.reply_text('Доступных исходных записей по этой теме нет.')
+        return
+    text = '\n\n'.join(r['source_id']+'\n'+r['details'][0]['text'] for r in rows)
+    await update.message.reply_text(text[:3900])
+
+
 async def forget_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка клика по кнопке Стереть в интерактивном /forget"""
     query = update.callback_query
@@ -3842,7 +3916,7 @@ async def forget_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     data = query.data or ""
-    if not data.startswith("forget_fact:"):
+    if not data.startswith(("forget_fact:","forget_source:","forget_set:")):
         await query.answer()
         return
 
@@ -3850,6 +3924,56 @@ async def forget_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id if query.from_user else None
     if chat_id is None or user_id is None:
         await query.answer()
+        return
+
+    if data.startswith('forget_set:'):
+        import time
+        from cognition.runtime import get_runtime
+        try:
+            _,nonce,owner = data.split(':')
+            owner = int(owner)
+        except (ValueError,TypeError):
+            await query.answer('Некорректный выбор.',show_alert=True)
+            return
+        selected = context.user_data.get('forget_selections',{}).get(nonce)
+        runtime = get_runtime()
+        if not runtime or not selected or owner!=user_id or selected['owner']!=user_id or selected['chat_id']!=chat_id or selected['expires']<time.time():
+            await query.answer('Выбор недоступен. Повтори поиск.',show_alert=True)
+            return
+        async with runtime.pool.acquire() as conn:
+            sources = await conn.fetchval('''SELECT ARRAY_AGG(e.source_id) FROM cognitive_events e JOIN cognitive_contexts c ON c.id=e.context_id
+                WHERE e.context_id=$1 AND e.id=ANY($2::bigint[]) AND e.owner_id=$3 AND c.chat_id=$4 AND e.suppressed_at IS NULL''',
+                selected['cid'],selected['ids'],user_id,chat_id) or []
+        from cognition.forgetting import forget_cognitive_sources
+        result = await forget_cognitive_sources(runtime.pool,selected['cid'],user_id,sources)
+        context.user_data['forget_selections'].pop(nonce,None)
+        await query.answer('Источники удалены.')
+        await query.edit_message_text(f"Удалено источников и зависимых действий: {result['events']}. Память пересобрана.")
+        return
+
+    if data.startswith('forget_source:'):
+        try:
+            _,cid,eid,owner = data.split(':')
+            cid,eid,owner = int(cid),int(eid),int(owner)
+        except (ValueError,TypeError):
+            await query.answer('Некорректный источник.',show_alert=True)
+            return
+        from cognition.runtime import get_runtime
+        runtime = get_runtime()
+        if not runtime or owner!=user_id:
+            await query.answer('Это не твой источник.',show_alert=True)
+            return
+        async with runtime.pool.acquire() as conn:
+            row = await conn.fetchrow('''SELECT e.source_id FROM cognitive_events e JOIN cognitive_contexts c ON c.id=e.context_id
+                WHERE e.id=$1 AND e.context_id=$2 AND c.chat_id=$3 AND e.owner_id=$4 AND e.suppressed_at IS NULL''',eid,cid,chat_id,user_id)
+        if not row:
+            await query.answer('Источник уже удалён или недоступен.',show_alert=True)
+            return
+        from cognition.forgetting import forget_cognitive_sources,invalidate_chat_caches
+        await forget_cognitive_sources(runtime.pool,cid,user_id,[row['source_id']])
+        invalidate_chat_caches(chat_id)
+        await query.answer('Источник и зависимые воспоминания удалены.')
+        await query.edit_message_text('Источник удалён; связанные состояния пересчитаны.')
         return
 
     parts = data.split(":")
@@ -3875,12 +3999,9 @@ async def forget_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Серверная проверка владения: архивируем факт, только если он принадлежит
     # этому чату и этому пользователю (или это общий факт чата). Закрывает IDOR —
     # подделанный callback_data с чужим fact_id не сработает.
-    archived = await MemoryFact.archive_for_user(
-        fact_id=fact_id,
-        chat_id=chat_id,
-        user_id=user_id,
-        reason="user_request_interactive",
-    )
+    from database import connection
+    from cognition.forgetting import forget_legacy_fact
+    archived = await forget_legacy_fact(connection._pool,chat_id,user_id,fact_id)
     if not archived:
         await query.answer("⚠️ Это воспоминание тебе не принадлежит или уже стёрто.", show_alert=True)
         return
@@ -3921,6 +4042,13 @@ async def handle_charge_command(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     mode = "rp" if rp_mode_state.get(chat_id) else "default"
+    from cognition.runtime import get_runtime
+    from cognition.diagnostics import active_context,state_text
+    runtime = get_runtime()
+    cid = await active_context(runtime,chat_id,mode) if runtime else None
+    if cid is not None:
+        await update.message.reply_text(await state_text(runtime,cid,user_id),parse_mode='HTML')
+        return
     
     # Получаем или создаем эмоциональное состояние чата
     state = await ChatEmotionalState.get_or_create(chat_id)

@@ -8,6 +8,7 @@ from google.genai import types
 
 from config import MEMORY_TIMELINE_MIN_MESSAGES, genai_client
 from database.models import MemoryTimeline
+from database.connection import get_db
 from memory.normalizer import compact_text, keyword_query
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,8 @@ def _normalize_events(payload: Dict[str, Any], allowed_ids: set[int]) -> List[Di
         topics = [compact_text(str(topic), 60) for topic in (item.get("topics") or [])[:12] if str(topic).strip()]
         source_ids = []
         for source_id in item.get("source_message_ids") or []:
+            if type(source_id) not in (int,str):
+                continue
             try:
                 source_id = int(source_id)
             except (TypeError, ValueError):
@@ -97,7 +100,11 @@ async def build_timeline_events(
     limit: int = 200,
     dry_run: bool = True,
 ) -> Dict[str, Any]:
-    after_id = await MemoryTimeline.latest_source_message_id(chat_id=chat_id, mode=mode)
+    async with get_db() as conn:
+        await conn.execute('''CREATE TABLE IF NOT EXISTS memory_processing_checkpoints (
+            chat_id BIGINT NOT NULL,mode TEXT NOT NULL,phase TEXT NOT NULL,last_id BIGINT NOT NULL DEFAULT 0,
+            PRIMARY KEY(chat_id,mode,phase))''')
+        after_id = await conn.fetchval("SELECT last_id FROM memory_processing_checkpoints WHERE chat_id=$1 AND mode=$2 AND phase='timeline'",chat_id,mode) or 0
     messages = await MemoryTimeline.fetch_messages_for_period(chat_id=chat_id, mode=mode, after_id=after_id, limit=limit)
     if len(messages) < MEMORY_TIMELINE_MIN_MESSAGES:
         return {
@@ -142,6 +149,8 @@ async def build_timeline_events(
     )
 
     payload = _parse_json(response.text if response and response.text else "")
+    if not isinstance(payload,dict) or not isinstance(payload.get('events'),list):
+        raise ValueError('Invalid timeline response; processed checkpoint was not advanced')
     events = _normalize_events(payload, allowed_ids)
     report = {
         "status": "dry_run" if dry_run else "applied",
@@ -157,25 +166,24 @@ async def build_timeline_events(
 
     created_ids = []
     message_by_id = {int(message["id"]): message for message in messages if message.get("id")}
-    for event in events:
-        source_messages = [message_by_id[source_id] for source_id in event["source_message_ids"] if source_id in message_by_id]
-        period_start = source_messages[0].get("created_at") if source_messages else None
-        period_end = source_messages[-1].get("created_at") if source_messages else None
-        user_id = source_messages[-1].get("user_id") if source_messages else None
-        timeline_id = await MemoryTimeline.create(
-            chat_id=chat_id,
-            user_id=user_id,
-            mode=mode,
-            period_start=period_start,
-            period_end=period_end,
-            title=event["title"],
-            summary=event["summary"],
-            topics=event["topics"],
-            source_message_ids=event["source_message_ids"],
-            metadata={"kind": "timeline_event"},
-        )
-        if timeline_id:
+    async with get_db() as conn,conn.transaction():
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",f'timeline:{chat_id}:{mode}')
+        current = await conn.fetchval("SELECT last_id FROM memory_processing_checkpoints WHERE chat_id=$1 AND mode=$2 AND phase='timeline'",chat_id,mode) or 0
+        remaining = await conn.fetchval('SELECT COUNT(*) FROM memory_messages WHERE chat_id=$1 AND mode=$2 AND id=ANY($3::bigint[])',chat_id,mode,sorted(allowed_ids))
+        if current!=after_id or remaining!=len(allowed_ids):
+            return {**report,'status':'stale','created_ids':[]}
+        for event in events:
+            source_messages = [message_by_id[s] for s in event['source_message_ids']]
+            owners = {m.get('user_id') for m in source_messages}
+            if len(owners)>1:
+                continue
+            timeline_id = await conn.fetchval('''INSERT INTO memory_timelines(chat_id,user_id,mode,period_start,period_end,title,summary,topics,source_message_ids,metadata)
+                VALUES($1,$2,$3,$4,$5,$6,$7,$8::text[],$9::bigint[],'{"kind":"timeline_event"}'::jsonb) RETURNING id''',
+                chat_id,next(iter(owners)),mode,source_messages[0]['created_at'],source_messages[-1]['created_at'],
+                event['title'],event['summary'],event['topics'],event['source_message_ids'])
             created_ids.append(timeline_id)
+        await conn.execute("""INSERT INTO memory_processing_checkpoints(chat_id,mode,phase,last_id) VALUES($1,$2,'timeline',$3)
+            ON CONFLICT(chat_id,mode,phase) DO UPDATE SET last_id=EXCLUDED.last_id""",chat_id,mode,max(allowed_ids))
     report["created_ids"] = created_ids
     return report
 

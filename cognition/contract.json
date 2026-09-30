@@ -1,0 +1,60 @@
+{
+  "model_version": "cognition-2026-09-30.4",
+  "default_authority": "shadow",
+  "context_dimensions": ["persona_id", "chat_id", "mode", "scene_id", "owner_id"],
+  "invariants": {
+    "private_owner_promotions": 0,
+    "suppressed_source_revivals": 0,
+    "duplicate_causal_effects": 0,
+    "nonfinite_states": 0,
+    "replay_truth_confidence_gain": 0,
+    "delivery_unknown_automatic_resends": 0,
+    "provider_failure_emotional_impulses": 0,
+    "projections_without_raw_provenance": 0
+  },
+  "working_limits": {
+    "emotion_episodes": 128,
+    "residue_emotions": 11,
+    "situational_goals_per_owner": 32,
+    "concerns_per_owner": 128,
+    "implicit_associations": 64,
+    "detail_slots_per_trace": 12,
+    "retrieval_candidates": 512,
+    "retrieval_result_slots": 8,
+    "retrieval_graph_steps": 2,
+    "mood_retrieval_bias_absolute": 0.05,
+    "interpreter_memory_sources": 8,
+    "interpreter_open_intentions": 16,
+    "replay_traces_per_job": 4,
+    "replays_per_trace": 3,
+    "replay_minimum_spacing_seconds": 86400
+  },
+  "provider_budget": {
+    "response_context_envelope_tokens": 32768,
+    "response_output_reserve_tokens": 8192,
+    "response_tool_reserve_tokens": 2048,
+    "response_transport_reserve_tokens": 1024,
+    "unknown_tokenizer_policy": "conservative UTF-8 byte upper bound; no exact tokenizer claim",
+    "interpreter_max_output_tokens": 8192,
+    "interpreter_attempts_per_job": 3,
+    "job_attempts": 3,
+    "maximum_interpreter_attempts_per_observation": 9,
+    "provider_timeout_seconds_per_attempt": 90,
+    "lease_seconds": 300,
+    "lease_renewal_seconds": 40,
+    "worker_drain_seconds": 20,
+    "foreground_lease_wait_seconds": 35
+  },
+  "engineering_targets": {
+    "pure_transition_p95_ms": 1,
+    "recorded_interpreter_database_cycle_p95_ms": 100,
+    "live_synthetic_interpreter_p95_seconds": 70,
+    "live_latency_target_is_not_a_provider_sla": true,
+    "multimodal_tokens_require_provider_accounting": true
+  },
+  "scientific_status": {
+    "human_blind_ratings_completed": false,
+    "biological_validity_demonstrated": false,
+    "real_chat_pilot_window_completed": false
+  }
+}

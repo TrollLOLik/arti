@@ -181,6 +181,15 @@ def _track_task(task: asyncio.Task):
     task.add_done_callback(_on_task_done)
 
 
+async def drain_background_tasks(timeout=20):
+    tasks = {t for t in _active_tasks | set(_user_workers.values()) if not t.done()}
+    if tasks:
+        _,pending = await asyncio.wait(tasks,timeout=timeout)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending,return_exceptions=True)
+
+
 def _on_task_done(task: asyncio.Task):
     """Callback при завершении таска: очистка из set + логирование ошибок."""
     _active_tasks.discard(task)
@@ -235,6 +244,8 @@ async def _extract_photo_urls(update, context) -> list:
 
 
 async def _execute_generation_task(task: dict):
+    from cognition.runtime import CURRENT_TURN
+    CURRENT_TURN.set(task.get('_cognitive_turn'))
     chat_id = task['chat_id']
     task_type = task['type']
     prompt = task.get('prompt', '')
@@ -493,6 +504,10 @@ async def _execute_generation_task(task: dict):
                 action_task.cancel()
 
     except Exception as e:
+        from cognition.delivery import DeliveryUnknown,DeliverySuppressed
+        if isinstance(e,(DeliveryUnknown,DeliverySuppressed)):
+            logger.warning('Transport outcome prevents a second send: %s',type(e).__name__)
+            return
         logger.exception(f"Критическая ошибка в медиа-воркере ({task_type}):")
         try:
             if await is_responses_enabled(chat_id):
@@ -566,6 +581,8 @@ async def music_worker():
 
 
 async def enqueue_generation(task: dict, bot, chat_id):
+    from cognition.runtime import CURRENT_TURN
+    task['_cognitive_turn'] = CURRENT_TURN.get()
     """Добавляет медиа-задачу в очередь СВОЕГО типа и сообщает позицию (REL-01)."""
     task.setdefault('enqueued_at', time.monotonic())  # REL-03: метка для /cancel
     task_type = task.get('type')
@@ -585,6 +602,21 @@ async def enqueue_generation(task: dict, bot, chat_id):
 
 
 async def enqueue_reply(chat_id, user_id, user_name, user_message, message_id, context, is_voice=True, base64_image=None, document_text=None, video_file_id=None, is_video_note=False):
+    from cognition.runtime import get_runtime
+    runtime = get_runtime()
+    source_context = None
+    if runtime and runtime.mode!='legacy' and user_id and message_id is not None:
+        _,_,source_event = await runtime.ingest(chat_id,user_id,user_message,message_id,'rp' if rp_mode_state.get(chat_id) else 'default')
+        source_context = source_event.context
+    elif runtime and runtime.mode!='legacy' and message_id is not None:
+        # Auto replies reuse the original observed participant and scene.
+        from cognition.serialization import load_event
+        async with runtime.pool.acquire() as conn:
+            stored = await conn.fetchval('''SELECT e.payload FROM cognitive_events e JOIN cognitive_contexts c ON c.id=e.context_id
+                WHERE c.chat_id=$1 AND e.event_key=$2 AND e.suppressed_at IS NULL ORDER BY e.id DESC LIMIT 1''',
+                chat_id,f'telegram:{chat_id}:{message_id}:user')
+        if stored:
+            source_context = load_event(stored).context
     """Добавляет текстовый запрос в per-user очередь (параллельно между пользователями, FIFO внутри)."""
     request = {
         'type': 'text',
@@ -600,6 +632,7 @@ async def enqueue_reply(chat_id, user_id, user_name, user_message, message_id, c
         'video_file_id': video_file_id,
         'is_video_note': is_video_note
     }
+    request['_cognitive_context'] = source_context
     
     # RACE-02: постановку в очередь и (пере)запуск воркера делаем под per-user локом,
     # чтобы это не пересекалось с самозавершением воркера (которое тоже под этим локом).
@@ -624,12 +657,13 @@ async def _user_text_worker(user_id: int):
     queue = _user_queues.get(user_id)
     if not queue:
         return
+    carry = None
 
     while True:
         # RACE-02: самозавершение строго под локом. Если очередь пуста — снимаем
         # воркер атомарно с продюсером (enqueue_reply держит тот же лок), иначе
         # сообщение, пришедшее между проверкой и снятием, потерялось бы.
-        if queue.empty():
+        if queue.empty() and carry is None:
             async with _get_user_lock(user_id):
                 if queue.empty():
                     _user_queues.pop(user_id, None)
@@ -638,7 +672,8 @@ async def _user_text_worker(user_id: int):
                     return
                 # Иначе: сообщение успело прийти — продолжаем обработку.
 
-        request = await queue.get()
+        request = carry if carry is not None else await queue.get()
+        carry = None
         
         # Rolling debounce: ждём до _DEBOUNCE_WINDOW_SEC, каждое новое сообщение сбрасывает таймер
         extra_images = []
@@ -646,6 +681,9 @@ async def _user_text_worker(user_id: int):
         while True:
             try:
                 extra = await asyncio.wait_for(queue.get(), timeout=_DEBOUNCE_WINDOW_SEC)
+                if extra['chat_id']!=request['chat_id'] or extra.get('_cognitive_context')!=request.get('_cognitive_context'):
+                    carry = extra
+                    break
                 extra_msg = extra.get('user_message', '')
                 if extra_msg:
                     request['user_message'] = request.get('user_message', '') + '\n' + extra_msg
@@ -697,6 +735,11 @@ async def _user_text_worker(user_id: int):
                     sub_task.cancel()
                     raise
             except Exception as e:
+                from cognition.delivery import DeliveryUnknown,DeliverySuppressed
+                from cognition.repositories import SuppressedEvidence
+                if isinstance(e,(DeliveryUnknown,DeliverySuppressed,SuppressedEvidence)):
+                    logger.warning('Transport outcome prevents fallback: %s',type(e).__name__)
+                    continue
                 logger.error(f"Ошибка при обработке текста для user {user_id}: {e}", exc_info=True)
                 try:
                     if await is_responses_enabled(chat_id):
@@ -850,6 +893,13 @@ async def process_user_reply(request, bot):
     # такому «пользователю» профиль/близость/факты — нормализуем 0 → None, тогда
     # профильные/аффективные методы корректно пропускают его.
     profile_user_id = user_id or None
+    if profile_user_id is None:
+        from cognition.runtime import get_runtime
+        runtime = get_runtime()
+        if runtime and runtime.mode!='legacy' and message_id is not None:
+            async with runtime.pool.acquire() as conn:
+                profile_user_id = await conn.fetchval('''SELECT e.owner_id FROM cognitive_events e JOIN cognitive_contexts c ON c.id=e.context_id
+                    WHERE c.chat_id=$1 AND e.event_key=$2 AND e.suppressed_at IS NULL ORDER BY e.id DESC LIMIT 1''',chat_id,f'telegram:{chat_id}:{message_id}:user')
 
     # Защита от инъекций: вырезаем служебный тег интроспекции из ЛЮБОГО ввода юзера
     # (текст сообщения И содержимое документа), чтобы он не утёк в промпт и не был отражён
@@ -866,6 +916,13 @@ async def process_user_reply(request, bot):
     
     closeness = 0.1
     mode = "rp" if rp_mode_state.get(chat_id) else "default"
+    from cognition.runtime import prepare_turn
+    cognitive_turn = await prepare_turn(chat_id,profile_user_id,user_message,message_id,mode,source_context=request.get('_cognitive_context'))
+    if cognitive_turn is not None and cognitive_turn.active and cognitive_turn.repeated_delivery:
+        return
+    if cognitive_turn is not None and cognitive_turn.active:
+        if cognitive_turn.preferences.get('voice') is False or cognitive_turn.preferences.get('text') is True:
+            is_voice = False
     user_profile = await MemoryUserProfile.get(chat_id, profile_user_id, mode) if profile_user_id else None
     if user_profile and user_profile.get("profile_json"):
         prof_json = json.loads(user_profile["profile_json"]) if isinstance(user_profile["profile_json"], str) else user_profile["profile_json"]
@@ -875,10 +932,11 @@ async def process_user_reply(request, bot):
     # apply_turn_sentiment пост-генерации, отдав приоритет интроспекции самой LLM, а словарь
     # оставив как fail-closed фолбэк. Распад/заряд/циркадная база считаются как раньше.
     emotion_source_key = f"message:{mode}:{message_id}" if message_id is not None else None
-    updated_state = await ChatEmotionalState.update_state(chat_id, user_message, closeness, user_id=profile_user_id, defer_sentiment=True, source_key=emotion_source_key)
+    updated_state = ({'user_tz':None} if cognitive_turn is not None and cognitive_turn.active else
+                     await ChatEmotionalState.update_state(chat_id, user_message, closeness, user_id=profile_user_id, defer_sentiment=True, source_key=emotion_source_key))
     # Рост близости от ОБЫЧНОГО общения (+ бонус за ответ на проактивный пуш),
     # а не только от эмодзи-реакций — иначе closeness почти никогда не растёт.
-    if not updated_state.get("repeated_input"):
+    if (cognitive_turn is None or not cognitive_turn.active) and not updated_state.get("repeated_input"):
         await MemoryUserProfile.grow_closeness(
             chat_id, profile_user_id, mode,
             proactive_reply=updated_state.get("was_proactive_reply", False),
@@ -886,7 +944,8 @@ async def process_user_reply(request, bot):
     user_tz = updated_state.get("user_tz")
     # Экстрактор событий: если tz ещё не определён, берём фолбэк (UTC) —
     # абсолютные даты резолвятся корректно, иначе раннее событие потерялось бы.
-    asyncio.create_task(extract_and_save_events_task(chat_id, user_message, user_tz if user_tz is not None else 0))
+    if cognitive_turn is None or not cognitive_turn.active:
+        asyncio.create_task(extract_and_save_events_task(chat_id, user_message, user_tz if user_tz is not None else 0))
 
     action_type = 'record_audio' if is_voice else 'typing'
     repeating_task = asyncio.create_task(
@@ -1012,7 +1071,7 @@ async def process_user_reply(request, bot):
         else:
             chat_context = await get_chat_context(chat_id)
 
-        memory_context = await build_memory_context(
+        memory_context = cognitive_turn.memory if cognitive_turn is not None and cognitive_turn.active else await build_memory_context(
             chat_id=chat_id,
             user_id=user_id,
             user_message=user_message,
@@ -1055,6 +1114,7 @@ async def process_user_reply(request, bot):
             enable_introspection=True,
             emotional_state=updated_state,
             memory_context=memory_context,
+            expression_plan=cognitive_turn.expression if cognitive_turn is not None and cognitive_turn.active else None,
         )
         
         if uploaded_video_file:
@@ -1086,11 +1146,15 @@ async def process_user_reply(request, bot):
         # Парсим тег ТОЛЬКО из сгенерированного текста Арти (инъекции из ввода юзера сюда не попадают).
         # apply_turn_sentiment: при валидном теге применяет дельты LLM, иначе fail-closed фолбэк на словарь.
         from database.models import strip_introspection_tags
-        introspection_sticker = None if generation_failed else await ChatEmotionalState.apply_turn_sentiment(
+        introspection_sticker = None if generation_failed or (cognitive_turn is not None and cognitive_turn.active) else await ChatEmotionalState.apply_turn_sentiment(
             chat_id, response_text, updated_state.get("keyword_mood_delta"), source_key=emotion_source_key
         )
         if not sticker_mood and introspection_sticker:
             sticker_mood = introspection_sticker
+        if cognitive_turn is not None and cognitive_turn.active:
+            sticker_mood = None if generation_failed else cognitive_turn.expression.sticker_mood
+            if cognitive_turn.expression.tts_style:
+                response_text = '[' + cognitive_turn.expression.tts_style + '] ' + response_text
         # Вырезаем служебный тег интроспекции до любой отправки/редактирования
         response_text = strip_introspection_tags(response_text)
 
@@ -1100,7 +1164,7 @@ async def process_user_reply(request, bot):
 
         # Извлекаем и сохраняем техническое описание для истории (если есть)
         history_match = re.search(r'<HISTORY>(.*?)</HISTORY>', response_text, re.DOTALL | re.IGNORECASE)
-        if history_match:
+        if history_match and (cognitive_turn is None or not cognitive_turn.active):
             memory_text = history_match.group(1).strip()
             # Сохраняем "память" в историю чата
             if rp_mode_state.get(chat_id):
@@ -1108,6 +1172,8 @@ async def process_user_reply(request, bot):
             else:
                 await save_chat_message(chat_id, "Память", memory_text)
             # Вырезаем тег из основного текста
+            response_text = re.sub(r'<HISTORY>.*?</HISTORY>', '', response_text, flags=re.DOTALL | re.IGNORECASE).strip()
+        elif history_match:
             response_text = re.sub(r'<HISTORY>.*?</HISTORY>', '', response_text, flags=re.DOTALL | re.IGNORECASE).strip()
 
         # Ищем и извлекаем медиа-теги
@@ -1168,7 +1234,7 @@ async def process_user_reply(request, bot):
             history_response_text = f"[Стикер: {sticker_mood}]"
 
         # MEM-06: ответ-заглушку об ошибке не пишем в историю.
-        if not generation_failed:
+        if not generation_failed and (cognitive_turn is None or not cognitive_turn.active):
             if rp_mode_state.get(chat_id):
                 await save_chat_message_rp(chat_id, "Арти", history_response_text)
             else:
@@ -1253,7 +1319,7 @@ async def process_user_reply(request, bot):
             )
 
         # MEM-06: не учим долговременную память на заглушке об ошибке.
-        if not generation_failed:
+        if not generation_failed and (cognitive_turn is None or not cognitive_turn.active):
             memory_task = asyncio.create_task(
                 remember_exchange(
                     chat_id=chat_id,
@@ -2135,6 +2201,7 @@ async def proactive_scheduler_worker(bot):
                            EXTRACT(EPOCH FROM (NOW() - last_activity_time))::float8 / 3600.0 AS silence_hours
                     FROM chat_emotional_states
                     WHERE conversation_stage = 'active'
+                      AND NOT EXISTS(SELECT 1 FROM cognitive_contexts c WHERE c.chat_id=chat_emotional_states.chat_id AND c.authority='active')
                       AND last_activity_time < NOW() - INTERVAL '18 hours'
                       AND (last_proactive_push_time IS NULL OR last_proactive_push_time < NOW() - INTERVAL '18 hours')
                 """)

@@ -1,0 +1,10 @@
+{
+  "scope": "synthetic test harness preflight, before the completed dialogue run",
+  "failures": [
+    {"category": "concurrent_schema_ddl_deadlock", "fix": "versioned migration checksums prevent repeated DDL during restart"},
+    {"category": "nested_dataclass_fixture_serialization", "fix": "serialize typed event and perception separately; keep tasks owned until completion"},
+    {"category": "component_rating_returned_scalar", "fix": "explicit nested score schema, bounded validation retries, incremental packet and call accounting"}
+  ],
+  "aborted_provider_attempts_accounting_complete": false,
+  "note": "Some in-flight requests were cancelled after the harness exception. Completed final-run metrics do not include these attempts. No private history or real transport was used."
+}

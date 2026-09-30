@@ -92,28 +92,52 @@ def run_with_restart():
                 try:
                     from database.connection import init_db
                     await init_db()
+                    from database import connection
+                    from cognition.runtime import start_runtime
+                    await start_runtime(connection._pool)
                     logger.info("База данных инициализирована")
                 except Exception as e:
                     logger.error(f"Ошибка при инициализации БД: {e}", exc_info=True)
-                    logger.warning("Продолжаем работу без БД")
+                    raise
+
+                def spawn_worker(coro):
+                    task = asyncio.create_task(coro)
+                    app.bot_data.setdefault('owned_workers',[]).append(task)
+                    return task
 
                 # L-03: воркеры под супервизором — упавший автоматически перезапустится.
                 # REL-01: раздельные воркеры по типам медиа (image/video/music).
-                app.create_task(run_supervised(image_worker, "image_worker"))
-                app.create_task(run_supervised(video_worker, "video_worker"))
-                app.create_task(run_supervised(music_worker, "music_worker"))
+                spawn_worker(run_supervised(image_worker, "image_worker"))
+                spawn_worker(run_supervised(video_worker, "video_worker"))
+                spawn_worker(run_supervised(music_worker, "music_worker"))
                 logger.info("Медиа-воркеры (image/video/music) запущены (supervised).")
-                app.create_task(run_supervised(dubbing_worker, "dubbing_worker"))
+                spawn_worker(run_supervised(dubbing_worker, "dubbing_worker"))
                 logger.info("Воркер дубляжа видео запущен (supervised).")
-                app.create_task(run_supervised(vclone_worker, "vclone_worker"))
+                spawn_worker(run_supervised(vclone_worker, "vclone_worker"))
                 logger.info("Воркер vclone запущен (supervised).")
-                app.create_task(run_supervised(vclone_fsm_timeout_watchdog, "vclone_fsm_watchdog", app.bot))
+                spawn_worker(run_supervised(vclone_fsm_timeout_watchdog, "vclone_fsm_watchdog", app.bot))
                 logger.info("Watchdog vclone FSM запущен (supervised).")
-                app.create_task(run_supervised(proactive_scheduler_worker, "proactive_scheduler", app.bot))
+                spawn_worker(run_supervised(proactive_scheduler_worker, "proactive_scheduler", app.bot))
+                from cognition.runtime import get_runtime
+                from cognition.intentions import intention_scheduler
+                spawn_worker(run_supervised(intention_scheduler,'cognitive_intentions',get_runtime(),app.bot))
                 logger.info("Проактивный воркер шедулера запущен (supervised).")
-                logger.info("Глобальные ретраи для отправки сообщений (3 попытки) активированы.")
+                logger.info("Транспорт готов; active-контексты сохраняют квитанции и не повторяют неоднозначные отправки.")
 
             # Создаём приложение с кастомными таймаутами и RetryBot
+            async def post_stop(app):
+                tasks = app.bot_data.pop('owned_workers',[])
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks,return_exceptions=True)
+                from cognition.runtime import stop_runtime
+                await stop_runtime()
+                from bot.queue import drain_background_tasks
+                await drain_background_tasks()
+
+            async def post_shutdown(app):
+                from database.connection import close_db
+                await close_db()
             # Таймауты подняты для нестабильной сети (особенно при VPN/прокси).
             request_config = HTTPXRequest(
                 connect_timeout=30,
@@ -122,16 +146,22 @@ def run_with_restart():
                 pool_timeout=10,
             )
             my_bot = RetryBot(token=TELEGRAM_TOKEN, request=request_config)
+            from cognition.telegram_scope import CognitiveUpdateProcessor
 
             application = (
                 ApplicationBuilder()
                 .bot(my_bot)
+                .concurrent_updates(CognitiveUpdateProcessor(32))
                 .post_init(post_init)
+                .post_stop(post_stop)
+                .post_shutdown(post_shutdown)
                 .build()
             )
 
             # Регистрируем хендлеры команд
             application.add_handler(CommandHandler("clear_context", clear_context))
+            from bot.commands import handle_memory_archive_command
+            application.add_handler(CommandHandler("memory_archive",handle_memory_archive_command))
             application.add_handler(CommandHandler("arti_commands", arti_commands))
             application.add_handler(CommandHandler("cancel", handle_cancel_command))
             application.add_handler(CommandHandler("start", start))
@@ -163,7 +193,7 @@ def run_with_restart():
             application.add_handler(CallbackQueryHandler(vclone_clean_callback, pattern="^vclone_clean:"))
             application.add_handler(CallbackQueryHandler(vclone_save_callback, pattern="^vsave:"))
             application.add_handler(CallbackQueryHandler(saved_voice_callback, pattern="^(vsel|vdel):"))
-            application.add_handler(CallbackQueryHandler(forget_callback, pattern="^forget_fact:"))
+            application.add_handler(CallbackQueryHandler(forget_callback, pattern="^forget_(fact|source|set):"))
             application.add_handler(CallbackQueryHandler(profile_callback, pattern="^prof_"))
 
             # Обработчики сообщений
@@ -216,6 +246,8 @@ def run_with_restart():
 
 def main():
     """Главная функция для запуска бота"""
+    from cognition.logging import install_private_log_filter
+    install_private_log_filter()
     # Fail-fast: без токена бот всё равно не сможет работать — лучше упасть сразу
     # с понятной ошибкой, чем стартовать и циклически перезапускаться.
     if not (TELEGRAM_TOKEN or "").strip():

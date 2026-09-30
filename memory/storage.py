@@ -112,6 +112,8 @@ async def build_memory_context(
                     query_vector=query_vector,
                     limit=log_limit,
                     min_similarity=MEMORY_CHUNK_MIN_SIMILARITY,
+                    embedding_model=EMBEDDING_MODEL,
+                    user_id=user_id,
                 )
             except Exception as e:
                 logger.warning(f"Vector retrieval недоступен, fallback на text retrieval: {e}")

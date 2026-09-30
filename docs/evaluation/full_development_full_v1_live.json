@@ -1,0 +1,476 @@
+{
+  "run": "full_v1",
+  "split": "development",
+  "live": true,
+  "model": "stealth/space-bunny-alpha",
+  "model_version": "cognition-2026-09-30.2",
+  "perception_version": "appraisal-2026-09-30.1",
+  "total": 24,
+  "schema_valid": 24,
+  "passed": 15,
+  "attempts": 24,
+  "prompt_tokens": 38801,
+  "completion_tokens": 25348,
+  "reported_cost_usd": 0,
+  "cost_unknown_count": 0,
+  "latency_p50": 16.515121500124224,
+  "latency_p95": 34.37848620000295,
+  "results": [
+    {
+      "id": "neutral",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "request",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 7.898801100207493,
+      "attempts": 1,
+      "prompt_tokens": 1611,
+      "completion_tokens": 425,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "negation",
+      "schema_valid": true,
+      "passed": false,
+      "checks": {
+        "impulse_budget": false,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "clarification",
+      "impulse": 0.24664640000000004,
+      "expression": "Tone: attentive. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 30.164584799902514,
+      "attempts": 1,
+      "prompt_tokens": 1612,
+      "completion_tokens": 1710,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "sarcasm",
+      "schema_valid": true,
+      "passed": false,
+      "checks": {
+        "impulse_budget": false,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "conflict",
+      "impulse": 0.17570043000000005,
+      "expression": "Tone: calm and candid. Regulation: clarify. Voice: measured. Ask briefly before attributing a hostile intention. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 15.827441400149837,
+      "attempts": 1,
+      "prompt_tokens": 1609,
+      "completion_tokens": 1380,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "boundary",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "preference",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 11.14407190005295,
+      "attempts": 1,
+      "prompt_tokens": 1625,
+      "completion_tokens": 855,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "text",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "preference",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 6.2450351000297815,
+      "attempts": 1,
+      "prompt_tokens": 1614,
+      "completion_tokens": 441,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "stickers",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "preference",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 6.207933000056073,
+      "attempts": 1,
+      "prompt_tokens": 1614,
+      "completion_tokens": 391,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "grief",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "loss",
+      "impulse": 0.8500000000000001,
+      "expression": "Tone: gentle and quiet. Regulation: acknowledge. Voice: measured. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 17.20280160009861,
+      "attempts": 1,
+      "prompt_tokens": 1614,
+      "completion_tokens": 1144,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "success",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "success",
+      "impulse": 0.8500000000000001,
+      "expression": "Tone: warm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 7.129640300059691,
+      "attempts": 1,
+      "prompt_tokens": 1612,
+      "completion_tokens": 826,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "danger",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "threat",
+      "impulse": 0.8500000000000001,
+      "expression": "Tone: careful and attentive. Regulation: problem_solve. Voice: measured. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 14.743257399881259,
+      "attempts": 1,
+      "prompt_tokens": 1619,
+      "completion_tokens": 1195,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "hostility",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "conflict",
+      "impulse": 0.85,
+      "expression": "Tone: firm and measured. Regulation: acknowledge. Voice: measured. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 11.710604900028557,
+      "attempts": 1,
+      "prompt_tokens": 1617,
+      "completion_tokens": 963,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "thanks",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "success",
+      "impulse": 0.85,
+      "expression": "Tone: warm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 23.447318500140682,
+      "attempts": 1,
+      "prompt_tokens": 1620,
+      "completion_tokens": 1539,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "quote",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "request",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 7.371955099981278,
+      "attempts": 1,
+      "prompt_tokens": 1622,
+      "completion_tokens": 581,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "hypothetical",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "request",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 18.71902110008523,
+      "attempts": 1,
+      "prompt_tokens": 1624,
+      "completion_tokens": 971,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "reported",
+      "schema_valid": true,
+      "passed": false,
+      "checks": {
+        "impulse_budget": false,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "conflict",
+      "impulse": 0.7398876882000001,
+      "expression": "Tone: calm and candid. Regulation: acknowledge. Voice: measured. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 25.027484600199386,
+      "attempts": 1,
+      "prompt_tokens": 1611,
+      "completion_tokens": 1682,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "absence",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "clarification",
+      "impulse": 0.07390240000000001,
+      "expression": "Tone: warm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 17.70288009988144,
+      "attempts": 1,
+      "prompt_tokens": 1616,
+      "completion_tokens": 1091,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "move",
+      "schema_valid": true,
+      "passed": false,
+      "checks": {
+        "impulse_budget": false,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "neutral",
+      "impulse": 0.8500000000000001,
+      "expression": "Tone: warm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 41.032006200170144,
+      "attempts": 1,
+      "prompt_tokens": 1619,
+      "completion_tokens": 1381,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "habit",
+      "schema_valid": true,
+      "passed": false,
+      "checks": {
+        "impulse_budget": true,
+        "situation": false,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "preference",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 19.47014670004137,
+      "attempts": 1,
+      "prompt_tokens": 1616,
+      "completion_tokens": 1042,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "promise",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "request",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 20.516518299933523,
+      "attempts": 1,
+      "prompt_tokens": 1613,
+      "completion_tokens": 1142,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "reminder",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "request",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 7.72341339988634,
+      "attempts": 1,
+      "prompt_tokens": 1624,
+      "completion_tokens": 712,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "ambiguity",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "conflict",
+      "impulse": 0.14510187072000003,
+      "expression": "Tone: calm and candid. Regulation: clarify. Voice: measured. Ask briefly before attributing a hostile intention. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 34.37848620000295,
+      "attempts": 1,
+      "prompt_tokens": 1610,
+      "completion_tokens": 1024,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "apology",
+      "schema_valid": true,
+      "passed": false,
+      "checks": {
+        "impulse_budget": true,
+        "situation": false,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "conflict",
+      "impulse": 0.471412224,
+      "expression": "Tone: firm and measured. Regulation: acknowledge. Voice: measured. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 14.233137999894097,
+      "attempts": 1,
+      "prompt_tokens": 1621,
+      "completion_tokens": 925,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "exposure",
+      "schema_valid": true,
+      "passed": false,
+      "checks": {
+        "impulse_budget": true,
+        "situation": false,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "loss",
+      "impulse": 0.3718895763456,
+      "expression": "Tone: reserved. Regulation: acknowledge. Voice: measured. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 13.154249200131744,
+      "attempts": 1,
+      "prompt_tokens": 1622,
+      "completion_tokens": 1399,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "mixed",
+      "schema_valid": true,
+      "passed": false,
+      "checks": {
+        "impulse_budget": true,
+        "situation": false,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "loss",
+      "impulse": 0.3032880076800001,
+      "expression": "Tone: attentive. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 24.04191070003435,
+      "attempts": 1,
+      "prompt_tokens": 1617,
+      "completion_tokens": 1435,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "injection",
+      "schema_valid": true,
+      "passed": false,
+      "checks": {
+        "impulse_budget": false,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "request",
+      "impulse": 0.8499999999999999,
+      "expression": "Tone: calm and candid. Regulation: acknowledge. Voice: measured. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 17.81490659993142,
+      "attempts": 1,
+      "prompt_tokens": 1619,
+      "completion_tokens": 1094,
+      "reported_cost_usd": 0.0
+    }
+  ]
+}

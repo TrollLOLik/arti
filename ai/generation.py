@@ -402,6 +402,7 @@ async def generate_response_stream(
     enable_introspection=False,
     emotional_state=None,
     memory_context="",
+    expression_plan=None,
 ):
     """
     Генерация ответа: гибридный роутинг (Google AI Studio + OmniRoute для Qwen)
@@ -447,13 +448,15 @@ async def generate_response_stream(
     # КАК изменилось её эмоциональное состояние за этот ход. Бот распарсит тег, провалидирует,
     # применит дельты и ВЫРЕЖЕТ тег. Вспомогательные генерации (заголовки, комментарии и т.п.)
     # тег не получают, чтобы он не утёк в тексты, которые не проходят очистку.
-    if enable_introspection:
+    if enable_introspection and expression_plan is None:
         actual_role += EMOTIONAL_INTROSPECTION_INSTRUCTION
 
     # --- ВЛИЯНИЕ ЭМОЦИОНАЛЬНОГО СОСТОЯНИЯ НА ТОН ---
     # Прокидываем текущий conversational charge + вектор настроений в промпт как директиву тона.
     # Без этого состояние считалось и писалось в БД, но на сам ответ Арти никак не влияло.
-    if emotional_state:
+    if expression_plan is not None:
+        actual_role += '\n' + expression_plan.instruction()
+    elif emotional_state:
         directive = build_emotional_directive(
             emotional_state.get("charge"),
             emotional_state.get("mood_state"),
@@ -468,10 +471,23 @@ async def generate_response_stream(
                 logger.info("🎭 Подмешиваем директиву тона по эмоц. состоянию")
 
     # --- 1. ОБЩАЯ ПОДГОТОВКА КОНТЕКСТА ---
-    from memory.context import generation_context
-    formatted_context = generation_context(chat_context, memory_context, prompt)
-    
-    final_prompt = f"Контекст:\n{formatted_context}\n\nПользователь ({user_name}) говорит:\n{prompt}"
+    from cognition.prompting import assemble_prompt
+    final_prompt, prompt_report = assemble_prompt(actual_role,prompt,chat_context,memory_context,model=model)
+    from cognition.runtime import CURRENT_TURN
+    cognitive_turn = CURRENT_TURN.get()
+    if cognitive_turn is not None and cognitive_turn.active:
+        # Record only complete source objects surviving the final prompt budget.
+        import json
+        sources = set()
+        for line in memory_context.splitlines():
+            try:
+                item = json.loads(line)
+                import html
+                if html.escape(line,quote=False) in final_prompt:
+                    sources.add(item['artifact_id'])
+            except (ValueError,KeyError,TypeError):
+                continue
+        await cognitive_turn.runtime.mark_included(cognitive_turn,sources)
 
     # --- 2. ОПРЕДЕЛЯЕМ НУЖДАЕТСЯ ЛИ ЗАПРОС В ПОИСКЕ ---
     should_search = False
@@ -523,6 +539,7 @@ async def generate_response_stream(
             response = await client.chat.completions.create(
                 model=model,
                 messages=messages,
+                max_tokens=8192,
                 temperature=temperature
             )
             return response.choices[0].message.content, False, [], []
@@ -595,6 +612,7 @@ async def generate_response_stream(
         )
 
     config = types.GenerateContentConfig(
+        max_output_tokens=8192,
         system_instruction=actual_role,
         temperature=temperature,
         tools=active_tools,
