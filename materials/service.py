@@ -63,6 +63,45 @@ class MaterialService:
         if cached:
             return cached
         row, rev, data = await self.read_bytes(aid, actor)
-        bundle = await asyncio.to_thread(extractor.extract, aid, rev['version'], data, rev['mime'])
+        if hasattr(extractor, 'extract_async'):
+            bundle = await extractor.extract_async(aid, rev['version'], data, rev['mime'])
+        else:
+            bundle = await asyncio.to_thread(extractor.extract, aid, rev['version'], data, rev['mime'])
         eid = await self.repository.save_extraction(actor, bundle, row['generation'])
         return eid, bundle
+
+    async def evidence_region(self, ref, actor, extractor, *, reread=False):
+        """Resolve authorized evidence, render only its region, then recheck access.
+
+        Rereading creates a separate immutable observation; it never changes an
+        existing extraction or silently replaces a cited number.
+        """
+        from dataclasses import asdict
+        from materials.types import ContentBlock, ExtractionBundle, ExtractionManifest, Locator, MaterialError, block_id
+        block = await self.repository.resolve(ref, actor)
+        if not hasattr(extractor, 'region_async'):
+            raise MaterialError('regional_extractor_required')
+        row, rev, data = await self.read_bytes(ref.asset_id, actor, ref.asset_version)
+        locator = block.locator
+        if locator.kind.value == 'page':
+            locator = Locator('region', page=locator.page, bbox=(0,0,1,1))
+        result = await extractor.region_async(data, rev['mime'], asdict(locator), reread=reread, resource=block.metadata.get('resource'),
+            orientation_hint=block.metadata.get('ocr',{}).get('rotation_clockwise'))
+        current, _ = await self.repository.read(ref.asset_id, actor, ref.asset_version)
+        if current['generation'] != row['generation']:
+            raise MaterialError('stale_material_result')
+        await self.repository.resolve(ref, actor)
+        if reread:
+            observed = result.get('observation')
+            if not observed:
+                raise MaterialError('regional_ocr_unavailable')
+            text = ' '.join(w['text'] for w in observed['words'])
+            method = extractor.cache_version + ':region:' + ref.block_id
+            new_block = ContentBlock(block_id(ref.asset_id,ref.asset_version,'text',locator),'text',locator,text,
+                quality='uncertain',limitations=('regional_observation_only','ocr_not_human_verified'),
+                metadata=dict(method='tesseract_region',supersedes_observation=asdict(ref),**observed))
+            bundle = ExtractionBundle(ref.asset_id,ref.asset_version,method,(new_block,),
+                ExtractionManifest(1,1,'unknown',('regional_observation_only',),'page'))
+            result['extraction_id'] = await self.repository.save_extraction(actor,bundle,row['generation'])
+            result['bundle'] = bundle.to_dict()
+        return result

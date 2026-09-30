@@ -214,3 +214,43 @@ class MaterialPersistenceTests(unittest.IsolatedAsyncioTestCase):
         async with self.pool.acquire() as conn:
             self.assertTrue(await conn.fetchval('SELECT suppressed_at IS NOT NULL FROM cognitive_events WHERE id=$1',eid))
             self.assertEqual(0,await conn.fetchval('SELECT COUNT(*) FROM material_cognitive_cleanup'))
+
+    async def test_isolated_cell_reread_is_new_observation_and_forget_revokes_both(self):
+        from materials.extractors.documents import DocumentExtractor
+        from tests.materials.document_fixtures import structured_pdf
+        extractor=DocumentExtractor()
+        asset=await self.service.ingest(structured_pdf(),'layout.pdf',self.actor,'layout','layout')
+        eid,bundle=await self.service.extract(asset['id'],self.actor,extractor)
+        table=next(b for b in bundle.blocks if b.kind=='table')
+        cell=next(c for c in table.metadata['cells'] if c['text']=='1200')
+        block=next(b for b in bundle.blocks if b.block_id==cell['block_id'])
+        ref=EvidenceRef(asset['id'],1,eid,block.block_id,block.locator)
+        self.assertEqual('1200',(await self.repo.resolve(ref,self.actor)).text)
+        other=replace(self.actor,scope=replace(self.actor.scope,topic_id=5))
+        with self.assertRaises(MaterialError): await self.service.evidence_region(ref,other,extractor)
+        result=await self.service.evidence_region(ref,self.actor,extractor,reread=True)
+        self.assertNotEqual(eid,result['extraction_id'])
+        self.assertIn('1200',result['bundle']['blocks'][0]['text'])
+        self.assertEqual((eid,bundle),await self.service.extract(asset['id'],self.actor,extractor))
+        from materials.types import ExtractionBundle
+        new_bundle=ExtractionBundle.from_dict(result['bundle'])
+        newer=EvidenceRef(asset['id'],1,result['extraction_id'],new_bundle.blocks[0].block_id,new_bundle.blocks[0].locator)
+        await self.lifecycle.forget(asset['id'],self.actor)
+        for reference in (ref,newer):
+            with self.assertRaises(MaterialError): await self.repo.resolve(reference,self.actor)
+
+    async def test_forget_during_region_render_cannot_return_pixels(self):
+        from materials.extractors.documents import DocumentExtractor
+        from tests.materials.fixtures import pdf
+        extractor=DocumentExtractor()
+        asset=await self.service.ingest(pdf(),'pages.pdf',self.actor,'pages','pages')
+        eid,bundle=await self.service.extract(asset['id'],self.actor,extractor)
+        block=next(b for b in bundle.blocks if b.kind=='text')
+        ref=EvidenceRef(asset['id'],1,eid,block.block_id,block.locator)
+        original=extractor.region_async
+        async def erase_after_render(*args,**kwargs):
+            result=await original(*args,**kwargs)
+            await self.lifecycle.forget(asset['id'],self.actor)
+            return result
+        extractor.region_async=erase_after_render
+        with self.assertRaises(MaterialError): await self.service.evidence_region(ref,self.actor,extractor)

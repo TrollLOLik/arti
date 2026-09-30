@@ -1,6 +1,6 @@
 # Эксплуатация ядра материалов и маршрутизации Арти
 
-Дата: 30 сентября 2026 года. Область этого документа — текущая реализация основания A01–A04. OCR, полноценный аудио/видео-анализ, проекты, студия инфографики и агентский исполнитель остаются следующими батчами.
+Дата: 30 сентября 2026 года. Область — основание A01–A04 и документы/OCR A05. Табличные вычисления, полноценный аудио/видео-анализ, проекты, студия инфографики и агентский исполнитель остаются следующими батчами.
 
 ## Включение материалов
 
@@ -14,7 +14,7 @@
 
 ## Источники и границы текущего извлечения
 
-Native extractor обрабатывает UTF-8 текст по строкам, текстовые PDF по страницам и основные абзацы/таблицы DOCX в порядке документа. PDF-страницы без текста помечаются как требующие OCR. Изображения DOCX, колонтитулы и восстановление сложного layout ещё не реализованы и обозначаются в manifest. Это не выполнение A05.
+Document extractor обрабатывает UTF-8 текст, PDF и DOCX. PDF возвращает native glyphs, OCR, regions, grid tables с отдельными cell evidence, изображения и подписи, порядок колонок и повторяющиеся колонтитулы. Native text и OCR не подменяют друг друга при конфликте. DOCX возвращает headings/lists, merged/nested tables, headers/footers и relationships изображений. DOCX page layout неизвестен; его locators используют абзац и OOXML path. Borderless tables, рукопись и неразобранные OOXML notes/textboxes обозначены как ограничения. Complete coverage означает проход единиц manifest, а не человеческую проверку точности или понимание изображения.
 
 При ограничении числа элементов или объёма текста manifest сообщает о частичном покрытии. Сохранённая полная версия извлечения отличается от краткой текстовой проекции, переданной модели. Цитата указывает на asset version, extraction ID, block ID и locator; разрешение проверяется при раскрытии свидетельства.
 
@@ -61,17 +61,33 @@ JSON manifest не содержит ключи API. Внешняя функци�
 python -m tools.run_materials_tests
 python -m tools.run_materials_tests --all
 python -m tools.evaluate_materials
+python -m tools.check_document_stack
+python -m tools.evaluate_documents
 python -m tools.probe_material_provider --model stealth/space-bunny-alpha
 ```
 
-Первые три команды работают offline относительно провайдеров; SQL-сценарии создают и удаляют отдельную `arti_cognition_test_<uuid>`. Права PostgreSQL должны позволять создание тестовой базы. Конфигурационная база используется для подключения управляющего соединения; её таблицы не изменяются.
+Все команды, кроме `probe_material_provider`, работают offline относительно провайдеров; SQL-сценарии создают и удаляют отдельную `arti_cognition_test_<uuid>`. Права PostgreSQL должны позволять создание тестовой базы. Конфигурационная база используется для подключения управляющего соединения; её таблицы не изменяются. OCR-проверки требуют действующего Tesseract с `rus`, `eng` и `osd` и не пропускаются незаметно при его отсутствии.
 
 Последняя команда вызывает OpenRouter только на синтетическом тексте и изображении. Проверяет текст, native tool calling с forced/auto choice и изображение, если модель заявляет image input. Она сохраняет метрики и outcome без ключей и исходного содержимого ответа. Она не вызывает Telegram и автоматически не обновляет manifest прокси.
 
-Отчёты расположены в `docs/evaluation/materials_*`. Synthetic corpus сейчас проверяет конкретные числа, таблицу DOCX и источники страниц/строк. Он не является научной оценкой OCR, видео, поведения агента либо человеческой читаемости инфографики; эти измерения появляются при реализации соответствующих батчей.
+Отчёты расположены в `docs/evaluation/materials_*`. `materials_documents.json` содержит девять синтетических документов, exact facts/CER, раскрытие настоящей cell region, версии/хеши и время/RSS. Этот корпус не заменяет независимую оценку на реальных сканах, видео, поведении агента или читаемости инфографики.
 
 ## Отключение и восстановление
 
 Для отключения долговечного Telegram intake установить `ARTI_MATERIALS_ENABLED=0` и перезапустить процесс обычным способом. Старые файлы остаются в хранилище; перед включением после паузы выполнить maintenance, чтобы истёкшие источники не участвовали в работе. Чтение дополнительно проверяет срок хранения даже до физической очистки.
 
 При ошибке manifest убрать `ARTI_CAPABILITY_MANIFEST` либо исправить соответствующую запись; встроенные консервативные профили продолжают работу. Откат к прежнему генератору производится откатом кода, без удаления SQL-таблиц. На время обслуживания можно выключить ответы штатной командой бота. Полноценные отдельные feature flags поздних возможностей вводятся по мере их реализации.
+
+## Установка и управление A05
+
+Python-библиотеки устанавливаются обычным `python -m pip install -r requirements.txt`. OCR engine — отдельная локальная зависимость. На Windows использовать [installer UB Mannheim](https://github.com/UB-Mannheim/tesseract/wiki) в **новом отдельном каталоге**. На этом ПК установлена версия 5.5.3.20260724 в `%LOCALAPPDATA%\ArtiOCR`; модели `rus`, `eng`, `osd` присутствуют. SHA256 использованного installer: `bee9e3434bd94fd65387d9be28cd467a41f61b1275383b55b0f59a1331270ae4`. На Debian/Ubuntu: `apt install tesseract-ocr tesseract-ocr-rus tesseract-ocr-eng tesseract-ocr-osd`.
+
+`ARTI_TESSERACT_CMD` задаёт абсолютный путь к доверенному engine; `ARTI_TESSDATA_DIR` — к каталогу моделей. Автопоиск поддерживает PATH, `%LOCALAPPDATA%\ArtiOCR`, `C:\Program Files\Tesseract-OCR` и стандартные Linux-каталоги. Перед эксплуатацией выполнить `python -m tools.check_document_stack`. Смена engine, моделей или parser stack создаёт новую cache version; старое извлечение не перезаписывается.
+
+`ARTI_OCR_ENABLED=0` оставляет native structured extraction и явно помечает scans/mixed страницы partial. `ARTI_DOCUMENTS_ENABLED=0` переключает на изолированный native adapter без layout/OCR; лимиты процесса сохраняются. Advanced extraction включено по умолчанию и в transient document parser; долговечное сохранение по-прежнему определяется отдельным `ARTI_MATERIALS_ENABLED`.
+
+Стандартные лимиты: 64 страницы/узла, 300 000 символов, 3500 blocks; два worker, 90 секунд, 768 МиБ/process, 48 МиБ temporary disk, 8 МиБ результата. Windows Job ограничивает child tree и закрывает его при выходе worker; Linux backend использует rlimits/process group. На этом этапе запуск и проверки выполнены на Windows; Linux ещё не прогонялся. Эти меры ограничивают ресурсы, не являются контейнером безопасности. Лог `materials.extractors.isolation` содержит status, elapsed, sampled RSS и temporary disk, без текста документов. В production оставлять каталог оригиналов доступным только процессу бота.
+
+`MaterialService.evidence_region(ref, actor, extractor, reread=True)` возвращает crop и отдельное immutable региональное наблюдение. Требуется реальный `EvidenceRef`; произвольная координата не заменяет проверку доступа. Наблюдение не автоматически исправляет число в старом extraction. Полный Telegram-интерфейс просмотра и правок относится к A16; сейчас API доступен другим внутренним инструментам.
+
+Используемые методы описаны в [pdfplumber](https://github.com/jsvine/pdfplumber), [pypdfium2](https://pypdfium2.readthedocs.io/en/stable/python_api.html) и [Tesseract TSV/OSD](https://tesseract-ocr.github.io/tessdoc/Command-Line-Usage.html). Локальный стек имеет MIT/Apache/BSD-компоненты; условия и notices PDFium и его зависимостей поставляются с pypdfium2. Лицензии компонентов сохранять при распространении.

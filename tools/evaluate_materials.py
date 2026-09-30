@@ -6,7 +6,18 @@ import tempfile
 import time
 from materials.extractors.basic import BasicExtractor, render_text
 from tests.materials.fixtures import docx, pdf
-from utils.document_parser import extract_text_from_file
+from io import BytesIO
+
+
+def legacy_projection(data, name):
+    """Frozen pre-A05 baseline, independent of the current production adapter."""
+    if name.endswith('.docx'):
+        from docx import Document
+        return '\n'.join(p.text for p in Document(BytesIO(data)).paragraphs)
+    if name.endswith('.pdf'):
+        from pypdf import PdfReader
+        return '\n'.join(p.extract_text() or '' for p in PdfReader(BytesIO(data)).pages)
+    return data.decode('utf-8')
 
 
 async def main():
@@ -17,7 +28,7 @@ async def main():
             ('budget.txt','Бюджет\nАренда: 1200\nПредложение даты: 12 октября'.encode(),'text/plain',('1200','Предложение'))]:
             path=Path(root)/name
             path.write_bytes(data)
-            baseline=await extract_text_from_file(path,name)
+            baseline=legacy_projection(data,name)
             started=time.perf_counter()
             bundle=BasicExtractor().extract(name,1,data,mime)
             native=render_text(bundle)

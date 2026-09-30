@@ -1,79 +1,56 @@
-"""
-Парсинг документов (TXT, PDF, DOCX)
-"""
-import os
+"""Telegram/file adapter for the shared, isolated structured document pipeline."""
+import asyncio
 import logging
 from pathlib import Path
 from typing import Optional
 
-import pypdf
-from docx import Document
+from materials.extractors.basic import render_text
+from materials.extractors.documents import configured_extractor
+from materials.types import MaterialError
+from materials.validation import inspect_bytes
 
 logger = logging.getLogger(__name__)
+MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
+
+
+async def extract_document_bytes(data, file_name, declared_mime=None):
+    mime = await asyncio.to_thread(inspect_bytes, data, file_name, declared_mime, MAX_DOCUMENT_BYTES)
+    extractor = configured_extractor()
+    if hasattr(extractor, 'extract_async'):
+        bundle = await extractor.extract_async('transient-document', 1, data, mime)
+    else:
+        bundle = await asyncio.to_thread(extractor.extract, 'transient-document', 1, data, mime)
+    return render_text(bundle)
 
 
 async def extract_text_from_file(file_path: Path, file_name: str) -> str:
-    """Извлекает текст из TXT, PDF или DOCX."""
-    extracted_text = ""
+    """Compatibility text projection. Structured bundle is the authoritative API."""
+    def read():
+        with Path(file_path).open('rb') as stream:
+            data = stream.read(MAX_DOCUMENT_BYTES + 1)
+        if len(data) > MAX_DOCUMENT_BYTES:
+            raise MaterialError('file_size_limit')
+        return data
     try:
-        if file_name.lower().endswith('.txt'):
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                extracted_text = f.read()
-        elif file_name.lower().endswith('.pdf'):
-            with open(file_path, 'rb') as f:
-                reader = pypdf.PdfReader(f)
-                for page in reader.pages:
-                    text = page.extract_text()
-                    if text:
-                        extracted_text += text + "\n"
-        elif file_name.lower().endswith('.docx'):
-            word_doc = Document(file_path)
-            for para in word_doc.paragraphs:
-                extracted_text += para.text + "\n"
-    except Exception as e:
-        logger.error(f"Ошибка парсинга файла {file_name}: {e}")
-    return extracted_text
+        return await extract_document_bytes(await asyncio.to_thread(read), file_name)
+    except Exception as exc:
+        logger.warning('Document extraction failed: %s', getattr(exc, 'code', type(exc).__name__))
+        return ''
 
 
 async def extract_document_text(context, doc, source_message=None) -> Optional[str]:
-    """Скачивает и извлекает текст из документа для reply-анализа."""
     from materials.runtime import enabled, capture_document
-    if enabled():
-        try:
-            return await capture_document(context, doc, source_message)
-        except Exception as exc:
-            logger.warning('Structured document extraction failed: %s', getattr(exc, 'code', type(exc).__name__))
-            return None
-    file_name = doc.file_name or "unknown"
-    safe_name = Path(file_name).name
-    name_lower = file_name.lower()
-    file_path = Path("temp") / f"temp_extract_{os.urandom(4).hex()}_{safe_name}"
-    file_path.parent.mkdir(exist_ok=True)
     try:
+        if enabled():
+            return await capture_document(context, doc, source_message)
+        if doc.file_size and doc.file_size > MAX_DOCUMENT_BYTES:
+            raise MaterialError('file_size_limit')
         file = await context.bot.get_file(doc.file_id)
-        await file.download_to_drive(file_path)
-        
-        extracted_text = ""
-        if name_lower.endswith('.txt'):
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                extracted_text = f.read()
-        elif name_lower.endswith('.pdf'):
-            with open(file_path, 'rb') as f:
-                reader = pypdf.PdfReader(f)
-                for page in reader.pages:
-                    text = page.extract_text()
-                    if text: extracted_text += text + "\n"
-        elif name_lower.endswith('.docx'):
-            word_doc = Document(file_path)
-            for para in word_doc.paragraphs:
-                extracted_text += para.text + "\n"
-        
-        if len(extracted_text) > 30000:
-            extracted_text = extracted_text[:30000] + "\n...[текст обрезан]..."
-        return extracted_text.strip() if extracted_text.strip() else None
-    except Exception as e:
-        logger.error(f"Ошибка при извлечении текста из {file_name}: {e}")
+        if file.file_size and file.file_size > MAX_DOCUMENT_BYTES:
+            raise MaterialError('file_size_limit')
+        data = bytes(await file.download_as_bytearray())
+        result = await extract_document_bytes(data, doc.file_name or 'document', getattr(doc,'mime_type',None))
+        return result if result.strip() else None
+    except Exception as exc:
+        logger.warning('Document extraction failed: %s', getattr(exc, 'code', type(exc).__name__))
         return None
-    finally:
-        if file_path.exists():
-            file_path.unlink()

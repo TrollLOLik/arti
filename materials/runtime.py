@@ -8,7 +8,8 @@ from materials.types import AccessContext, MaterialError, MaterialScope
 from materials.repository import MaterialRepository
 from materials.service import MaterialService
 from materials.storage import LocalBlobStore
-from materials.extractors.basic import BasicExtractor, render_text
+from materials.extractors.basic import render_text
+from materials.extractors.documents import configured_extractor
 
 CURRENT_MATERIAL_USE = contextvars.ContextVar('arti_material_use', default=())
 logger = logging.getLogger(__name__)
@@ -111,9 +112,9 @@ async def capture_document(context, document, message):
                 message.message_id,actor.scope.mode,origin=Origin.SYSTEM if sender_chat else Origin.USER)
         finally:
             CURRENT_SCOPE.reset(token)
-    eid, bundle = await service.extract(asset['id'], actor, BasicExtractor())
+    eid, bundle = await service.extract(asset['id'], actor, configured_extractor())
     if not any(b.text.strip() for b in bundle.blocks):
-        raise MaterialError('document_has_no_native_text')
+        raise MaterialError('document_has_no_readable_text')
     use = MaterialUse(asset['id'], actor, bundle.asset_version, asset['generation'], service,cid,event_id)
     await use.validate()
     return MaterialText(render_text(bundle), use)

@@ -91,8 +91,21 @@ class BasicExtractor:
 def render_text(bundle, max_chars=30000):
     fragments, used, truncated = [], 0, False
     for block in bundle.blocks:
-        label = 'page:' + str(block.locator.page) if block.locator.page is not None else 'block:' + block.block_id
-        value = '[' + label + ']\n' + block.text
+        if block.metadata.get('role') == 'table_cell':
+            continue  # Parent table projects values once; cells remain resolvable.
+        label = 'block:' + block.block_id
+        if block.locator.page is not None:
+            label += '; page:' + str(block.locator.page)
+        if block.locator.bbox is not None:
+            label += '; region:' + ','.join(str(round(v,4)) for v in block.locator.bbox)
+        label += '; role:' + block.metadata.get('role',block.kind) + '; quality:' + block.quality
+        if not block.text.strip():
+            if block.kind != 'image':
+                continue
+            content = '[Image: visual content uninterpreted; caption=' + str(block.metadata.get('caption_id','unknown')) + ']'
+        else:
+            content = block.text
+        value = '[' + label + ']\n' + content
         if used + len(value) > max_chars:
             available = max(0, max_chars - used)
             if available:

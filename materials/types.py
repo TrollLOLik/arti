@@ -134,12 +134,15 @@ class ContentBlock:
     observation: str = 'extracted'
     quality: str = 'unassessed'
     limitations: tuple[str, ...] = ()
+    metadata: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.kind not in ('text', 'page', 'table', 'image', 'audio', 'video') or self.observation not in ('extracted', 'observed', 'interpreted'):
             raise MaterialError('invalid_block')
         if not self.block_id or self.ordinal < 0 or self.quality not in ('unassessed', 'verified', 'uncertain', 'unreadable'):
             raise MaterialError('invalid_block')
+        if not isinstance(self.metadata, dict) or len(canonical(self.metadata)) > 200_000:
+            raise MaterialError('block_metadata_budget')
 
 
 @dataclass(frozen=True)
@@ -148,12 +151,15 @@ class ExtractionManifest:
     processed_units: int
     coverage: str
     limitations: tuple[str, ...] = ()
+    unit_kind: str = 'native_unit'
 
     def __post_init__(self):
         if type(self.total_units) is not int or type(self.processed_units) is not int or not 0 <= self.processed_units <= self.total_units or self.coverage not in ('complete', 'partial', 'unknown', 'failed'):
             raise MaterialError('invalid_manifest')
         if self.coverage == 'complete' and self.total_units != self.processed_units:
             raise MaterialError('false_complete_coverage')
+        if self.unit_kind not in ('native_unit', 'page', 'body_node', 'paragraph'):
+            raise MaterialError('invalid_manifest_unit')
 
 
 @dataclass(frozen=True)
@@ -169,7 +175,7 @@ class ExtractionBundle:
         if self.asset_version < 1 or not self.extractor or self.contract_version != CONTRACT_VERSION:
             raise MaterialError('invalid_bundle')
         ids = {b.block_id for b in self.blocks}
-        if len(ids) != len(self.blocks) or len(ids) > 4096 or sum(len(b.text) for b in self.blocks) > 2_000_000:
+        if len(ids) != len(self.blocks) or len(ids) > 4096 or sum(len(b.text) + len(canonical(b.metadata)) for b in self.blocks) > 4_000_000 or sum(len(b.text) for b in self.blocks) > 2_000_000:
             raise MaterialError('extraction_budget')
         if any(b.parent_id and b.parent_id not in ids for b in self.blocks):
             raise MaterialError('missing_parent')
