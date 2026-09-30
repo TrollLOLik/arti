@@ -181,6 +181,8 @@ def run_with_restart():
             from bot.material_search import material_search_command,material_review_command
             application.add_handler(CommandHandler('materials_find',material_search_command))
             application.add_handler(CommandHandler('material_review',material_review_command))
+            from bot.project_commands import project_command
+            application.add_handler(CommandHandler('project',project_command))
             application.add_handler(CommandHandler('transcript_fix',transcript_fix_command))
             application.add_handler(CommandHandler('listen',listen_command))
             from bot.commands import handle_memory_archive_command

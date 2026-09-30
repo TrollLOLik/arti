@@ -1,6 +1,6 @@
 # Реализация мультимодальности и агентских функций Арти
 
-Дата: 1 октября 2026 года. Реализация идёт по [плану A01–A24](ARTI_MULTIMODAL_AGENT_BATCHES.md); текущее поручение — до A23 включительно. Mini App отложена. Реализованы основание A01–A04 и программные контуры A05–A10; полный план не завершён.
+Дата: 1 октября 2026 года. Реализация идёт по [плану A01–A24](ARTI_MULTIMODAL_AGENT_BATCHES.md); текущее поручение — до A23 включительно. Mini App отложена. Реализованы основание A01–A04 и программные контуры A05–A11; полный план не завершён.
 
 ## Состояние батчей
 
@@ -16,7 +16,8 @@
 | A08 | Ограниченный ffmpeg decoder, native timestamps ASR, локальные speaker ID, acoustic context, immutable transcript heads/CAS, replay и Telegram correction commands. | 19 сценарных тестов и 5/5 synthetic decoder/timing cases. Provider payload doubles не измеряют точность реального ASR/diarization; независимый корпус — A24. |
 | A09 | Fixed ffmpeg frames/scenes, actual PTS, dense refinement, audio alignment, immutable replay/storyboard, opt-in video intake и bounded public URL fetch. | 9 tests, 4/4 owned video/OCR cases. Hosted pages требуют разрешённого stream adapter; direct media поддерживаются. Human/real video corpus — A24. |
 | A10 | Scoped SQL index до ranking, current evidence/quotes/coverage, transcript overlays, provenance/late guards, participant reviews и decaying gist отдельно от точных фактов. | 7 сценарных tests. Лексический match не является semantic entailment; широкая оценка retrieval и field corpus — A24. |
-| A11–A23 | План и критерии приёмки сохранены; пользователь поручил реализацию. | Работа продолжается; A11 начат. |
+| A11 | Audience-bound projects, selection, роли, goal/questions/history/CAS, accepted head отдельно от proposal; reviewable publication и atomic author-granted copies, source/project revoke fences. | Общая регрессия 343/343; 11-я проверка native preview/membership отдельно 1/1. Native Telegram проверен doubles; полевой пилот — A24. |
+| A12–A23 | План и критерии приёмки сохранены; пользователь поручил реализацию. | Работа продолжается; A12 начат. |
 | A24 | План общей оценки сохранён. | Реальный пилот и человеческая оценка ещё не проведены. |
 
 ## Реализованное поведение
@@ -73,7 +74,7 @@ Live `stealth/space-bunny-alpha`, прямой OpenRouter endpoint: текст �
 
 Текущее долговечное Telegram intake выключено по умолчанию; включается `ARTI_MATERIALS_ENABLED=1`. [Runbook](ARTI_MULTIMODAL_RUNBOOK.md) описывает каталог, квоты, maintenance, manifest моделей, тестовые команды и отключение. Код и миграции проверены программно; рабочий бот не запускался и рабочая база не мигрировалась в ходе этого этапа.
 
-Следующая работа — A11: личные и совместные проекты; затем A12–A23 по поручению пользователя. Студия остаётся контрольной точкой A16; агентский исполнитель — A20. Оценки людей и настоящий Telegram-пилот остаются отдельной работой A24.
+Следующая работа — A12–A15: спецификация, рендер, оформление и версии инфографики; затем A16–A23 по поручению пользователя. Студия остаётся контрольной точкой A16; агентский исполнитель — A20. Оценки людей и настоящий Telegram-пилот остаются отдельной работой A24.
 
 ## A06: таблицы и проверяемые расчёты
 

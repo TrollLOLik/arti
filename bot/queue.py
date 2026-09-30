@@ -946,15 +946,31 @@ async def process_user_reply(request, bot):
     video_file_id = request.get('video_file_id')
     is_video_note = request.get('is_video_note', False)
     from materials.runtime import enabled,actor_for_current,service_for_bot
+    project_ids=None
+    if enabled() and user_id and CURRENT_SCOPE.get() is not None:
+        from projects.repository import ProjectRepository
+        from projects.types import ProjectUse
+        service=await service_for_bot(); actor=await actor_for_current(); projects=ProjectRepository(service.repository)
+        project=await projects.current(actor)
+        if project:
+            project.require('view')
+            project_use=ProjectUse(project.id,actor,projects,project.access_generation,project.revision)
+            CURRENT_DERIVATIVE_USE.set(CURRENT_DERIVATIVE_USE.get()+(project_use,))
+            attached=await projects.materials_for(project.id,actor)
+            project_ids=[m['asset_id'] for m in attached if m['status']=='current']
+            request['_project_context']=dict(id=project.id,title=project.title,goal=project.goal,questions=project.questions,revision=project.revision)
     if enabled() and not document_text and user_id and CURRENT_SCOPE.get() is not None:
         from materials.retrieval import recall
-        recalled,derivatives,causal=await recall(await service_for_bot(),await actor_for_current(),user_message)
+        recalled,derivatives,causal=await recall(service,actor,user_message,asset_ids=project_ids)
         if recalled:
             document_text=recalled
             CURRENT_MATERIAL_USE.set(tuple(dict.fromkeys(CURRENT_MATERIAL_USE.get()+recalled.material_uses)))
             CURRENT_DERIVATIVE_USE.set(tuple(dict.fromkeys(CURRENT_DERIVATIVE_USE.get()+derivatives)))
             request['_cognitive_source_ids']=sorted(set(request.get('_cognitive_source_ids',[])+list(causal)))
             await guard_current(chat_id)
+    if request.get('_project_context'):
+        from materials.types import canonical
+        document_text=(str(document_text or '')+'\nCurrent project state (authored goal, not a collective decision): '+canonical(request['_project_context']))
 
     # L-08: автоответ ставится с user_id=0 (нет конкретного автора). Не привязываем к
     # такому «пользователю» профиль/близость/факты — нормализуем 0 → None, тогда

@@ -466,6 +466,7 @@ async def arti_commands(update, context):
         "• /moment 1.4, /storyboard — Кадры видео (ответом на видео)\n"
         "• /materials_find — Найти точные фрагменты материалов\n"
         "• /material_review — Сохранить выбор варианта и причину\n"
+        "• /project — Личные и совместные проекты, роли и версии\n"
         "• /listen turn_1 — Переслушать исходный отрезок\n"
         "• /transcript_fix — Подтвердить исправление текста расшифровки\n"
     )

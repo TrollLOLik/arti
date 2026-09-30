@@ -10,13 +10,13 @@ class MaterialService:
     def __init__(self, repository, store):
         self.repository, self.store = repository, store
 
-    async def ingest(self, data, filename, actor, source_key, source_id, declared_mime=None):
+    async def ingest(self, data, filename, actor, source_key, source_id, declared_mime=None,*,share=None):
         mime = await asyncio.to_thread(inspect_bytes, data, filename, declared_mime, self.repository.quotas.max_file_bytes)
         key = await self.repository.reserve_blob(actor)
         retained = None
         try:
             await asyncio.to_thread(self.store.put, data, key)
-            row, retained = await self.repository.register(actor, source_key, source_id, filename, key, sha256(data).hexdigest(), len(data), mime)
+            row, retained = await self.repository.register(actor, source_key, source_id, filename, key, sha256(data).hexdigest(), len(data), mime,share=share)
             return row
         finally:
             # A cancelled/unknown COMMIT may already reference this blob: check it

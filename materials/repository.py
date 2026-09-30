@@ -51,7 +51,7 @@ class MaterialRepository:
         if row['erased_at'] is not None or row['expires_at'] <= datetime.now(timezone.utc):
             raise MaterialError('material_erased_or_expired')
 
-    async def _source_allowed(self, conn, actor, source_id, *, owner_id=...):
+    async def _source_allowed(self, conn, actor, source_id, *, owner_id=...,check_shares=True):
         source_owner=actor.user_id if owner_id is ... else owner_id
         suppressed = await conn.fetchval('''SELECT 1 FROM material_source_tombstones
             WHERE scope_key=$1 AND owner_id IS NOT DISTINCT FROM $2 AND source_id=$3''', actor.scope.identity_key, source_owner, source_id)
@@ -62,6 +62,19 @@ class MaterialRepository:
                 actor.scope.persona_id, actor.scope.chat_id, actor.scope.topic_id, actor.scope.mode, actor.scope.scene_id, source_id, source_owner)
         if suppressed:
             raise MaterialError('source_erased')
+        if check_shares:
+            rows=await conn.fetch('''WITH RECURSIVE origins(id) AS (
+                SELECT s.source_asset_id FROM material_shares s JOIN material_assets target ON target.id=s.target_asset_id
+                    WHERE target.realm=$1 AND target.source_id=$2
+                UNION SELECT s.source_asset_id FROM material_shares s JOIN origins o ON s.target_asset_id=o.id)
+                SELECT a.* FROM material_assets a JOIN origins o ON o.id=a.id LIMIT 33''',actor.realm,source_id)
+            if len(rows)>32: raise MaterialError('share_chain_budget')
+            from materials.types import MaterialScope,AccessContext
+            for origin in rows:
+                if origin['erased_at'] is not None or origin['expires_at']<=datetime.now(timezone.utc): raise MaterialError('shared_source_unavailable')
+                scope=json.loads(origin['scope']) if isinstance(origin['scope'],str) else origin['scope']
+                original_actor=AccessContext(MaterialScope(**scope),origin['owner_id'],origin['sender_ref'])
+                await self._source_allowed(conn,original_actor,origin['source_id'],owner_id=origin['owner_id'],check_shares=False)
 
     async def _quota(self, conn, actor, size, new_asset):
         values = await conn.fetchrow('''SELECT COUNT(DISTINCT a.id) AS assets, COALESCE(SUM(v.byte_size),0) AS bytes
@@ -80,16 +93,30 @@ class MaterialRepository:
             VALUES($1,$2,$3,$4,$5) ON CONFLICT(realm,sha256) DO UPDATE SET sha256=EXCLUDED.sha256 RETURNING id''',
             key, actor.realm, digest, size, mime)
 
-    async def register(self, actor, source_key, source_id, filename, key, digest, size, mime):
+    async def register(self, actor, source_key, source_id, filename, key, digest, size, mime,*,share=None):
         if not source_key or not source_id or len(source_key) > 512 or len(source_id) > 512 or size > self.quotas.max_file_bytes:
             raise MaterialError('invalid_asset')
         async with self.pool.acquire() as conn, conn.transaction():
             await self._locks(conn, actor)
             await self._reservation(conn, actor, key)
             await self._source_allowed(conn, actor, source_id)
+            if share:
+                original_actor,grant=share
+                original=await conn.fetchrow('SELECT * FROM material_assets WHERE id=$1 FOR UPDATE',grant.source_asset_id)
+                self.check(original,original_actor,edit=True)
+                await self._source_allowed(conn,original_actor,original['source_id'],owner_id=original['owner_id'])
+                revision=await conn.fetchrow('SELECT * FROM material_asset_versions WHERE asset_id=$1 AND version=$2',grant.source_asset_id,grant.source_version)
+                if revision is None: raise MaterialError('share_source_changed')
+                grant.validate(original_actor,actor,original,revision)
+                depth=await conn.fetchval('''WITH RECURSIVE ancestors(id) AS (SELECT $1::text
+                    UNION SELECT s.source_asset_id FROM material_shares s JOIN ancestors a ON s.target_asset_id=a.id)
+                    SELECT count(*) FROM ancestors''',grant.source_asset_id)
+                if depth>32: raise MaterialError('share_chain_budget')
+                if revision['sha256']!=digest or revision['mime']!=mime: raise MaterialError('share_content_changed')
             row = await conn.fetchrow('SELECT * FROM material_assets WHERE realm=$1 AND source_key=$2 FOR UPDATE', actor.realm, source_key)
             if row:
                 self.check(row, actor, edit=True)
+                if share and not await conn.fetchval('SELECT 1 FROM material_shares WHERE target_asset_id=$1 AND source_asset_id=$2 AND source_version=$3 AND authorized_by=$4 AND request_id=$5 AND destination_scope=$6',row['id'],grant.source_asset_id,grant.source_version,grant.author_id,grant.request_id,grant.destination_scope_key): raise MaterialError('share_identity_conflict')
                 version = await conn.fetchrow('SELECT * FROM material_asset_versions WHERE asset_id=$1 AND version=1', row['id'])
                 if version['sha256'] != digest or version['mime'] != mime or row['source_id'] != source_id:
                     raise MaterialError('source_identity_conflict')
@@ -102,6 +129,8 @@ class MaterialRepository:
                 aid, actor.realm, actor.scope.key, actor.scope.identity_key, canonical(asdict(actor.scope)), actor.user_id, actor.sender_ref,
                 source_id, source_key, filename[:256], self.quotas.retention_days)
             await conn.execute('INSERT INTO material_asset_versions(asset_id,version,blob_id,sha256,byte_size,mime) VALUES($1,1,$2,$3,$4,$5)', aid, blob, digest, size, mime)
+            if share:
+                await conn.execute('INSERT INTO material_shares(target_asset_id,source_asset_id,source_version,authorized_by,request_id,destination_scope) VALUES($1,$2,$3,$4,$5,$6)',aid,grant.source_asset_id,grant.source_version,grant.author_id,grant.request_id,grant.destination_scope_key)
             return dict(row), blob
 
     async def revise(self, aid, actor, expected_version, key, digest, size, mime):
