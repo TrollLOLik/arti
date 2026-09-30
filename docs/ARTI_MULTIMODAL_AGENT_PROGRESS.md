@@ -1,8 +1,14 @@
 # Реализация мультимодальности и агентских функций Арти
 
-Дата: 1 октября 2026 года. Реализация идёт по [плану A01–A24](ARTI_MULTIMODAL_AGENT_BATCHES.md); текущее поручение — до A23 включительно. Mini App отложена. Реализованы основание A01–A04 и программные контуры A05–A11; полный план не завершён.
+Дата: 1 октября 2026 года. Реализованы программные контуры A01–A23 по [плану](ARTI_MULTIMODAL_AGENT_BATCHES.md). Mini App отложена. A24 — независимая оценка людьми, настоящий Telegram-пилот и эксплуатационный запуск — остаётся отдельным этапом.
 
 ## Состояние батчей
+
+Текущая общая регрессия — **391/391**, без ошибок и пропусков, 536.14 секунды: [отчёт](evaluation/materials_full_tests.json). После неё отдельно пройдены **3/3** финальных acceptance checks UI/partial output/RP-topic: [отчёт](evaluation/agents_acceptance_final.json). SQL выполнялся только в disposable базах, Telegram calls отсутствовали. Более ранние числа ниже относятся к зафиксированным этапам.
+
+Renderer corpus — **3/3**: плотный граф, сравнение с пропусками, точные отрицательные/малые значения; PDF растеризованы и визуально проверены, все элементы/числа сохранены: [отчёт](evaluation/artifacts_render.json). Live planner `stealth/space-bunny-alpha` — **4/4** synthetic cases, 4 запроса: exact values, source injection, unknown data, настоящий dataset calculation: [финальный отчёт](evaluation/agents_live.json). Предыдущие прогоны не скрыты: [initial 1/4](evaluation/agents_live_initial.json), [schema 3/4](evaluation/agents_live_schema.json), [input fence 3/4](evaluation/agents_live_input_fence.json). Всего в этой серии 28 provider calls; сообщённая provider usage cost — 0. Эти fixtures не являются независимым научным benchmark или Telegram-пилотом.
+
+Порядок запуска и команд: [студия и агентские функции](ARTI_STUDIO_AGENT_RUNBOOK.md).
 
 | Батч | Сделано | Что ещё нужно для полной приёмки |
 | --- | --- | --- |
@@ -17,7 +23,18 @@
 | A09 | Fixed ffmpeg frames/scenes, actual PTS, dense refinement, audio alignment, immutable replay/storyboard, opt-in video intake и bounded public URL fetch. | 9 tests, 4/4 owned video/OCR cases. Hosted pages требуют разрешённого stream adapter; direct media поддерживаются. Human/real video corpus — A24. |
 | A10 | Scoped SQL index до ranking, current evidence/quotes/coverage, transcript overlays, provenance/late guards, participant reviews и decaying gist отдельно от точных фактов. | 7 сценарных tests. Лексический match не является semantic entailment; широкая оценка retrieval и field corpus — A24. |
 | A11 | Audience-bound projects, selection, роли, goal/questions/history/CAS, accepted head отдельно от proposal; reviewable publication и atomic author-granted copies, source/project revoke fences. | Общая регрессия 343/343; 11-я проверка native preview/membership отдельно 1/1. Native Telegram проверен doubles; полевой пилот — A24. |
-| A12–A23 | План и критерии приёмки сохранены; пользователь поручил реализацию. | Работа продолжается; A12 начат. |
+| A12 | ArtifactSpec: девять форматов, стабильные элементы/связи, статусы, источники, Decimal quantities/intervals, единицы и проверяемые даты. Literal quotes и current dataset/computation proofs; причинность только как точная цитата источника. | Semantic entailment и истинность цитируемого документа не выводятся из совпадения текста. Linear/log axes; broken axes не поддерживаются. |
+| A13 | Единая измеренная сцена PNG/SVG/PDF, закреплённый кириллический шрифт и лицензия, страницы/переносы, bounds/overlaps/omissions, подписанные пропуски и микрозначения; направленные связи и подробные карточки. | 3/3 renderer corpus, PDF действительно растеризованы и просмотрены. Человеческое качество дизайна — A24. |
+| A14 | Проверяемые контрастные стили, density, подтверждённые предпочтения; декоративные original/generated variants с источниками, параметрами и удалением зависимых pixels. | Paid image/video/music adapters проверены doubles, без вызовов этих провайдеров. Качество художественной генерации не измерялось. |
+| A15 | Immutable revisions, ограниченные patches, CAS/conflicts, diff, rollback, accepted head отдельно; связь с результатами проекта и source invalidation. | Возврат истории разрешён только при живых источниках; отозванный результат не становится актуальным через rollback. |
+| A16 | Telegram commands, opaque callbacks, выбор формата кнопкой, reply patches, исходники/экспорты/принятие, durable processing card и edits не чаще 5 секунд, подтверждённые receipts и unknown suppression. | Native transport doubles; реальный смешанный пользовательский Telegram-пилот — A24. Ручной `/task show` может открыть новую карточку по явной просьбе. |
+| A17 | 24 versioned tools, Draft 2020-12 schemas, closed planner protocol, exact action preview и CapabilityGrant по ресурсам, аудитории, адресату, бюджету, expiry/revoke. | Контекст источника не выдаёт разрешения. Новый агент opt-in; legacy media commands ещё доступны и используют те же generator functions. |
+| A18 | PostgreSQL Tasks/calls/checkpoints, leases/fencing/heartbeat, durable planning, budgets, pause/resume/cancel, verified output reuse, external intent/receipt/unknown и supported reconciliation. | Exactly-once для Telegram и произвольного внешнего API не заявляется; unknown write автоматически не повторяется. |
+| A19 | DAG, bounded replans/stagnation, независимые reads максимум два, shared-effect advisory locks между workers, deterministic completion checks, источник каждого результата. | Live planner 4/4 owned cases после исправлений; это не независимый benchmark сложных агентских задач. |
+| A20 | Bounded public fetch/search contract, snapshots/quotes/positions, dataset transforms/compute, infographic export, PDF/DOCX с таблицами/изображениями и CSV/XLSX; изолированный декларативный runtime. | Search/calendar/tasks/storage явно unavailable без настроенного подключения. Contract/replay tests не заменяют реальную авторизацию сервиса. Runtime выполняет закрытые data operations, не произвольный Python. |
+| A21 | Предложения, позиции/возражения, подтверждение организатором и отзыв решения; поручение/срок/добровольное принятие/отказ; current project context с WorkflowUse и source fences; групповые подписки через G arbiter. | Молчание не голос; подтверждение организатором не единогласие. DM и другие топики не попадают в общий контекст. |
+| A22 | Procedures из verified Tasks, input schemas/control examples, user confirmation, pinned tool versions, независимые proposals до принятия, revisions/preferences и stop/delete. | Примеры проверяют контракты/результаты, не выполняют оплачиваемые внешние записи. Старые grants не переносятся; отзыв исходных примеров приостанавливает зависимую процедуру. |
+| A23 | Source/audience-bound subscriptions, timezone/DST, coalescing, stable runs/restart, meaningful content fingerprints, quiet unchanged state, pause/change/show/last/delete и completion limits. Квест, художественная история с иллюстрациями, визуальный обзор и прогресс → сохранённый Artifact. | История явно fiction; выполнение упражнения не mastery. Реальный длительный пилот подписок — A24. |
 | A24 | План общей оценки сохранён. | Реальный пилот и человеческая оценка ещё не проведены. |
 
 ## Реализованное поведение
@@ -74,7 +91,7 @@ Live `stealth/space-bunny-alpha`, прямой OpenRouter endpoint: текст �
 
 Текущее долговечное Telegram intake выключено по умолчанию; включается `ARTI_MATERIALS_ENABLED=1`. [Runbook](ARTI_MULTIMODAL_RUNBOOK.md) описывает каталог, квоты, maintenance, manifest моделей, тестовые команды и отключение. Код и миграции проверены программно; рабочий бот не запускался и рабочая база не мигрировалась в ходе этого этапа.
 
-Следующая работа — A12–A15: спецификация, рендер, оформление и версии инфографики; затем A16–A23 по поручению пользователя. Студия остаётся контрольной точкой A16; агентский исполнитель — A20. Оценки людей и настоящий Telegram-пилот остаются отдельной работой A24.
+Следующая контрольная точка — A24: независимый корпус, человеческая оценка, настоящий Telegram-пилот и выбранные реальные внешние подключения. `ARTI_AGENTS_ENABLED=1` включает новый исполнитель; флаг по умолчанию выключен. В этой сессии рабочий Telegram-процесс и рабочая база не запускались/не мигрировались.
 
 ## A06: таблицы и проверяемые расчёты
 

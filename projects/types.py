@@ -40,3 +40,15 @@ class ProjectUse:
         project.require('view',active=not self.allow_archived)
         if project.access_generation!=self.access_generation: raise MaterialError('project_access_changed')
         if self.revision is not None and project.revision!=self.revision: raise MaterialError('project_revision_changed')
+
+@dataclass(frozen=True)
+class WorkflowUse:
+    id: str
+    actor: object
+    repository: object
+    revision: int
+    head: str
+    status: str
+    async def validate(self):
+        row=await self.repository.get(self.id,self.actor)
+        if row['revision']!=self.revision or row['head']!=self.head or row['status']!=self.status: raise MaterialError('workflow_revision_changed')

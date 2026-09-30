@@ -127,6 +127,9 @@ def run_with_restart():
                 spawn_worker(run_supervised(group_scheduler,'group_proactivity',get_runtime(),app.bot))
                 from materials.runtime import maintenance_worker
                 spawn_worker(run_supervised(maintenance_worker,'materials_maintenance'))
+                from agents.runtime import agent_worker,processing_card_worker
+                spawn_worker(run_supervised(agent_worker,'agent_tasks',app.bot))
+                spawn_worker(run_supervised(processing_card_worker,'agent_cards',app.bot))
                 logger.info("Проактивный воркер шедулера запущен (supervised).")
                 logger.info("Транспорт готов; active-контексты сохраняют квитанции и не повторяют неоднозначные отправки.")
 
@@ -183,6 +186,13 @@ def run_with_restart():
             application.add_handler(CommandHandler('material_review',material_review_command))
             from bot.project_commands import project_command
             application.add_handler(CommandHandler('project',project_command))
+            from bot.artifact_commands import artifact_command,task_command
+            from bot.workflow_commands import workflow_command
+            from bot.work_cards import work_callback
+            application.add_handler(CommandHandler('artifact',artifact_command))
+            application.add_handler(CommandHandler('task',task_command))
+            application.add_handler(CommandHandler(['decision','assignment','procedure','subscription','scenario'],workflow_command))
+            application.add_handler(CallbackQueryHandler(work_callback,pattern='^work:'))
             application.add_handler(CommandHandler('transcript_fix',transcript_fix_command))
             application.add_handler(CommandHandler('listen',listen_command))
             from bot.commands import handle_memory_archive_command

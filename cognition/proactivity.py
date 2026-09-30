@@ -160,6 +160,9 @@ class GroupService:
     async def valid(self,row,frame,policy,revision):
         now=self.runtime.clock(); p=object_value(row['payload'])
         if not p or row['expires_at']<=now: return 'expired'
+        if p.get('subscription_id'):
+            from agents.group_tasks import guard_subscription
+            if not await guard_subscription(self.pool,p): return 'workflow_revoked'
         if frame.closed: return 'topic_closed'
         if row['policy_revision']!=revision: return 'policy_changed'
         reason=policy.reason(now,'reminder' if row['kind']=='reminder' else 'initiative')
@@ -334,11 +337,14 @@ class GroupService:
         from cognition.runtime import PreparedTurn,CURRENT_TURN
         event=load_event(source['payload'])
         style=expression(await self.runtime.personal_state(frame.context_id,event.evidence.owner_id),task_serious=frame.serious)
-        text=('Напоминание: '+p['description'])[:600] if row['kind']=='reminder' else await self.judge.compose(frame,p,judgement,replace(style,disclosure=0.).instruction())
+        text=p['workflow_text'] if p.get('subscription_id') else (('Напоминание: '+p['description'])[:600] if row['kind']=='reminder' else await self.judge.compose(frame,p,judgement,replace(style,disclosure=0.).instruction()))
         if not text: await self.cancel(row,'no_added_value'); return
         fresh=await self.frame(frame.context_id); latest,rev=await self.policies.get(frame.chat_id,frame.topic_id)
         reason=await self.valid(row,fresh,latest,rev)
         if reason: await self.cancel(row,reason); return
+        if p.get('subscription_id'):
+            member=await bot.get_chat_member(frame.chat_id,p['owner_id'])
+            if member.status not in ('member','administrator','creator'): await self.cancel(row,'workflow_member_left'); return
         turn=PreparedTurn(self.runtime,frame.context_id,source['id'],replace(event,event_id='group:'+row['candidate_key']),style,'',ctx['suppression_epoch'],'active')
         turn.group_candidate_id=row['id']; turn.group_lease_token=token; turn.group_policy_revision=revision; turn.group_frame_revision=fresh.revision
         scope=TransportScope(frame.chat_id,frame.topic_id,'supergroup',event.evidence.owner_id,p['message_id'],True)
@@ -358,8 +364,14 @@ class GroupService:
                 else: await send_with_receipt(method,(),kwargs,'reaction' if judgement.channel=='reaction' else 'message')
             except DeliveryUnknown:
                 async with self.pool.acquire() as conn: await conn.execute("UPDATE group_candidates SET status='delivery_unknown',payload=NULL WHERE id=$1",row['id'])
+                if p.get('subscription_id'):
+                    from agents.group_tasks import record_group_delivery
+                    await record_group_delivery(self.pool,p,'unknown',row['candidate_key'])
                 await self.decision(row,'abstain','delivery_unknown'); return
             async with self.pool.acquire() as conn: await conn.execute("UPDATE group_candidates SET status='delivered',payload=NULL,charged_at=$2 WHERE id=$1 AND status='claimed'",row['id'],self.runtime.clock())
+            if p.get('subscription_id'):
+                from agents.group_tasks import record_group_delivery
+                await record_group_delivery(self.pool,p,'delivered',row['candidate_key'])
             if p.get('intention_id'):
                 async with self.pool.acquire() as conn:
                     await conn.execute("UPDATE cognitive_artifacts SET payload=jsonb_set(jsonb_set(payload,'{delivered}','true'::jsonb),'{delivered_at}',to_jsonb($2::text)) WHERE id=$1 AND suppressed_at IS NULL",p['intention_id'],self.runtime.clock().isoformat())
@@ -369,6 +381,10 @@ class GroupService:
     async def delivery_guard(self,turn,conn):
         row=await conn.fetchrow('SELECT * FROM group_candidates WHERE id=$1 FOR UPDATE',turn.group_candidate_id)
         if not row or row['status']!='claimed' or row['lease_token']!=turn.group_lease_token: return False
+        p=object_value(row['payload'])
+        if p.get('subscription_id'):
+            from agents.group_tasks import guard_subscription
+            if not await guard_subscription(self.pool,p,conn): return False
         lease=await conn.fetchval('SELECT 1 FROM group_action_leases WHERE context_id=$1 AND token=$2 AND lease_until>$3',turn.context_id,turn.group_lease_token,self.runtime.clock())
         revision=await conn.fetchval('SELECT revision FROM group_topic_runtime WHERE context_id=$1',turn.context_id)
         if not lease or revision!=turn.group_frame_revision: return False

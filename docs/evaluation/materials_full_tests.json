@@ -1,11 +1,11 @@
 {
   "suite": "all",
-  "tests": 343,
-  "passed": 343,
+  "tests": 391,
+  "passed": 391,
   "failures": [],
   "errors": [],
   "skipped": [],
-  "duration_seconds": 303.4,
+  "duration_seconds": 536.14,
   "provider_calls": 0,
   "working_database_mutated": false,
   "database": "disposable arti_cognition_test_<uuid>"

@@ -16,7 +16,10 @@ def main():
         job = apply_resource_limits(request['limits'])
         from materials.extractors.documents import DocumentExtractor, IsolatedNativeExtractor
         data = (root / 'original').read_bytes()
-        if request['operation']=='video_frames':
+        if request['operation']=='declarative':
+            from agents.sandbox import run
+            value=json.loads(data); result=dict(values=run(value['program'],value['inputs']))
+        elif request['operation']=='video_frames':
             from materials.extractors.video_decoder import video_frames
             from materials.validation import inspect_bytes
             inspect_bytes(data,'video',request['mime'])

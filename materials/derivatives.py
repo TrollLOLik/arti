@@ -78,7 +78,12 @@ class DerivativeRepository:
         refs=[asdict(r) if isinstance(r,EvidenceRef) else r for r in refs]
         if not kind or len(kind)>80 or len(inputs)>32: raise MaterialError('invalid_derivative_kind')
         for ref in refs:
-            await self.materials.resolve(EvidenceRef(**{**ref,'locator':Locator.from_dict(ref['locator'])}),actor)
+            # An original asset dependency (e.g. a decorative bitmap) carries
+            # access/version/erasure provenance. It cannot verify a quote or value.
+            if set(ref)=={'asset_id','asset_version'}: continue
+            try: evidence=EvidenceRef(**{**ref,'locator':Locator.from_dict(ref['locator'])})
+            except (TypeError,KeyError,ValueError): raise MaterialError('invalid_derivative_evidence') from None
+            await self.materials.resolve(evidence,actor)
         envelope=dict(contract='derivative-envelope-1',body=body,sources=refs,inputs=sorted(set(inputs)))
         id=sha256(canonical([actor.realm,kind,envelope]).encode()).hexdigest()
         async with self.pool.acquire() as conn,conn.transaction():

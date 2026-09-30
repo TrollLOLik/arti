@@ -959,6 +959,11 @@ async def process_user_reply(request, bot):
             attached=await projects.materials_for(project.id,actor)
             project_ids=[m['asset_id'] for m in attached if m['status']=='current']
             request['_project_context']=dict(id=project.id,title=project.title,goal=project.goal,questions=project.questions,revision=project.revision)
+            from projects.context import workflow_context
+            workflows,uses,causal=await workflow_context(service.repository,project.id,actor)
+            request['_project_context']['workflows']=workflows
+            CURRENT_DERIVATIVE_USE.set(CURRENT_DERIVATIVE_USE.get()+tuple(uses))
+            request['_cognitive_source_ids']=sorted(set(request.get('_cognitive_source_ids',[])+causal))
     if enabled() and not document_text and user_id and CURRENT_SCOPE.get() is not None:
         from materials.retrieval import recall
         recalled,derivatives,causal=await recall(service,actor,user_message,asset_ids=project_ids)
@@ -1004,6 +1009,9 @@ async def process_user_reply(request, bot):
     using_cognition=cognitive_turn is not None and (cognitive_turn.active or cognitive_turn.event.audience.kind in ('group','topic'))
     if cognitive_turn: cognitive_turn.supporting_event_ids=request.get('_cognitive_source_ids',[])
     if using_cognition and cognitive_turn.repeated_delivery:
+        return
+    from bot.agent_requests import handle_agent_request
+    if enabled() and user_id and await handle_agent_request(request,bot):
         return
     if using_cognition:
         if cognitive_turn.preferences.get('voice') is False or cognitive_turn.preferences.get('text') is True:

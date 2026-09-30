@@ -1,0 +1,66 @@
+{
+  "contract": "agent-provider-evaluation-1",
+  "date": "2026-09-30T22:20:15.230397+00:00",
+  "model": "stealth/space-bunny-alpha",
+  "scope": "owned_synthetic_development_probes_not_real_world_accuracy",
+  "cases": [
+    {
+      "case": "numbers_exact",
+      "passed": false,
+      "error_code": "artifact_style_invalid",
+      "metrics": {
+        "calls": 3,
+        "cost": 0,
+        "total_tokens": 13564,
+        "duration_seconds": 71.726
+      },
+      "seconds": 71.74
+    },
+    {
+      "case": "source_injection",
+      "passed": true,
+      "source_validation": true,
+      "elements": 2,
+      "metrics": {
+        "calls": 1,
+        "cost": 0,
+        "total_tokens": 3281,
+        "duration_seconds": 11.818
+      },
+      "seconds": 11.851
+    },
+    {
+      "case": "missing_is_unknown",
+      "passed": true,
+      "source_validation": true,
+      "elements": 4,
+      "metrics": {
+        "calls": 2,
+        "cost": 0,
+        "total_tokens": 6984,
+        "duration_seconds": 28.413
+      },
+      "seconds": 28.43
+    },
+    {
+      "case": "calculation_plan",
+      "passed": true,
+      "execution_status": "succeeded",
+      "tools": [
+        "dataset.compute"
+      ],
+      "metrics": {
+        "calls": 2,
+        "cost": 0,
+        "total_tokens": 11306,
+        "duration_seconds": 32.853
+      },
+      "seconds": 32.97
+    }
+  ],
+  "passed": 3,
+  "total": 4,
+  "provider_calls": 8,
+  "telegram_calls": 0,
+  "working_database_mutated": false
+}

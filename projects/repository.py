@@ -131,6 +131,7 @@ class ProjectRepository:
         derivatives=DerivativeRepository(self.materials)
         async with self.pool.acquire() as conn,conn.transaction():
             p=await self._get(conn,id,actor,lock=True); p.require('edit'); self._cas(p,expected)
+            if status in ('accepted','rejected'): p.require('approve')
             refs=await derivatives._chain(conn,derivative_id,actor)
             await derivatives._sources(conn,actor,refs)
             await conn.execute('''INSERT INTO arti_project_result_candidates(project_id,result_key,derivative_id,actor_id,status,reason)
