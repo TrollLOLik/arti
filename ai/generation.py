@@ -471,6 +471,8 @@ async def generate_response_stream(
                 logger.info("🎭 Подмешиваем директиву тона по эмоц. состоянию")
 
     # --- 1. ОБЩАЯ ПОДГОТОВКА КОНТЕКСТА ---
+    from materials.runtime import guard_current
+    await guard_current()
     from cognition.prompting import assemble_prompt
     final_prompt, prompt_report = assemble_prompt(actual_role,prompt,chat_context,memory_context,model=model)
     from cognition.runtime import CURRENT_TURN
@@ -491,28 +493,34 @@ async def generate_response_stream(
 
     # --- 2. ОПРЕДЕЛЯЕМ НУЖДАЕТСЯ ЛИ ЗАПРОС В ПОИСКЕ ---
     should_search = False
-    if not base64_images and not user_location:
+    if not user_location and not is_rp_mode:
         intent = await analyze_intent(prompt)
         should_search = intent.get("web_search", False)
 
-    # Qwen — исключительно текстовая модель, поэтому переключаем на Gemini
-    if ("qwen" in model.lower() or "qw" in model.lower()) and (base64_images or should_search or uploaded_video_file or user_location):
-        logger.info("Медиа, карты или поиск в запросе, переключаем Qwen обратно на Gemini.")
-        model = "gemini-3.1-flash-lite-preview"
-
-    # Map-запросы с геолокацией: только Gemini имеет Google Maps Grounding.
-    # Non-Gemini модели при наличии координат начинают галлюцинировать места.
-    if user_location and not model.lower().startswith("gemini"):
-        logger.info("🗺 Map-запрос с геолокацией для non-Gemini модели — переключаем на Gemini для Google Maps Grounding.")
-        model = "gemini-2.5-flash"
+    from ai.providers.contracts import GenerationRequest, ImageInput
+    from ai.capabilities import registry_for
+    from config import OMNIROUTE_BASE_URL
+    from materials.types import MaterialError
+    try:
+        typed_request = GenerationRequest(final_prompt, actual_role,
+            tuple(ImageInput.from_base64(value) for value in base64_images), uploaded_video_file,
+            bool(should_search), bool(user_location))
+        registry = registry_for(model, OMNIROUTE_BASE_URL)
+        route = registry.route(model, typed_request,
+            provider='gemini' if model.startswith('gemini') else 'openai',
+            endpoint='google-ai-studio' if model.startswith('gemini') else OMNIROUTE_BASE_URL)
+        model = route.endpoint.model
+        logger.info('Provider route: model=%s provider=%s reason=%s evidence=%s', model, route.endpoint.provider, route.reason, route.endpoint.evidence)
+    except (MaterialError, ValueError, KeyError, TypeError) as exc:
+        logger.warning('Request/capability validation failed: %s', getattr(exc, 'code', type(exc).__name__))
+        return ERROR_RESPONSE_GENERIC, False, [], []
 
     # =====================================================================
     # 🌟 ВЕТКА OMNIROUTE (Claude, Qwen, DeepSeek, etc.)
     # =====================================================================
-    if not model.lower().startswith("gemini"):
-        from config import OMNIROUTE_BASE_URL
+    if route.endpoint.provider == 'openai':
         client = AsyncOpenAI(
-            base_url=OMNIROUTE_BASE_URL,
+            base_url=route.endpoint.endpoint,
             api_key=os.getenv("OMNIROUTE_API_KEY", "")
         )
 
@@ -529,12 +537,11 @@ async def generate_response_stream(
                 + final_prompt
             )
 
-        messages = [
-            {"role": "system", "content": actual_role},
-            {"role": "user", "content": omni_prompt}
-        ]
+        from dataclasses import replace
+        messages = replace(typed_request, prompt=omni_prompt).openai_messages()
 
         try:
+            await guard_current()
             logger.info(f"🤖 Генерация через OmniRoute: {model}")
             response = await client.chat.completions.create(
                 model=model,
@@ -552,41 +559,17 @@ async def generate_response_stream(
     # =====================================================================
     # 🔵 ВЕТКА GOOGLE AI STUDIO (GEMINI)
     # =====================================================================
-    parts = []
-    
-    if uploaded_video_file:
-        logger.info("В запросе присутствует обработанное загруженное видео, добавляем в payload. Используем gemini-3.1-flash-lite-preview.")
-        model = "gemini-3.1-flash-lite-preview"
-        parts.append(uploaded_video_file)
-    
-    if base64_images:
-        logger.info(f"В запросе есть картинки ({len(base64_images)} шт), добавляем в payload. Используем gemini-3.1-flash-lite-preview.")
-        model = "gemini-3.1-flash-lite-preview"
-        
-        for b64 in base64_images:
-            if "," in b64:
-                b64 = b64.split(",")[1]
-            image_bytes = base64.b64decode(b64)
-            parts.append(
-                types.Part.from_bytes(
-                    data=image_bytes,
-                    mime_type='image/jpeg' 
-                )
-            )
-
-    parts.append(types.Part.from_text(text=final_prompt))
+    parts = typed_request.gemini_parts()
 
     active_tools = None
         
     if should_search:
-        logger.info("🔍 Активирован встроенный поиск Google (переключаем на gemini-2.5-flash)")
-        model = "gemini-2.5-flash"
+        logger.info("Активирован поиск для выбранного совместимого endpoint")
         active_tools = [types.Tool(google_search=types.GoogleSearch())]
         
     if user_location:
         logger.info(f"🗺 Активирован Google Maps Grounding для координат {user_location['lat']}, {user_location['lng']}.")
         # Для заземления на картах лучше всего подходит 2.0-flash
-        model = "gemini-2.5-flash"
         
         if active_tools is None:
             active_tools = []
@@ -632,6 +615,7 @@ async def generate_response_stream(
 
     for attempt in range(max_retries):
         try:
+            await guard_current()
             logger.info(f"🤖 Генерация через Google AI Studio: {current_model}")
             response = await asyncio.to_thread(
                 genai_client.models.generate_content,
@@ -684,6 +668,13 @@ async def generate_response_stream(
             
             if is_overloaded and not switched_to_fallback and current_model in FALLBACK_MODELS:
                 fallback = FALLBACK_MODELS[current_model]
+                compatible = next((c for c in registry.endpoints if c.model == fallback and c.provider == 'gemini' and c.supports(typed_request)), None)
+                if compatible is None:
+                    logger.warning('No compatible fallback for current modalities/features')
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(2)
+                        continue
+                    return ERROR_RESPONSE_GENERIC, False, [], []
                 logger.info(f"⚡ Модель {current_model} перегружена, переключаемся на фолбэк: {fallback}")
                 current_model = fallback
                 switched_to_fallback = True

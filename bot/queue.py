@@ -244,10 +244,13 @@ async def _extract_photo_urls(update, context) -> list:
 
 
 async def _execute_generation_task(task: dict):
+    from materials.runtime import CURRENT_MATERIAL_USE, guard_current
+    CURRENT_MATERIAL_USE.set(task.get('_material_uses', ()))
     from cognition.runtime import CURRENT_TURN
     CURRENT_TURN.set(task.get('_cognitive_turn'))
     from cognition.scope import CURRENT_SCOPE
     CURRENT_SCOPE.set(task.get('_telegram_scope'))
+    await guard_current()
     chat_id = task['chat_id']
     task_type = task['type']
     prompt = task.get('prompt', '')
@@ -583,6 +586,8 @@ async def music_worker():
 
 
 async def enqueue_generation(task: dict, bot, chat_id):
+    from materials.runtime import CURRENT_MATERIAL_USE
+    task['_material_uses'] = CURRENT_MATERIAL_USE.get()
     from cognition.runtime import CURRENT_TURN
     task['_cognitive_turn'] = CURRENT_TURN.get()
     from cognition.scope import CURRENT_SCOPE
@@ -651,7 +656,13 @@ async def enqueue_reply(chat_id, user_id, user_name, user_message, message_id, c
         'is_video_note': is_video_note
     }
     request['_cognitive_context'] = source_context
-    request['_cognitive_source_ids'] = source_ids
+    for use in getattr(document_text, 'material_uses', ()):
+        if use.source_event_id is not None and source_context is not None:
+            material_identity = (use.actor.scope.persona_id,use.actor.scope.chat_id,use.actor.scope.mode,use.actor.scope.scene_id,use.actor.scope.topic_id)
+            if source_context.identity() == material_identity:
+                source_ids.append(use.source_event_id)
+    request['_cognitive_source_ids'] = sorted(set(source_ids))
+    request['_material_uses'] = tuple(getattr(document_text, 'material_uses', ()))
     from cognition.scope import CURRENT_SCOPE
     request['_telegram_scope'] = CURRENT_SCOPE.get()
     
@@ -711,6 +722,7 @@ async def _user_text_worker(user_id: int):
                 if len(sources)>16 or len(request.get('user_message',''))+len(extra.get('user_message',''))>8000:
                     carry=extra; break
                 request['_cognitive_source_ids']=sources
+                request['_material_uses'] = tuple(dict.fromkeys(request.get('_material_uses', ()) + extra.get('_material_uses', ())))
                 extra_msg = extra.get('user_message', '')
                 if extra_msg:
                     request['user_message'] = request.get('user_message', '') + '\n' + extra_msg
@@ -764,7 +776,8 @@ async def _user_text_worker(user_id: int):
             except Exception as e:
                 from cognition.delivery import DeliveryUnknown,DeliverySuppressed
                 from cognition.repositories import SuppressedEvidence
-                if isinstance(e,(DeliveryUnknown,DeliverySuppressed,SuppressedEvidence)):
+                from materials.types import MaterialError
+                if isinstance(e,(DeliveryUnknown,DeliverySuppressed,SuppressedEvidence,MaterialError)):
                     logger.warning('Transport outcome prevents fallback: %s',type(e).__name__)
                     continue
                 logger.error(f"Ошибка при обработке текста для user {user_id}: {e}", exc_info=True)
@@ -905,6 +918,12 @@ async def extract_and_save_events_task(chat_id: int, user_message: str, user_tz:
 async def process_user_reply(request, bot):
     from cognition.scope import CURRENT_SCOPE
     CURRENT_SCOPE.set(request.get('_telegram_scope'))
+    from materials.runtime import CURRENT_MATERIAL_USE, guard_current
+    CURRENT_MATERIAL_USE.set(request.get('_material_uses', ()))
+    if request.get('_material_revoked'):
+        from materials.types import MaterialError
+        raise MaterialError('material_erased')
+    await guard_current()
     """Обрабатывает текстовый ответ: генерация, очистка, голос, медиа-теги."""
     chat_id = request['chat_id']
     user_id = request['user_id']

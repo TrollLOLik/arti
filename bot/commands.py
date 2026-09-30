@@ -3817,6 +3817,21 @@ async def handle_forget_command(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     mode = "rp" if rp_mode_state.get(chat_id) else "default"
+    from materials.runtime import enabled as materials_enabled
+    if materials_enabled():
+        from materials.runtime import actor_for_current, service_for_bot
+        from materials.types import MaterialError
+        try:
+            actor = await actor_for_current()
+            service = await service_for_bot()
+            assets = await service.repository.own_search(actor, topic)
+            if assets:
+                keyboard = [[InlineKeyboardButton('Стереть материал ' + str(i),callback_data='forget_asset:' + row['id'])] for i,row in enumerate(assets,1)]
+                lines = [str(i) + '. ' + _html.escape(row['filename']) for i,row in enumerate(assets,1)]
+                await update.message.reply_text('\n'.join(lines),reply_markup=InlineKeyboardMarkup(keyboard),parse_mode='HTML')
+                return
+        except MaterialError:
+            pass
     from cognition.runtime import get_runtime
     runtime = get_runtime()
     from cognition.diagnostics import active_context
@@ -3916,7 +3931,7 @@ async def forget_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     data = query.data or ""
-    if not data.startswith(("forget_fact:","forget_source:","forget_set:")):
+    if not data.startswith(("forget_fact:","forget_source:","forget_set:","forget_asset:")):
         await query.answer()
         return
 
@@ -3924,6 +3939,23 @@ async def forget_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id if query.from_user else None
     if chat_id is None or user_id is None:
         await query.answer()
+        return
+
+    if data.startswith('forget_asset:'):
+        from materials.runtime import actor_for_current, service_for_bot, enabled
+        from materials.lifecycle import MaterialLifecycle
+        from materials.types import MaterialError
+        if not enabled():
+            await query.answer('Работа с материалами отключена.',show_alert=True)
+            return
+        try:
+            actor = await actor_for_current()
+            service = await service_for_bot()
+            await MaterialLifecycle(service.repository,service.store).forget(data.split(':',1)[1],actor)
+            await query.answer('Материал удалён.')
+            await query.edit_message_text('Материал и его извлечения удалены; зависимые результаты отозваны.')
+        except MaterialError:
+            await query.answer('Материал недоступен или уже удалён.',show_alert=True)
         return
 
     if data.startswith('forget_set:'):

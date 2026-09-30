@@ -35,8 +35,15 @@ async def extract_text_from_file(file_path: Path, file_name: str) -> str:
     return extracted_text
 
 
-async def extract_document_text(context, doc) -> Optional[str]:
+async def extract_document_text(context, doc, source_message=None) -> Optional[str]:
     """Скачивает и извлекает текст из документа для reply-анализа."""
+    from materials.runtime import enabled, capture_document
+    if enabled():
+        try:
+            return await capture_document(context, doc, source_message)
+        except Exception as exc:
+            logger.warning('Structured document extraction failed: %s', getattr(exc, 'code', type(exc).__name__))
+            return None
     file_name = doc.file_name or "unknown"
     safe_name = Path(file_name).name
     name_lower = file_name.lower()

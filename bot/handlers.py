@@ -304,7 +304,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 logger.error(f"Ошибка при загрузке медиа из reply: {e}")
 
         elif original.document:
-            document_text_reply = await extract_document_text(context, original.document)
+            document_text_reply = await extract_document_text(context, original.document, original)
             if document_text_reply:
                 if not user_message:
                     user_message = "Проанализируй этот документ."
@@ -1359,7 +1359,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info("Документ в группе без триггера (нет reply/упоминания) — пропускаем.")
         return
 
-    if doc.file_size > 10 * 1024 * 1024:
+    if doc.file_size and doc.file_size > 10 * 1024 * 1024:
         await update.message.reply_text(
             "<i>смотрит на размер файла с осуждением</i>\n\n"
             "<blockquote>«Слишком тяжело. Я читаю только до 10 МБ — "
@@ -1374,7 +1374,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='HTML'
     )
 
-    extracted_text = await extract_document_text(context, doc)
+    extracted_text = await extract_document_text(context, doc, update.message)
 
     if not extracted_text:
         await status_msg.edit_text(
@@ -1398,7 +1398,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     short_name = (doc.file_name or "документ")[:40]
     await status_msg.edit_text(
         f"<i>откладывает в сторону, поднимает взгляд</i>\n\n"
-        f"<blockquote>«<b>{short_name}</b> — получила, прочла первый абзац.\n"
+        f"<blockquote>«<b>{short_name}</b> — получила.\n"
         f"Что с ним делать?»</blockquote>",
         reply_markup=_doc_action_keyboard(),
         parse_mode='HTML'
@@ -1456,7 +1456,9 @@ async def document_action_callback(update: Update, context: ContextTypes.DEFAULT
         parse_mode='HTML'
     )
 
-    final_prompt = f"Документ '{file_name}':\n\n{extracted_text}\n\nЗадание: {prompt_text}"
+    # Content is passed separately so a cognitive user event does not duplicate
+    # the entire derivative or impersonate it as the callback author's utterance.
+    final_prompt = f"Документ '{file_name}'. Задание: {prompt_text}"
 
     await enqueue_reply(
         chat_id, user_id, user_name,

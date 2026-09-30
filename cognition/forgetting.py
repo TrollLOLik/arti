@@ -37,6 +37,12 @@ async def forget_cognitive_sources(pool,cid,owner,sources):
     async with pool.acquire() as lock:
         await lock.execute("SELECT pg_advisory_lock(hashtext('cognition-rebuild')::int,$1::int)",cid)
         try:
+            context = await lock.fetchrow('SELECT * FROM cognitive_contexts WHERE id=$1',cid)
+            if context:
+                from materials.lifecycle import forget_sources
+                from materials.types import context_identity
+                identity = context_identity(context['persona_id'],context['chat_id'],context['topic_id'],context['mode'],context['scene_id'])
+                await forget_sources(pool,identity,owner,sources)
             owned = await lock.fetchval('SELECT 1 FROM cognitive_events WHERE context_id=$1 AND owner_id=$2 AND source_id=ANY($3::text[])',cid,owner,list(set(sources)))
             if not owned:
                 return dict(events=0,artifacts=0)

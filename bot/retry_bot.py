@@ -37,6 +37,9 @@ class RetryBot(ExtBot):
         turn = CURRENT_TURN.get()
         name = getattr(method,'__name__','')
         destination=kwargs.get('chat_id',args[0] if args else None)
+        if name.startswith('send_') and name != 'send_chat_action' or name in ('copy_message','forward_message'):
+            from materials.runtime import guard_current
+            await guard_current(destination)
         if scope and scope.chat_id==destination and scope.topic_id>0 and (name.startswith('send_') or name in ('copy_message','forward_message')):
             if kwargs.get('message_thread_id',scope.topic_id)!=scope.topic_id: raise ValueError('Queued destination topic changed')
             kwargs['message_thread_id']=scope.topic_id

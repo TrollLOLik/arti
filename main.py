@@ -125,6 +125,8 @@ def run_with_restart():
                 spawn_worker(run_supervised(intention_scheduler,'cognitive_intentions',get_runtime(),app.bot))
                 from cognition.proactivity import group_scheduler
                 spawn_worker(run_supervised(group_scheduler,'group_proactivity',get_runtime(),app.bot))
+                from materials.runtime import maintenance_worker
+                spawn_worker(run_supervised(maintenance_worker,'materials_maintenance'))
                 logger.info("Проактивный воркер шедулера запущен (supervised).")
                 logger.info("Транспорт готов; active-контексты сохраняют квитанции и не повторяют неоднозначные отправки.")
 
@@ -200,7 +202,7 @@ def run_with_restart():
             application.add_handler(CallbackQueryHandler(vclone_clean_callback, pattern="^vclone_clean:"))
             application.add_handler(CallbackQueryHandler(vclone_save_callback, pattern="^vsave:"))
             application.add_handler(CallbackQueryHandler(saved_voice_callback, pattern="^(vsel|vdel):"))
-            application.add_handler(CallbackQueryHandler(forget_callback, pattern="^forget_(fact|source|set):"))
+            application.add_handler(CallbackQueryHandler(forget_callback, pattern="^forget_(fact|source|set|asset):"))
             application.add_handler(CallbackQueryHandler(profile_callback, pattern="^prof_"))
 
             # Обработчики сообщений
