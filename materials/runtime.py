@@ -82,7 +82,7 @@ async def actor_for_current():
     return AccessContext(MaterialScope.from_transport(scope, mode, scene), scope.user_id, scope.sender_ref or '')
 
 
-async def capture_document(context, document, message):
+async def capture_document(context, document, message, *, preloaded_data=None, slot='document'):
     actor = await actor_for_current()
     if message is None or message.chat_id != actor.scope.chat_id:
         raise MaterialError('unknown_document_origin')
@@ -97,14 +97,16 @@ async def capture_document(context, document, message):
     service = await service_for_bot()
     if document.file_size and document.file_size > service.repository.quotas.max_file_bytes:
         raise MaterialError('file_size_limit')
-    file = await context.bot.get_file(document.file_id)
-    if file.file_size and file.file_size > service.repository.quotas.max_file_bytes:
-        raise MaterialError('file_size_limit')
-    data = bytes(await file.download_as_bytearray())
+    if preloaded_data is None:
+        file = await context.bot.get_file(document.file_id)
+        if file.file_size and file.file_size > service.repository.quotas.max_file_bytes:
+            raise MaterialError('file_size_limit')
+        data = bytes(await file.download_as_bytearray())
+    else: data=bytes(preloaded_data)
     origin = 'system' if sender_chat else 'user'
     source = f'telegram:{message.chat_id}:{message.message_id}:{origin}'
     asset = await service.ingest(data, document.file_name or 'document', source_actor,
-        source + ':document', source, getattr(document, 'mime_type', None))
+        source + ':'+slot, source, getattr(document, 'mime_type', None))
     # Register the real original author as causal support for delivered actions.
     # The cognitive source is metadata/caption, not a copied extraction body.
     from cognition.runtime import get_runtime
@@ -126,7 +128,7 @@ async def capture_document(context, document, message):
     from materials.validation import inspect_bytes
     mime = await asyncio.to_thread(inspect_bytes,data,document.file_name or 'document',getattr(document,'mime_type',None))
     eid, bundle = await service.extract(asset['id'], actor, configured_extractor(mime))
-    if not any(b.text.strip() for b in bundle.blocks):
+    if not any(b.text.strip() or b.kind=='image' for b in bundle.blocks):
         raise MaterialError('document_has_no_readable_text')
     use = MaterialUse(asset['id'], actor, bundle.asset_version, asset['generation'], service,cid,event_id)
     await use.validate()
@@ -154,6 +156,14 @@ def invalidate_pending(ids):
     for key, value in list(pending_doc_action.items()):
         if any(u.asset_id in ids for u in getattr(value.get('text'), 'material_uses', ())):
             dict.pop(pending_doc_action, key, None)
+    for key,value in list(getattr(config,'pending_photo_action',{}).items()):
+        if any(u.asset_id in ids for u in value.get('material_uses',())):
+            dict.pop(config.pending_photo_action,key,None)
+    handlers=sys.modules.get('bot.handlers')
+    if handlers is not None:
+        for key,value in list(getattr(handlers,'_media_group_cache',{}).items()):
+            if any(u.asset_id in ids for u in value.get('material_uses',())):
+                handlers._media_group_cache.pop(key,None)
     queue_module = sys.modules.get('bot.queue')
     if queue_module is not None:
         for queue in queue_module._user_queues.values():

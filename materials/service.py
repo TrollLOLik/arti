@@ -63,11 +63,25 @@ class MaterialService:
         if cached:
             return cached
         row, rev, data = await self.read_bytes(aid, actor)
-        if hasattr(extractor, 'extract_async'):
+        if hasattr(extractor,'extract_authorized'):
+            async def validate():
+                current,_=await self.repository.read(aid,actor,rev['version'])
+                if current['generation']!=row['generation'] or current['current_version']!=rev['version']:
+                    from materials.types import MaterialError
+                    raise MaterialError('stale_material_result')
+            bundle=await extractor.extract_authorized(aid,rev['version'],data,rev['mime'],validate=validate)
+        elif hasattr(extractor, 'extract_async'):
             bundle = await extractor.extract_async(aid, rev['version'], data, rev['mime'])
         else:
             bundle = await asyncio.to_thread(extractor.extract, aid, rev['version'], data, rev['mime'])
-        eid = await self.repository.save_extraction(actor, bundle, row['generation'])
+        try: eid = await self.repository.save_extraction(actor, bundle, row['generation'])
+        except Exception as exc:
+            # Concurrent visual requests may observe differently. The first
+            # committed immutable observation wins; never return mismatched refs.
+            if getattr(exc,'code',None)!='extractor_version_conflict' or getattr(extractor,'analyzer',None) is None: raise
+            cached=await self.repository.extraction(aid,actor,extractor.cache_version)
+            if cached is None: raise
+            return cached
         return eid, bundle
 
     async def evidence_region(self, ref, actor, extractor, *, reread=False):
@@ -105,6 +119,30 @@ class MaterialService:
             result['extraction_id'] = await self.repository.save_extraction(actor,bundle,row['generation'])
             result['bundle'] = bundle.to_dict()
         return result
+
+    async def observe_image_region(self,ref,actor,extractor,analyzer):
+        """A separate visual observation, mapped back to the cited source region."""
+        from dataclasses import asdict
+        from materials.types import ContentBlock,ExtractionBundle,ExtractionManifest,block_id,MaterialError
+        from materials.visual import observation_blocks
+        import base64
+        original,_=await self.repository.read(ref.asset_id,actor,ref.asset_version)
+        preview=await self.evidence_region(ref,actor,extractor)
+        await self.repository.resolve(ref,actor)
+        observations=await analyzer.observe(base64.b64decode(preview['image_base64']),preview['mime'])
+        current,_=await self.repository.read(ref.asset_id,actor,ref.asset_version)
+        if current['generation']!=original['generation'] or current['current_version']!=ref.asset_version: raise MaterialError('stale_material_result')
+        loc=ref.locator
+        if loc.kind.value!='region': raise MaterialError('image_region_required')
+        bid=block_id(ref.asset_id,ref.asset_version,'image',loc)
+        parent=ContentBlock(bid,'image',loc,observations['summary'],observation='observed',quality='uncertain',
+            limitations=('model_visual_observation_not_verified',),metadata=dict(role='regional_visual_observation',source=asdict(ref),method=analyzer.identity))
+        blocks=(parent,)+observation_blocks(ref.asset_id,ref.asset_version,observations,bid,1,method=analyzer.identity,outer=loc.bbox)
+        import uuid
+        bundle=ExtractionBundle(ref.asset_id,ref.asset_version,'region-vision-1:'+analyzer.identity+':'+uuid.uuid4().hex,blocks,
+            ExtractionManifest(1,1,'unknown',observations['limitations']+('regional_observation_only',),'image'))
+        eid=await self.repository.save_extraction(actor,bundle,original['generation'])
+        return eid,bundle
 
     async def datasets(self, aid, actor, *, policy=None, extractor=None):
         from materials.dataset_repository import DatasetRepository

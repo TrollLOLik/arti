@@ -41,6 +41,18 @@ def safe_environment(directory):
     return env
 
 
+def temporary_size(root):
+    total=0
+    for path in root.rglob('*'):
+        try:
+            if path.is_file(): total+=path.stat().st_size
+        except FileNotFoundError:
+            # OCR/decoder removes its own temporary files concurrently with
+            # monitoring; a vanished file no longer occupies the disk budget.
+            continue
+    return total
+
+
 async def run_worker(request, data, limits, *, worker_path=None, trace=None):
     loop = asyncio.get_running_loop()
     slots = _slots.setdefault(loop, asyncio.Semaphore(2))
@@ -65,7 +77,7 @@ async def run_worker(request, data, limits, *, worker_path=None, trace=None):
                 while process.returncode is None:
                     if time.monotonic() - started > limits.wall_seconds:
                         raise MaterialError('parser_timeout')
-                    size = sum(p.stat().st_size for p in root.rglob('*') if p.is_file())
+                    size = temporary_size(root)
                     peak_disk = max(peak_disk, size)
                     import psutil
                     try:

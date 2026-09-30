@@ -458,6 +458,14 @@ class DocumentExtractor:
 
 
 def configured_extractor(mime=None):
+    if mime and mime.startswith('image/'):
+        if os.getenv('ARTI_IMAGES_ENABLED','1').lower() in ('0','false','off'): raise MaterialError('image_extraction_disabled')
+        from materials.extractors.images import ImageExtractor
+        analyzer=None
+        if os.getenv('ARTI_VISUAL_OBSERVATIONS_ENABLED','0').lower() in ('1','true','yes'):
+            from ai.providers.visual import VisualAnalyzer
+            analyzer=VisualAnalyzer(os.getenv('ARTI_VISION_MODEL','gemini-2.5-flash'))
+        return ImageExtractor(ocr_enabled=os.getenv('ARTI_OCR_ENABLED','1').lower() not in ('0','false','off'),analyzer=analyzer)
     if mime in ('text/csv','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'):
         if os.getenv('ARTI_TABLES_ENABLED','1').lower() in ('0','false','off'):
             raise MaterialError('table_extraction_disabled')

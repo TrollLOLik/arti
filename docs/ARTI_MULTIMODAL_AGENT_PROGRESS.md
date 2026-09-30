@@ -1,6 +1,6 @@
 # Реализация мультимодальности и агентских функций Арти
 
-Дата: 30 сентября 2026 года. Реализация идёт по [плану A01–A24](ARTI_MULTIMODAL_AGENT_BATCHES.md); текущее поручение — до A23 включительно. Mini App отложена. Реализованы основание A01–A04 и программные контуры A05–A06; полный план не завершён.
+Дата: 30 сентября 2026 года. Реализация идёт по [плану A01–A24](ARTI_MULTIMODAL_AGENT_BATCHES.md); текущее поручение — до A23 включительно. Mini App отложена. Реализованы основание A01–A04 и программные контуры A05–A07; полный план не завершён.
 
 ## Состояние батчей
 
@@ -12,7 +12,8 @@
 | A04 | Typed generation, настоящий MIME, мультимодальный OpenAI payload, общий capability registry, комбинация изображения и поиска, совместимый fallback; live probes OpenRouter. | Автоматическое обновление metadata/health, расширенные endpoint probes, калибровка лимитов и наблюдение выбранных Google endpoints в live-прогонах. |
 | A05 | Структурированный PDF/DOCX, локальный русский/английский OCR, ориентация и deskew, колонки, grid tables, merge/nested DOCX, cell evidence, изображения/подписи, колонтитулы, отдельное региональное перечитывание, manifests повреждений и ограниченный worker. | Программная приёмка на синтетическом корпусе пройдена. Реальный разнородный корпус и человеческие оценки — A24; borderless tables, рукопись, DOCX textboxes/notes явно ограничены. |
 | A06 | Immutable datasets CSV/XLSX/PDF/DOCX, локаль/единицы, source cells, Decimal расчёты/границы, закрытая grammar формул, сверка cache, CAS corrections, invalidation/forget и Telegram commands. | Программная приёмка на synthetic fixtures; полная совместимость Excel не заявляется. Реальный разнородный корпус — A24. |
-| A07–A23 | План и критерии приёмки сохранены; пользователь поручил реализацию. | Работа продолжается. |
+| A07 | Изолированный image OCR, EXIF display coordinates, region crop/zoom/reread, raster cell evidence, typed objects/relations/axes, routed visual observations, conflicts и перенос source usages через photo/album/pending flows. | 14 сценарных проверок. Live: обе схемы со стрелками прошли; log-axis запрос отвергнут по schema, повтор по timeout. Надёжность зрения на реальном корпусе — A24. |
+| A08–A23 | План и критерии приёмки сохранены; пользователь поручил реализацию. | Работа продолжается; A08 начат. |
 | A24 | План общей оценки сохранён. | Реальный пилот и человеческая оценка ещё не проведены. |
 
 ## Реализованное поведение
@@ -37,7 +38,7 @@ Blob сначала получает долговечную reservation. Зап�
 
 Исходный прогон до изменения существующего кода: **195/195**, без пропусков, 136,62 секунды, без вызовов провайдеров. [Baseline](evaluation/multimodal_baseline_regression.json).
 
-Общий прогон первого этапа проходил **227/227**, без ошибок и пропусков, 157,21 секунды: 195 прежних и 32 новых проверки. После A05 — **253/253**, 192,29 секунды. После A06 — **284/284**, без ошибок и пропусков, 230,97 секунды. [Последний машинный отчёт](evaluation/materials_full_tests.json). SQL-проверки выполняются на создаваемых и удаляемых `arti_cognition_test_<uuid>`; таблицы рабочей базы не изменялись.
+Общий прогон первого этапа проходил **227/227**, без ошибок и пропусков, 157,21 секунды: 195 прежних и 32 новых проверки. После A05 — **253/253**, 192,29 секунды. После A06 — **284/284**, 230,97 секунды. После A07 — **298/298**, без ошибок и пропусков, 222,83 секунды. [Последний машинный отчёт](evaluation/materials_full_tests.json). SQL-проверки выполняются на создаваемых и удаляемых `arti_cognition_test_<uuid>`; таблицы рабочей базы не изменялись.
 
 Проверки нового контура включают: конкурентный duplicate update, конфликт идентичности, квоты, перезапуск, межтопиковый/личный доступ, неподходящие locators, неверный MIME, ZIP expansion, повреждение blob, cache extraction, удаление во время работы, shared blob, expiration, stale revision, uploader attribution, запрет отправки отозванного результата и восстановление после падения между двумя барьерами удаления.
 
@@ -64,6 +65,18 @@ Decimal engine выполняет агрегаты, проценты, измен
 Миграция 011 добавляет immutable derivative hashes, current dataset heads и связи зависимостей. Авторское исправление использует текущую head CAS, сохраняет оригинал и журнал подтверждения, отзывает зависимые результаты. Повтор той же версии даёт тот же calculation ID; смена source/rate/formula dataset — новый ID. Scope/topic/private audience проверяются до работы, после вычисления и перед отправкой. `/forget` обнуляет payload всех связанных datasets/calculations. Telegram-команды `/dataset`, `/calc`, `/datafix` подключены через scope middleware; запуск бота не выполнялся.
 
 Новые сценарии A06: 21 unit/extractor и 10 PostgreSQL/integration проверок. [Корпус](evaluation/materials_datasets.json): **48/48** синтетических проверок с независимым integer-cents oracle, фиксированным seeded holdout, отказами, цепочкой процентов, cache и реальными source blocks. Это не оценка произвольных таблиц или полной совместимости Excel. Провайдеры не вызывались.
+
+## A07: изображения и пространственные наблюдения
+
+`ImageExtractor` сохраняет оригинал, локальный OCR и его preprocessing отдельно от visual observations. Координаты относятся к EXIF-displayed оригиналу. Растровые таблицы сохраняют настоящие области ячеек; никакой OCR score не делает число verified. Region API возвращает crop/zoom; OCR-перечитывание и отдельный visual просмотр создают новые immutable observations с исходной версией и реальной областью. Значимость × неопределённость — labelled policy дополнительного просмотра, не вероятность качества.
+
+Typed visual schema различает object/node/label/legend/axis/data mark/decoration и пространственные связи. Неизвестные endpoints, недопустимые bboxes и причинные arrows отвергаются. Логарифмическая, broken, categorical или unknown axis записывается отдельно. Противоречие фото/документа сохраняет две альтернативы и ссылки, не исправляет источник автоматически. Визуальные результаты остаются uncertain, labels с числами требуют проверки источника.
+
+Capability-routed adapter передаёт настоящий MIME; запрос не предоставляет tools. Перед provider call используется отдельный EXIF-normalized PNG preview, resize помечен. Применяются semaphore 2, 45 секунд и 5000 output tokens, output/schema budgets. Доступ проверяется после локальной обработки и после provider call. Provider failure оставляет OCR-only manifest с точным ограничением. Concurrent разные visual outputs не перезаписывают первую сохранённую observation и не возвращают чужие refs.
+
+Photo intake и albums сохраняют каждого исходного автора/message; usages идут через pending кнопки, генерацию и поздние guard. `/forget` удаляет pending исходники и блокирует in-flight publication. В photo path исправлено обращение к несуществующему `update` при сохранении истории. Общий прогон обнаружил race при удалении OCR temp file между `is_file()` и `stat()`; монитор disk budget теперь допускает исчезнувший файл, продолжая учитывать существующие.
+
+OCR corpus: **4/4** печатных/наклонённых/повёрнутых/held-out синтетических фото. [Live report](evaluation/materials_images_live.json): 2/2 crossing diagrams сохранили правильные arrows без добавленных связей; log-axis ответ не прошёл schema. [Повтор log-axis](evaluation/materials_images_live_log_axis.json) после уточнения schema закончился timeout. Всего 4 live model calls, только собственные synthetic fixtures, Telegram calls 0. Ошибки остаются в отчётах и не выдаются за успешное распознавание оси; программный отказ/ограничение проверен отдельно от способности модели.
 
 ## A05: документы и OCR
 

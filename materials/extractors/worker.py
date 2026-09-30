@@ -16,7 +16,15 @@ def main():
         job = apply_resource_limits(request['limits'])
         from materials.extractors.documents import DocumentExtractor, IsolatedNativeExtractor
         data = (root / 'original').read_bytes()
-        if request['operation'] == 'table_extract':
+        if request['operation'] in ('image_extract','image_region','image_preview'):
+            from materials.extractors.images import ImageExtractor
+            extractor=ImageExtractor(**request['options'])
+            if request['operation']=='image_extract':
+                result=extractor.extract(request['asset_id'],request['version'],data,request['mime']).to_dict()
+            elif request['operation']=='image_preview': result=extractor.preview(data,request['mime'])
+            else:
+                result=extractor.region(data,request['mime'],request['locator'],request.get('reread',False),request.get('orientation_hint'))
+        elif request['operation'] == 'table_extract':
             from materials.extractors.tables import TableExtractor
             result = TableExtractor(**request['options']).extract(request['asset_id'], request['version'], data, request['mime']).to_dict()
         elif request['operation'] == 'native_extract':

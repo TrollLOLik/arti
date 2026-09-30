@@ -64,6 +64,7 @@ python -m tools.evaluate_materials
 python -m tools.check_document_stack
 python -m tools.evaluate_documents
 python -m tools.evaluate_datasets
+python -m tools.evaluate_images
 python -m tools.probe_material_provider --model stealth/space-bunny-alpha
 ```
 
@@ -114,3 +115,11 @@ Python-библиотеки устанавливаются обычным `pytho
 Стандартные лимиты: 3000 ячеек, 128 столбцов, 16 листов; фактически сохранённая сетка до 100000 ячеек, огромная объявленная dimension не используется. Неполная выборка помечается partial, диапазон с неизвлечёнными ячейками не считается. CSV загружается как UTF-8; явно настроенный CP1251 extractor доступен для importer, durable intake требует предварительного декодирования. Макросы не исполняются, внешние ссылки не открываются, formula-like CSV остаётся текстом.
 
 Engine поддерживает закрытое подмножество Excel; [openpyxl не вычисляет формулы](https://openpyxl.readthedocs.io/en/3.1.2/simple_formulae.html). Кеш сохраняется как исходное наблюдение, сравнивается с новым результатом и не подменяет его. Нет `eval` или исполнения кода файла. COUNT поддерживает извлечённые числовые/blank ссылки; текстовые ссылки дают явный отказ, а не полную семантику Excel. Точность — 50 цифр, пределы числа и выражения ограничены; добавляются source refs, formula trace, engine version и dataset dependencies. Для проверки: `python -m tools.evaluate_datasets`, затем общий suite. Quota — до 2000 non-erased derivative payloads в realm; истёкшие/забытые источники исключаются до физической очистки.
+
+## A07: фото, области и visual observations
+
+`ARTI_IMAGES_ENABLED=0` отключает новый image extractor. Durable photo intake зависит от `ARTI_MATERIALS_ENABLED`; основной photo/album/pending flow переносит MaterialUse до отправки. `ARTI_OCR_ENABLED=0` оставляет uninterpreted оригинал. `ARTI_VISUAL_OBSERVATIONS_ENABLED=1` подключает отдельный routed provider pass; по умолчанию он выключен. `ARTI_VISION_MODEL` выбирает модель, default `gemini-2.5-flash`; registry A04 должен подтверждать image input нужного endpoint. Тестовый OpenRouter результат не включает автоматически другой proxy и не меняет env.
+
+Региональные API: `evidence_region(ref,actor,ImageExtractor(),reread=True)` для OCR и `observe_image_region(ref,actor,extractor,analyzer)` для отдельного visual pass. Нужен существующий authorized region ref; исходник не переписывается. Нормализованные координаты относятся к [EXIF-displayed image](https://pillow.readthedocs.io/en/stable/reference/ImageOps.html). До 512 OCR lines, 16M исходных pixels, crop ≤8M, zoom ≤4×, provider preview ≤1536px/5MiB. Превышения явные. Хранятся OCR preprocessing/rotation, uncertainty, source hashes и версия метода.
+
+Проверки: `python -m tools.evaluate_images` offline; `python -m tools.evaluate_images --live --model stealth/space-bunny-alpha` вызывает OpenRouter на synthetic diagrams/axes. `--case log_axis` ограничивает повтор одним случаем и сохраняет отдельный отчёт. Live rejection/timeouts учитываются как failures модели, не как пройденная способность. Structured vision использует [async Gemini API](https://github.com/googleapis/python-genai) либо OpenAI-compatible messages, не предоставляет tools и строго проверяет JSON до сохранения.

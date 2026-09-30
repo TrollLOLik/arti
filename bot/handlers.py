@@ -179,7 +179,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             await _process_images(
                 context.bot, chat_id, user_id, user_name, message_id,
                 pending["images"], caption,
-                pending["replied_to_bot"], pending["is_private"]
+                pending["replied_to_bot"], pending["is_private"],material_uses=pending.get('material_uses',())
             )
             return
 
@@ -200,6 +200,9 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
         image_urls = pending_image_inputs[chat_id].get(user_id, []) or image_flow.get("image_urls", [])
         # Подхватываем base64 изображения из фото-кнопок (photo_act:gen_image)
         pending_b64 = context.user_data.pop("pending_base64_for_gen", None)
+        from materials.runtime import CURRENT_MATERIAL_USE,guard_current
+        CURRENT_MATERIAL_USE.set(context.user_data.pop('pending_material_uses_for_gen',()))
+        await guard_current(chat_id)
         if not image_urls and pending_b64:
             image_urls = [f"data:image/jpeg;base64,{b64}" for b64 in pending_b64]
         if not prompt:
@@ -225,6 +228,9 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
         image_urls = pending_video_inputs[chat_id].get(user_id, []) or video_flow.get("image_urls", [])
         # Подхватываем base64 изображения из фото-кнопок (photo_act:gen_video)
         pending_b64 = context.user_data.pop("pending_base64_for_gen", None)
+        from materials.runtime import CURRENT_MATERIAL_USE,guard_current
+        CURRENT_MATERIAL_USE.set(context.user_data.pop('pending_material_uses_for_gen',()))
+        await guard_current(chat_id)
         if not image_urls and pending_b64:
             image_urls = [f"data:image/jpeg;base64,{b64}" for b64 in pending_b64]
         if not prompt:
@@ -445,6 +451,7 @@ def _photo_action_keyboard() -> InlineKeyboardMarkup:
 
 async def _send_photo_action_prompt(bot, chat_id, user_id, message_id, base64_images, replied_to_bot, is_private):
     """Отправляет сообщение с инлайн-кнопками, сохраняет фото в pending."""
+    from materials.runtime import CURRENT_MATERIAL_USE
     count = len(base64_images)
     img_word = "картинку" if count == 1 else f"{count} картинок" if count < 5 else f"{count} картинок"
 
@@ -467,12 +474,34 @@ async def _send_photo_action_prompt(bot, chat_id, user_id, message_id, base64_im
         "replied_to_bot": replied_to_bot,
         "is_private": is_private,
         "user_name": None,
+        "material_uses": CURRENT_MATERIAL_USE.get(),
     }
 
 
 async def _process_images(
     bot, chat_id, user_id, user_name, message_id,
-    base64_images, user_caption, replied_to_bot, is_private
+    base64_images, user_caption, replied_to_bot, is_private, *, material_uses=None
+):
+    from materials.runtime import CURRENT_MATERIAL_USE,guard_current
+    from materials.extractors.basic import render_text
+    from materials.extractors.documents import configured_extractor
+    uses=tuple(CURRENT_MATERIAL_USE.get() if material_uses is None else material_uses)
+    token=CURRENT_MATERIAL_USE.set(uses)
+    try:
+        await guard_current(chat_id)
+        evidence=[]
+        for use in uses:
+            _,rev=await use.service.repository.read(use.asset_id,use.actor,use.version)
+            _,bundle=await use.service.extract(use.asset_id,use.actor,configured_extractor(rev['mime']))
+            evidence.append(render_text(bundle,max_chars=10000))
+        return await _process_images_impl(bot,chat_id,user_id,user_name,message_id,base64_images,user_caption,replied_to_bot,is_private,
+            image_evidence_text='\n\n'.join(evidence)[:30000])
+    finally: CURRENT_MATERIAL_USE.reset(token)
+
+
+async def _process_images_impl(
+    bot, chat_id, user_id, user_name, message_id,
+    base64_images, user_caption, replied_to_bot, is_private, *, image_evidence_text=''
 ):
     """Фоновая задача: отправляет все собранные картинки в ИИ и шлёт ответ."""
     try:
@@ -495,6 +524,10 @@ async def _process_images(
         mode = "rp" if rp_mode_state.get(chat_id) else "default"
         from cognition.runtime import prepare_turn
         cognitive_turn = await prepare_turn(chat_id,user_id,user_caption,message_id,mode)
+        if cognitive_turn is not None:
+            from materials.runtime import CURRENT_MATERIAL_USE
+            support={use.source_event_id for use in CURRENT_MATERIAL_USE.get() if use.source_event_id is not None and use.source_context_id==cognitive_turn.context_id}
+            cognitive_turn.supporting_event_ids=tuple(sorted(set(getattr(cognitive_turn,'supporting_event_ids',()))|support))
         if cognitive_turn is not None and cognitive_turn.uses_cognition and cognitive_turn.repeated_delivery:
             return
         user_profile = await MemoryUserProfile.get(chat_id, user_id, mode)
@@ -510,7 +543,7 @@ async def _process_images(
         img_state = {} if cognitive_turn is not None and cognitive_turn.uses_cognition else await ChatEmotionalState.update_state(chat_id, user_caption, closeness, user_id=user_id, defer_sentiment=True, source_key=emotion_source_key)
 
         image_details = "изображение" if len(base64_images) == 1 else f"{len(base64_images)} изображений"
-        await _save_message(chat_id, user_name, f"Пользователь прислал {image_details}. Подпись: {user_caption}", user_id=user_id,message_id=update.message.message_id,occurred_at=update.message.date)
+        await _save_message(chat_id, user_name, f"Пользователь прислал {image_details}. Подпись: {user_caption}", user_id=user_id,message_id=message_id)
 
         dialog_history_str = await _get_dialog_history(chat_id)
         memory_context = cognitive_turn.memory if cognitive_turn is not None and cognitive_turn.uses_cognition else await build_memory_context(
@@ -527,6 +560,7 @@ async def _process_images(
             user_name=user_name,
             chat_context=dialog_history_str,
             base64_images=base64_images,
+            document_text=image_evidence_text or None,
             user_id=user_id,
             is_rp_mode=rp_mode_state.get(chat_id, False),
             enable_introspection=True,
@@ -784,7 +818,7 @@ async def _collect_and_process_media_group(
 
     await _process_images(
         bot, chat_id, user_id, user_name, message_id,
-        base64_images, user_caption, replied_to_bot, is_private
+        base64_images, user_caption, replied_to_bot, is_private,material_uses=group_data.get('material_uses',())
     )
 
 
@@ -850,6 +884,7 @@ async def photo_action_callback(update: Update, context: ContextTypes.DEFAULT_TY
         pending_image_inputs[chat_id][user_id] = []
         # Сохраняем base64 images в user_data для позднего использования
         context.user_data["pending_base64_for_gen"] = base64_images
+        context.user_data["pending_material_uses_for_gen"] = pending.get('material_uses',())
         return
 
     # --- Генерация видео по фото ---
@@ -862,6 +897,7 @@ async def photo_action_callback(update: Update, context: ContextTypes.DEFAULT_TY
         waiting_for_video_prompt[chat_id][user_id] = True
         pending_video_inputs[chat_id][user_id] = []
         context.user_data["pending_base64_for_gen"] = base64_images
+        context.user_data["pending_material_uses_for_gen"] = pending.get('material_uses',())
         return
 
     # --- Анализ / Описание (LLM) ---
@@ -873,7 +909,7 @@ async def photo_action_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     await _process_images(
         context.bot, chat_id, user_id, user_name, message_id,
-        base64_images, prompt, replied_to_bot, is_private
+        base64_images, prompt, replied_to_bot, is_private,material_uses=pending.get('material_uses',())
     )
 
 
@@ -957,6 +993,18 @@ async def handle_image_message(update: Update, context: ContextTypes.DEFAULT_TYP
     file = await context.bot.get_file(photo.file_id)
     file_bytes = await file.download_as_bytearray()
 
+    material_uses=()
+    from materials.runtime import enabled,capture_document
+    if enabled():
+        from types import SimpleNamespace
+        from materials.types import MaterialError
+        try:
+            descriptor=SimpleNamespace(file_id=photo.file_id,file_size=len(file_bytes),file_name='photo.jpg',mime_type=None)
+            material=await capture_document(context,descriptor,update.message,preloaded_data=file_bytes,slot='photo')
+            material_uses=material.material_uses
+        except MaterialError:
+            await update.message.reply_text('Не удалось безопасно сохранить и обработать фото. Отправь его ещё раз.'); return
+
     try:
         base64_image = base64.b64encode(file_bytes).decode("utf-8")
         logger.info("Изображение успешно закодировано в base64")
@@ -986,6 +1034,7 @@ async def handle_image_message(update: Update, context: ContextTypes.DEFAULT_TYP
         if is_leader:
             _media_group_cache[media_group_id] = {
                 'images': [base64_image],
+                'material_uses': material_uses,
                 'caption': update.message.caption or "",
                 'message_id': message_id
             }
@@ -1000,6 +1049,7 @@ async def handle_image_message(update: Update, context: ContextTypes.DEFAULT_TYP
         else:
             # Фолловер: просто добавляем картинку в кеш
             _media_group_cache[media_group_id]['images'].append(base64_image)
+            _media_group_cache[media_group_id]['material_uses']+=material_uses
             if update.message.caption:
                 _media_group_cache[media_group_id]['caption'] = update.message.caption
 
@@ -1009,7 +1059,7 @@ async def handle_image_message(update: Update, context: ContextTypes.DEFAULT_TYP
     user_caption = update.message.caption or ""
     await _process_images(
         context.bot, chat_id, user_id, user_name, message_id,
-        [base64_image], user_caption, replied_to_bot, is_private
+        [base64_image], user_caption, replied_to_bot, is_private,material_uses=material_uses
     )
 
 

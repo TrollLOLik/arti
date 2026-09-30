@@ -501,6 +501,7 @@ async def handle_cancel_command(update: Update, context: ContextTypes.DEFAULT_TY
     pending_video_inputs[chat_id][user_id] = []
     context.user_data.pop("video_flow", None)
     context.user_data.pop("pending_base64_for_gen", None)
+    context.user_data.pop("pending_material_uses_for_gen", None)
     waiting_for_model_search[chat_id].pop(user_id, None)
     if chat_id in music_flow_state and user_id in music_flow_state[chat_id]:
         del music_flow_state[chat_id][user_id]

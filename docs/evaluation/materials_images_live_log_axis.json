@@ -1,0 +1,65 @@
+{
+  "contract": "image-evaluation-1",
+  "scope": "original_synthetic_development_and_holdout; not real-world accuracy",
+  "ocr_cases": [
+    {
+      "case": "printed",
+      "passed": true,
+      "expected": [
+        "1200",
+        "1500"
+      ],
+      "seconds": 1.028,
+      "region_boxes_valid": true,
+      "quality": "uncertain"
+    },
+    {
+      "case": "skewed",
+      "passed": true,
+      "expected": [
+        "1200",
+        "1500"
+      ],
+      "seconds": 1.241,
+      "region_boxes_valid": true,
+      "quality": "uncertain"
+    },
+    {
+      "case": "rotated",
+      "passed": true,
+      "expected": [
+        "1200",
+        "1500"
+      ],
+      "seconds": 0.93,
+      "region_boxes_valid": true,
+      "quality": "uncertain"
+    },
+    {
+      "case": "heldout",
+      "passed": true,
+      "expected": [
+        "2750",
+        "3590"
+      ],
+      "seconds": 0.911,
+      "region_boxes_valid": true,
+      "quality": "uncertain"
+    }
+  ],
+  "ocr_passed": 4,
+  "ocr_total": 4,
+  "live_probes": [
+    {
+      "case": "log_axis",
+      "schema_passed": false,
+      "error_code": "TimeoutError",
+      "validation_reason": null,
+      "seconds": 45.003
+    }
+  ],
+  "provider_calls": 1,
+  "model": "stealth/space-bunny-alpha",
+  "telegram_calls": 0,
+  "user_material_sent": false
+}
