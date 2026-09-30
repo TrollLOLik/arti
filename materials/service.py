@@ -58,9 +58,15 @@ class MaterialService:
         await self.repository.read(aid, actor, rev['version'])
         return row, rev, data
 
-    async def extract(self, aid, actor, extractor):
+    async def extract(self, aid, actor, extractor=None):
+        if extractor is None:
+            from materials.extractors.documents import configured_extractor
+            _,revision=await self.repository.read(aid,actor)
+            extractor=configured_extractor(revision['mime'])
         cached = await self.repository.extraction(aid, actor, getattr(extractor, 'cache_version', extractor.version))
         if cached:
+            from materials.index import MaterialIndex
+            await MaterialIndex(self.repository).save(actor,*cached)
             return cached
         row, rev, data = await self.read_bytes(aid, actor)
         if hasattr(extractor,'extract_authorized'):
@@ -78,10 +84,14 @@ class MaterialService:
         except Exception as exc:
             # Concurrent visual requests may observe differently. The first
             # committed immutable observation wins; never return mismatched refs.
-            if getattr(exc,'code',None)!='extractor_version_conflict' or getattr(extractor,'analyzer',None) is None: raise
+            if getattr(exc,'code',None)!='extractor_version_conflict' or not (getattr(extractor,'analyzer',None) or getattr(extractor,'transcriber',None)): raise
             cached=await self.repository.extraction(aid,actor,extractor.cache_version)
             if cached is None: raise
+            from materials.index import MaterialIndex
+            await MaterialIndex(self.repository).save(actor,*cached)
             return cached
+        from materials.index import MaterialIndex
+        await MaterialIndex(self.repository).save(actor,eid,bundle)
         return eid, bundle
 
     async def evidence_region(self, ref, actor, extractor, *, reread=False):
@@ -208,6 +218,92 @@ class MaterialService:
         from materials.datasets import correction_proposal
         dataset=await DatasetRepository(self.repository).load_dataset(dataset_id,actor)
         return correction_proposal(dataset,address,replacement)
+
+    async def transcript(self,aid,actor,*,extractor=None):
+        from materials.observations import ObservationRepository
+        from materials.extractors.documents import configured_extractor
+        from materials.timeline import Timeline
+        from materials.types import EvidenceRef,MaterialError
+        _,rev=await self.repository.read(aid,actor)
+        eid,bundle=await self.extract(aid,actor,extractor or configured_extractor(rev['mime']))
+        root=next((b for b in bundle.blocks if b.metadata.get('role')=='audio_timeline'),None)
+        if root is None: raise MaterialError('timed_transcript_unavailable')
+        value=root.metadata['timeline']
+        if value.get('segment_storage')=='timeline_chunks':
+            value={k:v for k,v in value.items() if k!='segment_storage'}
+            value['segments']=[s for b in bundle.blocks if b.metadata.get('role')=='timeline_chunk' for s in b.metadata['segments']]
+        timeline=Timeline.from_dict(value)
+        ref=EvidenceRef(aid,bundle.asset_version,eid,root.block_id,root.locator)
+        id,current=await ObservationRepository(self.repository).save_timeline(actor,ref,timeline)
+        from materials.index import MaterialIndex
+        await MaterialIndex(self.repository).transcript(actor,id)
+        return id,current,ref
+
+    async def confirm_transcript(self,aid,actor,observation_id,segment_id,text):
+        from materials.observations import ObservationRepository
+        result=await ObservationRepository(self.repository).confirm(actor,aid,observation_id,segment_id,text)
+        from materials.index import MaterialIndex
+        await MaterialIndex(self.repository).transcript(actor,result[0])
+        return result
+
+    async def observe_video_interval(self,aid,actor,start_ms,end_ms,*,extractor=None):
+        import uuid
+        from dataclasses import replace
+        from materials.extractors.documents import configured_extractor
+        row,rev,data=await self.read_bytes(aid,actor)
+        if not rev['mime'].startswith('video/'): raise MaterialError('video_required')
+        if not 0<=start_ms<end_ms or end_ms-start_ms>30000: raise MaterialError('video_refinement_budget')
+        async def validate():
+            current,_=await self.repository.read(aid,actor,rev['version'])
+            if current['generation']!=row['generation'] or current['current_version']!=rev['version']: raise MaterialError('stale_material_result')
+        decoder=extractor or configured_extractor(rev['mime'])
+        bundle=await decoder.extract_authorized(aid,rev['version'],data,rev['mime'],validate=validate,start_ms=start_ms,end_ms=end_ms,dense=True)
+        bundle=replace(bundle,extractor=bundle.extractor+':interval:'+uuid.uuid4().hex)
+        await validate()
+        eid=await self.repository.save_extraction(actor,bundle,row['generation'])
+        return eid,bundle
+
+    async def video_frame(self,ref,actor,*,extractor=None):
+        from materials.extractors.video import VideoExtractor
+        block=await self.repository.resolve(ref,actor)
+        if block.metadata.get('role')!='video_frame': raise MaterialError('video_frame_required')
+        row,rev,data=await self.read_bytes(ref.asset_id,actor,ref.asset_version)
+        result=await (extractor or VideoExtractor()).frame_async(data,rev['mime'],ref.locator.start_ms,ref.locator.end_ms)
+        frame=next((f for f in result['frames'] if f['timestamp_ms']==ref.locator.start_ms),None)
+        if not frame: raise MaterialError('video_frame_unavailable')
+        import base64
+        from hashlib import sha256
+        if sha256(base64.b64decode(frame['image_base64'])).hexdigest()!=block.metadata['sha256']: raise MaterialError('video_frame_integrity_failure')
+        await self.repository.resolve(ref,actor)
+        current,_=await self.repository.read(ref.asset_id,actor,ref.asset_version)
+        if current['generation']!=row['generation']: raise MaterialError('stale_material_result')
+        return frame
+
+    async def ingest_url(self,url,actor,source_key,source_id,*,fetcher=None):
+        from datetime import datetime,timezone
+        from utils.public_fetch import fetch_public
+        from materials.derivatives import DerivativeRepository
+        from materials.types import EvidenceRef
+        from urllib.parse import urlsplit
+        fetched=await (fetcher or fetch_public)(url,max_bytes=self.repository.quotas.max_file_bytes,allowed_mimes={'video/mp4','application/octet-stream','audio/mpeg','audio/wav','audio/ogg'})
+        filename=urlsplit(fetched.url).path.rsplit('/',1)[-1] or 'remote.mp4'
+        asset=await self.ingest(fetched.data,filename,actor,source_key,source_id,fetched.mime)
+        eid,bundle=await self.extract(asset['id'],actor)
+        root=bundle.blocks[0]; ref=EvidenceRef(asset['id'],bundle.asset_version,eid,root.block_id,root.locator)
+        provenance=await DerivativeRepository(self.repository).save(actor,'url_origin',dict(url=fetched.url,read_at=datetime.now(timezone.utc).isoformat(),sha256=fetched.sha256,redirects=fetched.redirects,availability='downloaded_original',coverage=bundle.manifest.coverage),[ref])
+        return asset,eid,bundle,provenance
+
+    async def audio_clip(self,ref,actor,*,extractor=None):
+        from materials.extractors.audio import AudioExtractor
+        from materials.types import MaterialError
+        await self.repository.resolve(ref,actor)
+        if ref.locator.kind.value!='time': raise MaterialError('audio_interval_required')
+        row,rev,data=await self.read_bytes(ref.asset_id,actor,ref.asset_version)
+        result=await (extractor or AudioExtractor()).clip_async(data,rev['mime'],ref.locator.start_ms,ref.locator.end_ms)
+        current,_=await self.repository.read(ref.asset_id,actor,ref.asset_version)
+        if current['generation']!=row['generation']: raise MaterialError('stale_material_result')
+        await self.repository.resolve(ref,actor)
+        return result
 
     async def confirm_correction(self, actor, proposal):
         from materials.dataset_repository import DatasetRepository

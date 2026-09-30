@@ -1,0 +1,38 @@
+{
+  "contract": "video-eval-1",
+  "cases": [
+    {
+      "case": "native_pts_scenes",
+      "passed": true,
+      "timestamps_ms": [
+        0,
+        1000,
+        1500,
+        2000,
+        2900
+      ]
+    },
+    {
+      "case": "screen_text",
+      "passed": true
+    },
+    {
+      "case": "transient_refinement",
+      "passed": true
+    },
+    {
+      "case": "coverage_and_components",
+      "passed": true
+    }
+  ],
+  "passed": 4,
+  "total": 4,
+  "provider_calls": 0,
+  "telegram_calls": 0,
+  "elapsed_seconds": 6.482808300002944,
+  "limitations": [
+    "Owned synthetic slides and transient. No independent human video benchmark.",
+    "Scene boundaries are heuristics; sparse sampling does not prove absence.",
+    "Hosted pages without an authorized bounded stream adapter are unavailable; direct media is supported."
+  ]
+}

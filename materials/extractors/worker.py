@@ -16,7 +16,17 @@ def main():
         job = apply_resource_limits(request['limits'])
         from materials.extractors.documents import DocumentExtractor, IsolatedNativeExtractor
         data = (root / 'original').read_bytes()
-        if request['operation'] in ('image_extract','image_region','image_preview'):
+        if request['operation']=='video_frames':
+            from materials.extractors.video_decoder import video_frames
+            from materials.validation import inspect_bytes
+            inspect_bytes(data,'video',request['mime'])
+            result=video_frames(data,request['mime'],**request['options'])
+        elif request['operation']=='audio_analysis':
+            from materials.extractors.media import audio_analysis
+            from materials.validation import inspect_bytes
+            inspect_bytes(data,'audio',request['mime'])
+            result=audio_analysis(data,request['mime'],**request['options'])
+        elif request['operation'] in ('image_extract','image_region','image_preview'):
             from materials.extractors.images import ImageExtractor
             extractor=ImageExtractor(**request['options'])
             if request['operation']=='image_extract':

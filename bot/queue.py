@@ -246,6 +246,8 @@ async def _extract_photo_urls(update, context) -> list:
 async def _execute_generation_task(task: dict):
     from materials.runtime import CURRENT_MATERIAL_USE, guard_current
     CURRENT_MATERIAL_USE.set(task.get('_material_uses', ()))
+    from materials.runtime import CURRENT_DERIVATIVE_USE
+    CURRENT_DERIVATIVE_USE.set(task.get('_derivative_uses',()))
     from cognition.runtime import CURRENT_TURN
     CURRENT_TURN.set(task.get('_cognitive_turn'))
     from cognition.scope import CURRENT_SCOPE
@@ -588,6 +590,8 @@ async def music_worker():
 async def enqueue_generation(task: dict, bot, chat_id):
     from materials.runtime import CURRENT_MATERIAL_USE
     task['_material_uses'] = CURRENT_MATERIAL_USE.get()
+    from materials.runtime import CURRENT_DERIVATIVE_USE
+    task['_derivative_uses']=CURRENT_DERIVATIVE_USE.get()
     from cognition.runtime import CURRENT_TURN
     task['_cognitive_turn'] = CURRENT_TURN.get()
     from cognition.scope import CURRENT_SCOPE
@@ -663,6 +667,8 @@ async def enqueue_reply(chat_id, user_id, user_name, user_message, message_id, c
                 source_ids.append(use.source_event_id)
     request['_cognitive_source_ids'] = sorted(set(source_ids))
     request['_material_uses'] = tuple(getattr(document_text, 'material_uses', ()))
+    from materials.runtime import CURRENT_DERIVATIVE_USE
+    request['_derivative_uses']=CURRENT_DERIVATIVE_USE.get()
     from cognition.scope import CURRENT_SCOPE
     request['_telegram_scope'] = CURRENT_SCOPE.get()
     
@@ -723,6 +729,7 @@ async def _user_text_worker(user_id: int):
                     carry=extra; break
                 request['_cognitive_source_ids']=sources
                 request['_material_uses'] = tuple(dict.fromkeys(request.get('_material_uses', ()) + extra.get('_material_uses', ())))
+                request['_derivative_uses']=tuple(dict.fromkeys(request.get('_derivative_uses',())+extra.get('_derivative_uses',())))
                 extra_msg = extra.get('user_message', '')
                 if extra_msg:
                     request['user_message'] = request.get('user_message', '') + '\n' + extra_msg
@@ -920,6 +927,8 @@ async def process_user_reply(request, bot):
     CURRENT_SCOPE.set(request.get('_telegram_scope'))
     from materials.runtime import CURRENT_MATERIAL_USE, guard_current
     CURRENT_MATERIAL_USE.set(request.get('_material_uses', ()))
+    from materials.runtime import CURRENT_DERIVATIVE_USE
+    CURRENT_DERIVATIVE_USE.set(request.get('_derivative_uses',()))
     if request.get('_material_revoked'):
         from materials.types import MaterialError
         raise MaterialError('material_erased')
@@ -936,6 +945,16 @@ async def process_user_reply(request, bot):
     document_text = request.get('document_text')
     video_file_id = request.get('video_file_id')
     is_video_note = request.get('is_video_note', False)
+    from materials.runtime import enabled,actor_for_current,service_for_bot
+    if enabled() and not document_text and user_id and CURRENT_SCOPE.get() is not None:
+        from materials.retrieval import recall
+        recalled,derivatives,causal=await recall(await service_for_bot(),await actor_for_current(),user_message)
+        if recalled:
+            document_text=recalled
+            CURRENT_MATERIAL_USE.set(tuple(dict.fromkeys(CURRENT_MATERIAL_USE.get()+recalled.material_uses)))
+            CURRENT_DERIVATIVE_USE.set(tuple(dict.fromkeys(CURRENT_DERIVATIVE_USE.get()+derivatives)))
+            request['_cognitive_source_ids']=sorted(set(request.get('_cognitive_source_ids',[])+list(causal)))
+            await guard_current(chat_id)
 
     # L-08: автоответ ставится с user_id=0 (нет конкретного автора). Не привязываем к
     # такому «пользователю» профиль/близость/факты — нормализуем 0 → None, тогда
@@ -1044,9 +1063,13 @@ async def process_user_reply(request, bot):
                     logger.info(f"Загружаю видео в Gemini: {temp_video_path}")
                     video_file = await asyncio.to_thread(genai_client.files.upload, file=temp_video_path)
                     
+                    deadline=asyncio.get_running_loop().time()+90
                     while video_file.state.name == "PROCESSING":
+                        if asyncio.get_running_loop().time()>=deadline: raise TimeoutError('video_processing_timeout')
+                        from materials.runtime import guard_current
+                        await guard_current(chat_id)
                         await asyncio.sleep(2)
-                        video_file = await asyncio.to_thread(genai_client.files.get, name=video_file.name)
+                        video_file = await asyncio.wait_for(asyncio.to_thread(genai_client.files.get, name=video_file.name),15)
                         
                     if video_file.state.name == "FAILED":
                         logger.error("Ошибка обработки видео в Gemini")

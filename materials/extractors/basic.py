@@ -91,18 +91,23 @@ class BasicExtractor:
 def render_text(bundle, max_chars=30000):
     fragments, used, truncated = [], 0, False
     for block in bundle.blocks:
-        if block.metadata.get('role') == 'table_cell':
+        if block.metadata.get('role') in ('table_cell','timed_word','timeline_chunk'):
             continue  # Parent table projects values once; cells remain resolvable.
         label = 'block:' + block.block_id
         if block.locator.page is not None:
             label += '; page:' + str(block.locator.page)
         if block.locator.bbox is not None:
             label += '; region:' + ','.join(str(round(v,4)) for v in block.locator.bbox)
+        if block.locator.start_ms is not None:
+            label+='; time_ms:'+str(block.locator.start_ms)+'-'+str(block.locator.end_ms)
+            if block.metadata.get('speaker'): label+='; speaker:'+block.metadata['speaker']+' (local, identity unconfirmed)'
         label += '; role:' + block.metadata.get('role',block.kind) + '; quality:' + block.quality
         if not block.text.strip():
-            if block.kind != 'image':
+            if block.kind in ('audio','video'):
+                content='['+block.kind+' observation; method='+str(block.metadata.get('method','decoder'))+'; acoustic features/voice similarity do not identify a person or prove an emotion]'
+            elif block.kind != 'image':
                 continue
-            content = '[Image: visual content uninterpreted; caption=' + str(block.metadata.get('caption_id','unknown')) + ']'
+            else: content = '[Image: visual content uninterpreted; caption=' + str(block.metadata.get('caption_id','unknown')) + ']'
         else:
             content = block.text
         value = '[' + label + ']\n' + content

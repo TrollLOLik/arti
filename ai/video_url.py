@@ -78,50 +78,17 @@ def is_known_video_url(url: str) -> bool:
 
 
 async def download_audio_for_url(url: str, work_dir: Path) -> Path:
-    """
-    Скачивает только аудиодорожку для URL через yt-dlp.
-    Возвращает путь к получившемуся аудиофайлу.
-    """
-    from utils.url_safety import is_safe_public_url_async
-
-    if not await is_safe_public_url_async(url):
-        raise ValueError(f"Недопустимый или небезопасный URL для загрузки: {url!r}")
-
+    """Bounded direct media URL; hosting pages need a permitted stream adapter."""
+    import base64
+    from utils.public_fetch import fetch_public
+    from materials.extractors.audio import AudioExtractor
+    from materials.validation import inspect_bytes
+    fetched=await fetch_public(url,allowed_mimes={'video/mp4','audio/mpeg','audio/wav','audio/ogg','application/octet-stream'})
+    mime=inspect_bytes(fetched.data,'remote.mp4',fetched.mime)
+    analysis=await AudioExtractor().clip_async(fetched.data,mime,0,600000)
     work_dir.mkdir(parents=True, exist_ok=True)
-
-    def _do_download() -> Path:
-        import yt_dlp
-
-        outtmpl = str(work_dir / "audio.%(ext)s")
-        options = {
-            "format": "bestaudio/best",
-            "outtmpl": outtmpl,
-            "noplaylist": True,
-            "quiet": True,
-            "no_warnings": True,
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": "128",
-                }
-            ],
-        }
-        with yt_dlp.YoutubeDL(options) as ydl:
-            ydl.extract_info(url, download=True)
-
-        candidates = sorted(
-            [p for p in work_dir.glob("audio.*") if p.is_file() and p.suffix.lower() != ".part"],
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        if not candidates:
-            raise FileNotFoundError(f"yt-dlp не создал аудиофайл в {work_dir}")
-        # Предпочитаем mp3, если он есть
-        mp3 = next((p for p in candidates if p.suffix.lower() == ".mp3"), None)
-        return mp3 or candidates[0]
-
-    return await asyncio.to_thread(_do_download)
+    path=work_dir/'audio.mp3'; path.write_bytes(base64.b64decode(analysis['audio_base64']))
+    return path
 
 
 async def transcribe_url_audio(audio_path: Path, language: Optional[str] = None) -> str:
@@ -148,7 +115,7 @@ async def summarize_transcript(
         snippet = snippet[:30000] + "\n\n[... транскрипт обрезан ...]"
 
     system_prompt = (
-        "Ты — Арти. Сделай ёмкий, структурный конспект видео по транскрипту. "
+        "Ты — Арти. Сделай ёмкий конспект доступной аудиодорожки. Видео не просмотрено; не утверждай, что видно на экране. "
         "Формат:\n"
         "1) Одна строка <b>о чём это</b> (2-3 предложения).\n"
         "2) Список из 5-9 пунктов <b>ключевые идеи</b>.\n"

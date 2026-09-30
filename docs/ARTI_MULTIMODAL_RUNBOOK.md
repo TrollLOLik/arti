@@ -1,6 +1,6 @@
 # Эксплуатация ядра материалов и маршрутизации Арти
 
-Дата: 30 сентября 2026 года. Область — основание A01–A04 и документы/OCR A05. Табличные вычисления, полноценный аудио/видео-анализ, проекты, студия инфографики и агентский исполнитель остаются следующими батчами.
+Дата: 1 октября 2026 года. Область — основание A01–A04 и документы, таблицы, изображения и аудио A05–A08. Видео, проекты, студия инфографики и агентский исполнитель реализуются следующими батчами.
 
 ## Включение материалов
 
@@ -23,6 +23,10 @@ Document extractor обрабатывает UTF-8 текст, PDF и DOCX. PDF �
 Перед генерацией и отправкой derived response выполняются повторные проверки версии и доступа. При удалении очищаются pending-карточки и содержимое ожидающих текстовых запросов. Работа уже начатого сетевого вызова не считается отменённой у провайдера; её результат не публикуется после отзыва. Условия хранения сторонним провайдером этим механизмом не изменяются.
 
 ## Маршрутизация моделей
+
+Видео: `ARTI_VIDEO_ENABLED=1` внутри opt-in materials, ffmpeg/ffprobe, до 600 секунд/24 кадров/2 МиБ samples, worker до 240 секунд. Sparse coverage всегда partial. `/moment` и `/storyboard` требуют reply и действующего доступа. Frame replay проверяет hash. ASR/vision используют отдельные флаги A07/A08; звук и visible speaker не сливаются в идентичность.
+
+Direct media URL ограничен 10 МиБ/30 секундами/redirect budget; DNS pinned, actual peer проверяется до request, доверие environment proxy отключено. HTML pages видеохостингов без отдельного permitted bounded stream adapter недоступны. Legacy URL summary помечен audio-only; unbounded yt-dlp downloader удалён. Поддерживаются MP4/QuickTime/WebM/AVI containers и audio MP4/WebM с проверкой потоков decoder. Работа через URL не обходит правила хранения/удаления.
 
 Генератор использует `GenerationRequest`, `ImageInput` и `CapabilityRegistry`. PNG не отправляется как JPEG; запрос с изображением может включать поиск. В RP поиск отключён. Fallback должен поддерживать все модальности и функции запроса; несовместимый fallback не получает неполный запрос.
 
@@ -55,6 +59,12 @@ JSON manifest не содержит ключи API. Внешняя функци�
 
 ## Проверки
 
+A10: миграция `013_material_index.sql` индексирует оригинальные blocks, не создавая belief для каждого OCR token. Scope/realm/current version/expiry/tombstone/cognitive suppression фильтруются до SQL ranking. При первом поиске делается bounded backfill восьми разрешённых извлечений; неиндексированное содержимое не объявляется отсутствующим. Исправленный transcript head перекрывает оригинальную ASR-проекцию; head guard действует перед provider/delivery. Trigger физически удаляет индекс при erase/revise и старые transcript overlays при correction. `/materials_find` возвращает exact evidence; `/material_review` сохраняет авторский выбор/причину/открытые вопросы. Gist availability снижается со временем, точные значения восстанавливаются из current original. Role/authority группы не выводится из индивидуальной оценки.
+
+Аудио требует ffmpeg/ffprobe (на этом ПК `C:\ffmpeg\bin`) и `ARTI_AUDIO_ENABLED=1` внутри opt-in контура материалов. `ARTI_AUDIO_ASR_ENABLED=0` оставляет только acoustic observations; значение 1 включает настроенные AssemblyAI/Groq. Источники до 10 МиБ, анализ первых 600 секунд, отдельный worker 150 секунд, фиксированные decoder operations без сетевых протоколов. ASR timeout ограничен; plain text без timestamps не превращается в timed transcript. Native ASR scores не калиброваны. Providers получают только проверенный ограниченный clip; их retention policy этим механизмом не меняется.
+
+Добавочная миграция `012_material_observations.sql` хранит текущие transcript heads. Исправление требует автора оригинала и ожидаемого head. Root timeline разбит на bounded chunks; ограничения блоков и coverage видимы. Acoustic appraisal context загружается по разрешённому current source, не по сходству голоса. Эксплуатационные флаги в `.env` этой сессией не изменялись.
+
 Запускать из корня проекта:
 
 ```powershell
@@ -65,6 +75,8 @@ python -m tools.check_document_stack
 python -m tools.evaluate_documents
 python -m tools.evaluate_datasets
 python -m tools.evaluate_images
+python -m tools.evaluate_audio
+python -m tools.evaluate_video
 python -m tools.probe_material_provider --model stealth/space-bunny-alpha
 ```
 

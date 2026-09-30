@@ -103,7 +103,7 @@ class OpenRouterInterpreter:
     async def close(self):
         await self.client.aclose()
 
-    async def interpret(self, event: CognitiveEvent, goals=DEFAULT_GOALS, memories=(), intentions=(), rich=False) -> InterpretationResult:
+    async def interpret(self, event: CognitiveEvent, goals=DEFAULT_GOALS, memories=(), intentions=(), rich=False, sensory=()) -> InterpretationResult:
         if event.evidence.origin.value not in ('user','delivered_action'):
             raise ValueError('Interpretation requires a real observation or confirmed action')
         content = {'source_id':event.evidence.source_id, 'actor_id':event.actor_id,
@@ -112,6 +112,9 @@ class OpenRouterInterpreter:
                    'event_kind':event.event_kind,
                    'observed_at':event.observed_at.isoformat(),
                    'goals': [{'id':g.id, 'description':g.description} for g in goals]}
+        if sensory:
+            content['sensory_observations']=list(sensory)[:4]
+            content['sensory_contract']='Uncertain acoustic context only. Do not attribute speakers to actor_id or infer emotions, intent or consent from energy. Appraisal needs independent semantic evidence in the authored text; file metadata alone has appraisals=[].'
         if rich:
             content['eligible_memories'] = list(memories)[:8]
             content['eligible_intentions'] = list(intentions)[:16]

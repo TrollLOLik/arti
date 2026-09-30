@@ -173,6 +173,16 @@ def run_with_restart():
             application.add_handler(CommandHandler('dataset',dataset_command))
             application.add_handler(CommandHandler('calc',calc_command))
             application.add_handler(CommandHandler('datafix',datafix_command))
+            from bot.audio_commands import transcript_command,transcript_fix_command,listen_command
+            application.add_handler(CommandHandler('transcript',transcript_command))
+            from bot.video_commands import moment_command,storyboard_command
+            application.add_handler(CommandHandler('moment',moment_command))
+            application.add_handler(CommandHandler('storyboard',storyboard_command))
+            from bot.material_search import material_search_command,material_review_command
+            application.add_handler(CommandHandler('materials_find',material_search_command))
+            application.add_handler(CommandHandler('material_review',material_review_command))
+            application.add_handler(CommandHandler('transcript_fix',transcript_fix_command))
+            application.add_handler(CommandHandler('listen',listen_command))
             from bot.commands import handle_memory_archive_command
             application.add_handler(CommandHandler("memory_archive",handle_memory_archive_command))
             application.add_handler(CommandHandler("arti_commands", arti_commands))

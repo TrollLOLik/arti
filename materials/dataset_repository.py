@@ -1,56 +1,11 @@
 """Dataset heads, immutable calculations, CAS and the material erasure barrier."""
 from dataclasses import asdict
-from hashlib import sha256
-import json
 from materials.datasets import Dataset,apply_correction
-from materials.types import MaterialError,canonical
+from materials.types import MaterialError
+from materials.derivatives import DerivativeRepository
 
 
-class DatasetRepository:
-    def __init__(self,materials): self.materials=materials; self.pool=materials.pool
-
-    async def _sources(self,conn,actor,refs,*,edit=False):
-        versions={}
-        for ref in refs:
-            key=(ref['asset_id'],ref['asset_version']) if isinstance(ref,dict) else (ref.asset_id,ref.asset_version)
-            versions[key]=True
-        if not versions: raise MaterialError('derivative_without_sources')
-        for aid,version in sorted(versions):
-            row=await conn.fetchrow('SELECT * FROM material_assets WHERE id=$1 FOR UPDATE',aid)
-            self.materials.check(row,actor,edit=edit)
-            await self.materials._source_allowed(conn,actor,row['source_id'])
-            if row['current_version']!=version: raise MaterialError('stale_dataset_source')
-        return sorted({aid for aid,_ in versions})
-
-    async def _payload(self,conn,id,actor,kind):
-        row=await conn.fetchrow('SELECT * FROM material_derivatives WHERE id=$1',id)
-        if row is None or row['realm']!=actor.realm or row['kind']!=kind or row['payload'] is None or row['invalidated_at'] is not None:
-            raise MaterialError('derivative_unavailable')
-        payload=json.loads(row['payload']) if isinstance(row['payload'],str) else row['payload']
-        if sha256(canonical(payload).encode()).hexdigest()!=row['sha256']: raise MaterialError('derivative_integrity_failure')
-        return payload
-
-    async def _insert(self,conn,id,actor,kind,payload,assets,inputs=()):
-        serialized=canonical(payload)
-        if len(serialized.encode())>4*1024**2: raise MaterialError('derivative_payload_budget')
-        digest=sha256(serialized.encode()).hexdigest()
-        old=await conn.fetchrow('SELECT * FROM material_derivatives WHERE id=$1',id)
-        if old:
-            if old['realm']!=actor.realm or old['sha256']!=digest or old['invalidated_at'] is not None or old['payload'] is None:
-                raise MaterialError('derivative_identity_conflict')
-            return
-        if await conn.fetchval('SELECT COUNT(*) FROM material_derivatives WHERE realm=$1 AND payload IS NOT NULL',actor.realm)>=2000:
-            raise MaterialError('derivative_scope_quota')
-        await conn.execute('INSERT INTO material_derivatives(id,kind,payload,realm,sha256) VALUES($1,$2,$3::jsonb,$4,$5)',id,kind,serialized,actor.realm,digest)
-        await conn.executemany('INSERT INTO material_dependencies(derivative_id,asset_id) VALUES($1,$2)',[(id,aid) for aid in assets])
-        if inputs: await conn.executemany('INSERT INTO material_derivative_links(derivative_id,input_id) VALUES($1,$2)',[(id,other) for other in inputs])
-
-    async def _invalidate(self,conn,id):
-        await conn.execute('''WITH RECURSIVE dependent(id) AS (
-            SELECT derivative_id FROM material_derivative_links WHERE input_id=$1
-            UNION SELECT l.derivative_id FROM material_derivative_links l JOIN dependent d ON l.input_id=d.id)
-            UPDATE material_derivatives SET invalidated_at=NOW() WHERE id IN (SELECT id FROM dependent)''',id)
-
+class DatasetRepository(DerivativeRepository):
     async def save_dataset(self,actor,dataset):
         refs=dataset.source_refs
         async with self.pool.acquire() as conn,conn.transaction():

@@ -51,14 +51,15 @@ class MaterialRepository:
         if row['erased_at'] is not None or row['expires_at'] <= datetime.now(timezone.utc):
             raise MaterialError('material_erased_or_expired')
 
-    async def _source_allowed(self, conn, actor, source_id):
+    async def _source_allowed(self, conn, actor, source_id, *, owner_id=...):
+        source_owner=actor.user_id if owner_id is ... else owner_id
         suppressed = await conn.fetchval('''SELECT 1 FROM material_source_tombstones
-            WHERE scope_key=$1 AND owner_id IS NOT DISTINCT FROM $2 AND source_id=$3''', actor.scope.identity_key, actor.user_id, source_id)
+            WHERE scope_key=$1 AND owner_id IS NOT DISTINCT FROM $2 AND source_id=$3''', actor.scope.identity_key, source_owner, source_id)
         if not suppressed:
             suppressed = await conn.fetchval('''SELECT 1 FROM cognitive_events e JOIN cognitive_contexts c ON c.id=e.context_id
                 WHERE c.persona_id=$1 AND c.chat_id=$2 AND c.topic_id=$3 AND c.mode=$4 AND c.scene_id=$5
                 AND e.source_id=$6 AND e.owner_id IS NOT DISTINCT FROM $7 AND e.suppressed_at IS NOT NULL''',
-                actor.scope.persona_id, actor.scope.chat_id, actor.scope.topic_id, actor.scope.mode, actor.scope.scene_id, source_id, actor.user_id)
+                actor.scope.persona_id, actor.scope.chat_id, actor.scope.topic_id, actor.scope.mode, actor.scope.scene_id, source_id, source_owner)
         if suppressed:
             raise MaterialError('source_erased')
 
@@ -111,7 +112,7 @@ class MaterialRepository:
             await self._reservation(conn, actor, key)
             row = await conn.fetchrow('SELECT * FROM material_assets WHERE id=$1 FOR UPDATE', aid)
             self.check(row, actor, edit=True)
-            await self._source_allowed(conn, actor, row['source_id'])
+            await self._source_allowed(conn, actor, row['source_id'],owner_id=row['owner_id'])
             if row['current_version'] != expected_version:
                 raise MaterialError('stale_asset_version')
             await self._quota(conn, actor, size, False)
@@ -127,7 +128,7 @@ class MaterialRepository:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow('SELECT * FROM material_assets WHERE id=$1', aid)
             self.check(row, actor)
-            await self._source_allowed(conn, actor, row['source_id'])
+            await self._source_allowed(conn, actor, row['source_id'],owner_id=row['owner_id'])
             value = await conn.fetchrow('SELECT * FROM material_asset_versions WHERE asset_id=$1 AND version=$2', aid, version or row['current_version'])
             if value is None or value['blob_id'] is None:
                 raise MaterialError('version_unavailable')
@@ -140,7 +141,7 @@ class MaterialRepository:
             await self._locks(conn, actor)
             row = await conn.fetchrow('SELECT * FROM material_assets WHERE id=$1 FOR UPDATE', bundle.asset_id)
             self.check(row, actor)
-            await self._source_allowed(conn, actor, row['source_id'])
+            await self._source_allowed(conn, actor, row['source_id'],owner_id=row['owner_id'])
             if row['generation'] != generation or row['current_version'] != bundle.asset_version:
                 raise MaterialError('stale_extraction')
             existing = await conn.fetchrow('SELECT * FROM material_extractions WHERE asset_id=$1 AND asset_version=$2 AND extractor=$3', bundle.asset_id, bundle.asset_version, bundle.extractor)
@@ -160,22 +161,31 @@ class MaterialRepository:
         if result is None:
             return None
         payload = result['payload']
-        return result['id'], ExtractionBundle.from_dict(json.loads(payload) if isinstance(payload, str) else payload)
+        value=json.loads(payload) if isinstance(payload,str) else payload
+        if sha256(canonical(value).encode()).hexdigest()!=result['sha256']: raise MaterialError('extraction_integrity_failure')
+        await self.read(aid,actor,revision['version'])
+        return result['id'], ExtractionBundle.from_dict(value)
 
     async def resolve(self, ref, actor):
-        await self.read(ref.asset_id, actor, ref.asset_version)
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow('SELECT payload FROM material_extractions WHERE id=$1 AND asset_id=$2 AND asset_version=$3 AND payload IS NOT NULL', ref.extraction_id, ref.asset_id, ref.asset_version)
-        if row is None:
-            raise MaterialError('evidence_unavailable')
-        value = json.loads(row['payload']) if isinstance(row['payload'], str) else row['payload']
-        bundle = ExtractionBundle.from_dict(value)
+        bundle=await self.evidence_bundle(ref,actor)
         block = next((b for b in bundle.blocks if b.block_id == ref.block_id and b.locator == ref.locator), None)
         if block is None:
             raise MaterialError('evidence_locator_mismatch')
-        # A second barrier prevents returning a result invalidated while loading.
         await self.read(ref.asset_id, actor, ref.asset_version)
         return block
+
+    async def evidence_bundle(self,ref,actor):
+        await self.read(ref.asset_id, actor, ref.asset_version)
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow('SELECT payload,sha256 FROM material_extractions WHERE id=$1 AND asset_id=$2 AND asset_version=$3 AND payload IS NOT NULL', ref.extraction_id, ref.asset_id, ref.asset_version)
+        if row is None:
+            raise MaterialError('evidence_unavailable')
+        value = json.loads(row['payload']) if isinstance(row['payload'], str) else row['payload']
+        if sha256(canonical(value).encode()).hexdigest()!=row['sha256']: raise MaterialError('extraction_integrity_failure')
+        bundle = ExtractionBundle.from_dict(value)
+        # A second barrier prevents returning a result invalidated while loading.
+        await self.read(ref.asset_id, actor, ref.asset_version)
+        return bundle
 
     async def own_search(self, actor, query, limit=5):
         if not query.strip() or not 1 <= limit <= 20:

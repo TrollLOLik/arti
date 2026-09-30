@@ -48,7 +48,11 @@ def inspect_bytes(data, filename, declared_mime=None, max_bytes=10 * 1024 * 1024
     elif data.startswith(b'ID3') or data[:2] in (b'\xff\xfb', b'\xff\xf3', b'\xff\xf2'):
         mime = 'audio/mpeg'
     elif len(data) >= 12 and data[4:8] == b'ftyp':
-        mime = 'video/mp4'
+        mime = 'audio/mp4' if declared_mime=='audio/mp4' or data[8:12] in (b'M4A ',b'M4B ') else 'video/quicktime' if data[8:12]==b'qt  ' else 'video/mp4'
+    elif data.startswith(b'\x1aE\xdf\xa3'):
+        mime = 'audio/webm' if declared_mime=='audio/webm' else 'video/webm'
+    elif data[:4]==b'RIFF' and data[8:12]==b'AVI ':
+        mime = 'video/x-msvideo'
     elif suffix in ('.txt', '.csv', '.md', '.json'):
         try:
             data.decode('utf-8-sig')

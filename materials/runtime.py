@@ -14,6 +14,7 @@ from materials.extractors.documents import configured_extractor
 
 CURRENT_MATERIAL_USE = contextvars.ContextVar('arti_material_use', default=())
 CURRENT_COMPUTATION_USE = contextvars.ContextVar('arti_computation_use', default=())
+CURRENT_DERIVATIVE_USE = contextvars.ContextVar('arti_derivative_use', default=())
 logger = logging.getLogger(__name__)
 
 
@@ -47,6 +48,15 @@ class ComputationUse:
     repository: object
     async def validate(self):
         await self.repository.load_computation(self.computation_id,self.actor)
+
+
+@dataclass(frozen=True)
+class DerivativeUse:
+    id: str
+    actor: AccessContext
+    repository: object
+    kind: str | None=None
+    async def validate(self): await self.repository.load(self.id,self.actor,self.kind)
 
 
 def enabled():
@@ -128,7 +138,7 @@ async def capture_document(context, document, message, *, preloaded_data=None, s
     from materials.validation import inspect_bytes
     mime = await asyncio.to_thread(inspect_bytes,data,document.file_name or 'document',getattr(document,'mime_type',None))
     eid, bundle = await service.extract(asset['id'], actor, configured_extractor(mime))
-    if not any(b.text.strip() or b.kind=='image' for b in bundle.blocks):
+    if not any(b.text.strip() or b.kind in ('image','audio','video') for b in bundle.blocks):
         raise MaterialError('document_has_no_readable_text')
     use = MaterialUse(asset['id'], actor, bundle.asset_version, asset['generation'], service,cid,event_id)
     await use.validate()
@@ -138,7 +148,7 @@ async def capture_document(context, document, message, *, preloaded_data=None, s
 async def guard_current(destination=None):
     from cognition.scope import CURRENT_SCOPE
     scope = CURRENT_SCOPE.get()
-    for use in CURRENT_MATERIAL_USE.get()+CURRENT_COMPUTATION_USE.get():
+    for use in CURRENT_MATERIAL_USE.get()+CURRENT_COMPUTATION_USE.get()+CURRENT_DERIVATIVE_USE.get():
         if destination is not None and destination != use.actor.scope.chat_id:
             raise MaterialError('material_destination_mismatch')
         if scope is not None and (scope.chat_id != use.actor.scope.chat_id or scope.topic_id != use.actor.scope.topic_id):

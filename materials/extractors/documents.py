@@ -458,6 +458,18 @@ class DocumentExtractor:
 
 
 def configured_extractor(mime=None):
+    if mime and mime.startswith('video/'):
+        if os.getenv('ARTI_VIDEO_ENABLED','1').lower() in ('0','false','off'): raise MaterialError('video_extraction_disabled')
+        from materials.extractors.video import VideoExtractor
+        return VideoExtractor(image=configured_extractor('image/jpeg'),audio=configured_extractor('audio/wav'))
+    if mime and mime.startswith('audio/'):
+        if os.getenv('ARTI_AUDIO_ENABLED','1').lower() in ('0','false','off'): raise MaterialError('audio_extraction_disabled')
+        from materials.extractors.audio import AudioExtractor
+        transcriber=None
+        if os.getenv('ARTI_AUDIO_ASR_ENABLED','1').lower() not in ('0','false','off'):
+            from ai.stt import StructuredTranscriber
+            transcriber=StructuredTranscriber()
+        return AudioExtractor(transcriber=transcriber)
     if mime and mime.startswith('image/'):
         if os.getenv('ARTI_IMAGES_ENABLED','1').lower() in ('0','false','off'): raise MaterialError('image_extraction_disabled')
         from materials.extractors.images import ImageExtractor

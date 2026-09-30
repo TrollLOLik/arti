@@ -207,8 +207,13 @@ class CognitiveRuntime:
                 memories = [dict(source_id=r['payload']['source_id'],text=r['payload']['gist'][:400],interpretation=r['payload']['interpretation']) for r in raw[:8]]
                 pending = await self.memory.open_intentions(cid,event.evidence.owner_id,event.text)
                 intentions = [{k:r['payload'].get(k) for k in ('key','description','actor_id','deadline','status','source_id')} for r in pending]
-                interpreted = await self.interpreter.interpret(event,goals=DEFAULT_GOALS if late else goals,memories=memories,intentions=intentions,rich=True)
+                from cognition.sensory import acoustic_context
+                sensory=await acoustic_context(self.pool,event)
+                interpreted = await self.interpreter.interpret(event,goals=DEFAULT_GOALS if late else goals,memories=memories,intentions=intentions,rich=True,**({'sensory':sensory} if sensory else {}))
                 p = interpreted.perception
+                if sensory and event.text.startswith('Материал: '):
+                    # A decoder observation supplies no goal outcome or human intent.
+                    p=replace(p,appraisals=())
                 if event.evidence.origin==Origin.DELIVERED_ACTION:
                     if p.situation:
                         p = replace(p,appraisals=(),situation=replace(p.situation,beliefs=(),preferences={},social_signal='contact',revisions=()))

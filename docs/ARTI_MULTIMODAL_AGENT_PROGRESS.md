@@ -1,6 +1,6 @@
 # Реализация мультимодальности и агентских функций Арти
 
-Дата: 30 сентября 2026 года. Реализация идёт по [плану A01–A24](ARTI_MULTIMODAL_AGENT_BATCHES.md); текущее поручение — до A23 включительно. Mini App отложена. Реализованы основание A01–A04 и программные контуры A05–A07; полный план не завершён.
+Дата: 1 октября 2026 года. Реализация идёт по [плану A01–A24](ARTI_MULTIMODAL_AGENT_BATCHES.md); текущее поручение — до A23 включительно. Mini App отложена. Реализованы основание A01–A04 и программные контуры A05–A10; полный план не завершён.
 
 ## Состояние батчей
 
@@ -13,10 +13,31 @@
 | A05 | Структурированный PDF/DOCX, локальный русский/английский OCR, ориентация и deskew, колонки, grid tables, merge/nested DOCX, cell evidence, изображения/подписи, колонтитулы, отдельное региональное перечитывание, manifests повреждений и ограниченный worker. | Программная приёмка на синтетическом корпусе пройдена. Реальный разнородный корпус и человеческие оценки — A24; borderless tables, рукопись, DOCX textboxes/notes явно ограничены. |
 | A06 | Immutable datasets CSV/XLSX/PDF/DOCX, локаль/единицы, source cells, Decimal расчёты/границы, закрытая grammar формул, сверка cache, CAS corrections, invalidation/forget и Telegram commands. | Программная приёмка на synthetic fixtures; полная совместимость Excel не заявляется. Реальный разнородный корпус — A24. |
 | A07 | Изолированный image OCR, EXIF display coordinates, region crop/zoom/reread, raster cell evidence, typed objects/relations/axes, routed visual observations, conflicts и перенос source usages через photo/album/pending flows. | 14 сценарных проверок. Live: обе схемы со стрелками прошли; log-axis запрос отвергнут по schema, повтор по timeout. Надёжность зрения на реальном корпусе — A24. |
-| A08–A23 | План и критерии приёмки сохранены; пользователь поручил реализацию. | Работа продолжается; A08 начат. |
+| A08 | Ограниченный ffmpeg decoder, native timestamps ASR, локальные speaker ID, acoustic context, immutable transcript heads/CAS, replay и Telegram correction commands. | 19 сценарных тестов и 5/5 synthetic decoder/timing cases. Provider payload doubles не измеряют точность реального ASR/diarization; независимый корпус — A24. |
+| A09 | Fixed ffmpeg frames/scenes, actual PTS, dense refinement, audio alignment, immutable replay/storyboard, opt-in video intake и bounded public URL fetch. | 9 tests, 4/4 owned video/OCR cases. Hosted pages требуют разрешённого stream adapter; direct media поддерживаются. Human/real video corpus — A24. |
+| A10 | Scoped SQL index до ranking, current evidence/quotes/coverage, transcript overlays, provenance/late guards, participant reviews и decaying gist отдельно от точных фактов. | 7 сценарных tests. Лексический match не является semantic entailment; широкая оценка retrieval и field corpus — A24. |
+| A11–A23 | План и критерии приёмки сохранены; пользователь поручил реализацию. | Работа продолжается; A11 начат. |
 | A24 | План общей оценки сохранён. | Реальный пилот и человеческая оценка ещё не проведены. |
 
 ## Реализованное поведение
+
+## A08: звук, версии расшифровок и цитаты
+
+Слово и реплика сохраняют настоящие временные метки AssemblyAI/Groq, исходный score и clip-local speaker ID. Текст без меток не получает выдуманную временную привязку. Перекрывающиеся provider intervals остаются наблюдением, не доказательством разделённых голосов. Энергия/zero crossings и low-energy intervals — неопределённые признаки; громкость не доказывает эмоцию, сходство голоса не присваивает личность. Appraisal получает ограниченный current acoustic context по настоящему источнику; file metadata не создаёт эмоциональный outcome.
+
+`/transcript`, `/listen turn_1`, `/transcript_fix turn_1 "текст" version=ID` работают через reply. Подтверждение автора меняет immutable transcript head, сохраняет оригинальный звук/word alignment и отзывает все зависимые результаты. Старый head не допускается как новый input. Полный материал, текущая расшифровка и результат проверяются до provider call и доставки. Голосовая цитата не записывается как просьба её неизвестного говорящего.
+
+Generic derivative graph теперь проверяет current upstream datasets/transcript heads и хранит плоские связи со всеми исходными assets. Удаление очищает payload всех уровней. Исправлена проверка tombstone: групповой читатель проверяет suppression настоящего загрузившего автора. Cache extraction и evidence resolution проверяют hash. Миграция 012 добавляет observation heads; рабочая база не менялась.
+
+[Корпус A08](evaluation/materials_audio.json): 5/5 decoder/timing/uncertainty cases, provider calls 0. 19 сценарных тестов включают реальный decoder/replay, смешанные языки и шумовые fixtures, CAS, restart, чужой/устаревший command, source erase до/во время ASR, late guard и acoustic context. Это программная проверка контрактов, не замер распознавания настоящей речи. Mini App и live Telegram не запускались.
+
+## A09: общая шкала видео и звука
+
+ffmpeg декодирует до 600 секунд и 24 кадров с ограничением 2 МиБ samples: равномерную выборку и scene heuristic. Сохраняются реальные PTS, origin контейнера, timestamps/region экранного текста и независимая аудиодорожка. Audio stream start учитывается отдельно, visible speaker остаётся неизвестным. `/moment` делает dense view до 30 секунд с соседними кадрами; `/storyboard` показывает до шести адресуемых кадров. Replay повторно декодирует exact frame и проверяет hash. Полное время manifest остаётся sparse/partial, отсутствие события не доказывается.
+
+URL fetch проверяет все DNS addresses, подключается по этим же адресам и сверяет реальный peer до HTTP request. Redirect проверяется отдельно, до четырёх hops; credentials, private/mapped IP, нестандартные ports, compressed bodies, MIME/byte/time overrun запрещены. Proxy/env cookies не наследуются. Unbounded yt-dlp заменён direct media path. Страница видеохостинга без разрешённого stream adapter возвращает недоступность оригинала, а legacy audio summary явно маркируется audio-only. Legacy Gemini processing poll ограничен 90 секундами. Контракты сверены с [aiohttp](https://docs.aiohttp.org/en/stable/client_advanced.html) и [FFmpeg](https://ffmpeg.org/ffmpeg-filters.html#select_002c-aselect).
+
+[Корпус A09](evaluation/materials_video.json): 4/4 native PTS, slides OCR, transient refinement и coverage cases; реальные ffmpeg/Tesseract, собственный synthetic video. 9 tests проверяют native PTS, audio offset, immutable frame/refinement, topic/erasure/provider fences, mock storyboard и DNS/peer/redirect/size границы. Live Telegram и model calls 0. Общий A08 regression: 317/317, 254.98 секунды; A09 прошёл targeted прогон и включается в следующий общий прогон.
 
 `materials/` задаёт независимое от провайдеров ядро. Повторное транспортное событие возвращает тот же материал; изменение содержимого под прежней идентичностью отвергается. Отдельная revision-операция использует ожидаемую версию. Хеш служит проверке содержимого и дедупликации внутри разрешённой области, а физический путь задаётся непрозрачным ID.
 
@@ -38,7 +59,7 @@ Blob сначала получает долговечную reservation. Зап�
 
 Исходный прогон до изменения существующего кода: **195/195**, без пропусков, 136,62 секунды, без вызовов провайдеров. [Baseline](evaluation/multimodal_baseline_regression.json).
 
-Общий прогон первого этапа проходил **227/227**, без ошибок и пропусков, 157,21 секунды: 195 прежних и 32 новых проверки. После A05 — **253/253**, 192,29 секунды. После A06 — **284/284**, 230,97 секунды. После A07 — **298/298**, без ошибок и пропусков, 222,83 секунды. [Последний машинный отчёт](evaluation/materials_full_tests.json). SQL-проверки выполняются на создаваемых и удаляемых `arti_cognition_test_<uuid>`; таблицы рабочей базы не изменялись.
+Общий прогон первого этапа проходил **227/227**, без ошибок и пропусков, 157,21 секунды: 195 прежних и 32 новых проверки. После A05 — **253/253**, 192,29 секунды. После A06 — **284/284**, 230,97 секунды. После A07 — **298/298**, 222,83 секунды. После A08–A10 — **333/333**, без ошибок и пропусков, 307,93 секунды. [Последний машинный отчёт](evaluation/materials_full_tests.json). SQL-проверки выполняются на создаваемых и удаляемых `arti_cognition_test_<uuid>`; таблицы рабочей базы не изменялись.
 
 Проверки нового контура включают: конкурентный duplicate update, конфликт идентичности, квоты, перезапуск, межтопиковый/личный доступ, неподходящие locators, неверный MIME, ZIP expansion, повреждение blob, cache extraction, удаление во время работы, shared blob, expiration, stale revision, uploader attribution, запрет отправки отозванного результата и восстановление после падения между двумя барьерами удаления.
 
@@ -52,7 +73,7 @@ Live `stealth/space-bunny-alpha`, прямой OpenRouter endpoint: текст �
 
 Текущее долговечное Telegram intake выключено по умолчанию; включается `ARTI_MATERIALS_ENABLED=1`. [Runbook](ARTI_MULTIMODAL_RUNBOOK.md) описывает каталог, квоты, maintenance, manifest моделей, тестовые команды и отключение. Код и миграции проверены программно; рабочий бот не запускался и рабочая база не мигрировалась в ходе этого этапа.
 
-Следующая работа — A07: изображения и адресуемые области; затем A08–A23 по поручению пользователя. Студия остаётся контрольной точкой A16; агентский исполнитель — A20. Оценки людей и настоящий Telegram-пилот остаются отдельной работой A24.
+Следующая работа — A11: личные и совместные проекты; затем A12–A23 по поручению пользователя. Студия остаётся контрольной точкой A16; агентский исполнитель — A20. Оценки людей и настоящий Telegram-пилот остаются отдельной работой A24.
 
 ## A06: таблицы и проверяемые расчёты
 
