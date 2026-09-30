@@ -36,9 +36,22 @@ def _memory_role(user_name: str) -> str:
 async def _save_cognitive_history(chat_id,user_name,text,user_id,message_id,mode,occurred_at):
     from cognition.runtime import get_runtime
     runtime = get_runtime()
-    if not runtime or runtime.mode=='legacy' or message_id is None or user_id is None:
+    if not runtime or runtime.mode=='legacy' or message_id is None:
         return False
-    cid,eid,event = await runtime.ingest(chat_id,user_id,text,message_id,mode,occurred_at)
+    from cognition.scope import CURRENT_SCOPE
+    scope=CURRENT_SCOPE.get()
+    if scope and scope.group and scope.chat_id==chat_id:
+        if user_name=='Арти' or scope.sender_kind=='bot' or scope.topic_id<0: return True
+        from dataclasses import replace
+        from cognition.serialization import load_event
+        cid=await runtime.groups.observe(replace(scope,message_id=message_id),text,mode,occurred_at)
+        async with runtime.pool.acquire() as conn:
+            row=await conn.fetchrow('SELECT e.id,e.payload FROM cognitive_events e JOIN group_observations o ON o.event_id=e.id WHERE o.context_id=$1 AND o.message_id=$2 AND e.suppressed_at IS NULL',cid,message_id)
+        if not row: return True
+        eid=row['id']; event=load_event(row['payload'])
+    else:
+        if user_id is None: return False
+        cid,eid,event = await runtime.ingest(chat_id,user_id,text,message_id,mode,occurred_at)
     from cognition.history import save_source_history,invalidate_history
     async with runtime.pool.acquire() as conn,conn.transaction():
         await conn.fetchval('SELECT revision FROM cognitive_contexts WHERE id=$1 FOR UPDATE',cid)
@@ -78,11 +91,22 @@ async def save_chat_message(chat_id: int, user_name: str, message_text: str, use
         logger.error(f"Ошибка при сохранении сообщения в БД: {e}", exc_info=True)
 
 
+async def _group_history(chat_id,mode):
+    from cognition.scope import CURRENT_SCOPE
+    from cognition.runtime import get_runtime
+    scope=CURRENT_SCOPE.get(); runtime=get_runtime()
+    if scope and scope.group and scope.chat_id==chat_id:
+        return await runtime.groups.history(scope,mode) if runtime else ''
+    return None
+
+
 async def get_chat_context(chat_id, limit=20) -> str:
     """
     Получает последние сообщения (с датами) из истории чата, форматируя их для модели.
     Использует кеширование для оптимизации производительности.
     """
+    group=await _group_history(chat_id,'default')
+    if group is not None: return group
     try:
         now = datetime.now()
         
@@ -135,6 +159,8 @@ async def save_chat_message_rp(chat_id: int, user_name: str, message_text: str, 
 
 async def get_chat_context_rp(chat_id, limit=20) -> str:
     """Получает последние сообщения из RP-истории чата, форматируя их для модели."""
+    group=await _group_history(chat_id,'rp')
+    if group is not None: return group
     try:
         now = datetime.now()
         if chat_id in _context_cache_rp:
@@ -205,6 +231,8 @@ async def get_dialog_history_as_text(chat_id, limit=20) -> str:
     Возвращает историю диалога (без дат) для данного chat_id в виде строки.
     Использует chat_history.
     """
+    group=await _group_history(chat_id,'default')
+    if group is not None: return group
     try:
         now = datetime.now()
         
@@ -235,6 +263,8 @@ async def get_dialog_history_as_text(chat_id, limit=20) -> str:
 
 async def get_dialog_history_as_text_rp(chat_id, limit=20) -> str:
     """Возвращает RP-историю диалога (без дат) для данного chat_id в виде строки."""
+    group=await _group_history(chat_id,'rp')
+    if group is not None: return group
     try:
         now = datetime.now()
         if chat_id in _dialog_history_cache_rp:

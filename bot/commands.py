@@ -3825,10 +3825,10 @@ async def handle_forget_command(update: Update, context: ContextTypes.DEFAULT_TY
         ctx = await runtime.context(chat_id,mode)
         async with runtime.pool.acquire() as conn:
             rows = await conn.fetch('''SELECT e.id,e.context_id,e.payload FROM cognitive_events e JOIN cognitive_contexts c ON c.id=e.context_id
-                WHERE c.persona_id=$1 AND c.chat_id=$2 AND c.mode=$3 AND c.scene_id=$4
-                AND e.owner_id=$5 AND e.origin='user' AND e.suppressed_at IS NULL
-                AND (e.payload->>'text' ILIKE '%' || $6 || '%'
-                    OR to_tsvector('russian',e.payload->>'text') @@ websearch_to_tsquery('russian',$6))
+                WHERE c.persona_id=$1 AND c.chat_id=$2 AND c.mode=$3 AND c.scene_id=$4 AND c.topic_id=$5
+                AND e.owner_id=$6 AND e.origin='user' AND e.suppressed_at IS NULL
+                AND (e.payload->>'text' ILIKE '%' || $7 || '%'
+                    OR to_tsvector('russian',e.payload->>'text') @@ websearch_to_tsquery('russian',$7))
                 ORDER BY e.id DESC LIMIT 2000''',*ctx.identity(),user_id,topic)
         if rows:
             keyboard,lines = [],[]

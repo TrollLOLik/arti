@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 
 from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
+from cognition.scope import requested
 
 from config import (
     AUTO_REPLY_TIMEOUT, AUTO_REPLY_THRESHOLD,
@@ -105,16 +106,29 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not await is_responses_enabled(chat_id):
         return
 
+    from cognition.scope import CURRENT_SCOPE,from_update
+    scope = CURRENT_SCOPE.get() or from_update(update,context.bot.id,getattr(context.bot,'username',''))
+    if scope:
+        CURRENT_SCOPE.set(scope)
+    if scope and scope.group and scope.sender_kind=='bot':
+        return
+    if scope and scope.sender_kind=='chat':
+        user_id=0
+        user_name='Анонимный участник'
+
     # Per-user rate limit для LLM-вызовов (S-04: cost abuse protection)
-    if _is_text_rate_limited(user_id):
+    if (not scope or not scope.group or scope.addressed) and _is_text_rate_limited(user_id):
         logger.warning(f"Rate limit: user {user_id} в чате {chat_id} превысил лимит текстовых запросов")
         return
 
     from cognition.runtime import get_runtime
     runtime = get_runtime()
     if runtime and runtime.mode!='legacy' and update.message.text:
-        await runtime.ingest(chat_id,user_id,update.message.text,message_id,
-                             'rp' if rp_mode_state.get(chat_id) else 'default',occurred_at=update.message.date)
+        mode='rp' if rp_mode_state.get(chat_id) else 'default'
+        if scope and scope.group:
+            await runtime.groups.observe(scope,update.message.text,mode,at=update.message.date,message=update.message)
+        else:
+            await runtime.ingest(chat_id,user_id,update.message.text,message_id,mode,occurred_at=update.message.date)
 
     user_text = update.message.text or ""
 
@@ -343,6 +357,14 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
         await enqueue_reply(chat_id, user_id, user_name, user_message, message_id, context, is_voice=True, base64_image=base64_image_reply, document_text=document_text_reply, video_file_id=telegram_video_file_id)
         return
 
+    # Group ingress has already recorded public observations. Every direct
+    # response uses the captured scope; autonomous participation is scheduled.
+    if scope and scope.group:
+        if scope.addressed and scope.sender_kind!='bot':
+            await enqueue_reply(chat_id,user_id,user_name,user_message,message_id,context,is_voice=False,
+                                base64_image=base64_image_reply,document_text=document_text_reply,video_file_id=telegram_video_file_id)
+        return
+
     # Определяем триггеры (только для групп)
     # forwarded_from_bot/replied_to_bot/has_arti_mention уже посчитаны выше для URL-перехвата
 
@@ -455,7 +477,7 @@ async def _process_images(
     """Фоновая задача: отправляет все собранные картинки в ИИ и шлёт ответ."""
     try:
         # VAL-01: упоминание по границе слова, а не подстрокой.
-        if not (is_private or bool(re.search(r'\bарти\b', user_caption.lower())) or replied_to_bot):
+        if not requested(is_private or bool(re.search(r'\bарти\b', user_caption.lower())) or replied_to_bot):
             logger.info("Триггер для ответа на фото не сработал — пропускаем")
             return
 
@@ -473,7 +495,7 @@ async def _process_images(
         mode = "rp" if rp_mode_state.get(chat_id) else "default"
         from cognition.runtime import prepare_turn
         cognitive_turn = await prepare_turn(chat_id,user_id,user_caption,message_id,mode)
-        if cognitive_turn is not None and cognitive_turn.active and cognitive_turn.repeated_delivery:
+        if cognitive_turn is not None and cognitive_turn.uses_cognition and cognitive_turn.repeated_delivery:
             return
         user_profile = await MemoryUserProfile.get(chat_id, user_id, mode)
         if user_profile and user_profile.get("profile_json"):
@@ -485,13 +507,13 @@ async def _process_images(
         user_caption = strip_introspection_tags(user_caption)
         # defer_sentiment=True: словарный сдвиг отложен до apply_turn_sentiment пост-генерации.
         emotion_source_key = f"photo:{mode}:{message_id}" if message_id is not None else None
-        img_state = {} if cognitive_turn is not None and cognitive_turn.active else await ChatEmotionalState.update_state(chat_id, user_caption, closeness, user_id=user_id, defer_sentiment=True, source_key=emotion_source_key)
+        img_state = {} if cognitive_turn is not None and cognitive_turn.uses_cognition else await ChatEmotionalState.update_state(chat_id, user_caption, closeness, user_id=user_id, defer_sentiment=True, source_key=emotion_source_key)
 
         image_details = "изображение" if len(base64_images) == 1 else f"{len(base64_images)} изображений"
         await _save_message(chat_id, user_name, f"Пользователь прислал {image_details}. Подпись: {user_caption}", user_id=user_id,message_id=update.message.message_id,occurred_at=update.message.date)
 
         dialog_history_str = await _get_dialog_history(chat_id)
-        memory_context = cognitive_turn.memory if cognitive_turn is not None and cognitive_turn.active else await build_memory_context(
+        memory_context = cognitive_turn.memory if cognitive_turn is not None and cognitive_turn.uses_cognition else await build_memory_context(
             chat_id=chat_id,
             user_id=user_id,
             user_message=user_caption,
@@ -510,7 +532,7 @@ async def _process_images(
             enable_introspection=True,
             emotional_state=img_state,
             memory_context=memory_context,
-            expression_plan=cognitive_turn.expression if cognitive_turn is not None and cognitive_turn.active else None,
+            expression_plan=cognitive_turn.expression if cognitive_turn is not None and cognitive_turn.uses_cognition else None,
         )
         logger.debug(f"RAW ИИ ОТВЕТ (фото, {len(base64_images)} шт): {response_text}")  # PRIV-01
 
@@ -528,12 +550,12 @@ async def _process_images(
             sticker_mood = sticker_match.group(1).strip().lower()
 
         # Гибридный сентимент: интроспекция LLM > словарный фолбэк; затем вырезаем служебный тег.
-        introspection_sticker = None if generation_failed or (cognitive_turn is not None and cognitive_turn.active) else await ChatEmotionalState.apply_turn_sentiment(
+        introspection_sticker = None if generation_failed or (cognitive_turn is not None and cognitive_turn.uses_cognition) else await ChatEmotionalState.apply_turn_sentiment(
             chat_id, response_text, img_state.get("keyword_mood_delta"), source_key=emotion_source_key
         )
         if not sticker_mood and introspection_sticker:
             sticker_mood = introspection_sticker
-        if cognitive_turn is not None and cognitive_turn.active:
+        if cognitive_turn is not None and cognitive_turn.uses_cognition:
             sticker_mood = None if generation_failed else cognitive_turn.expression.sticker_mood
             response_text = '[' + cognitive_turn.expression.tts_style + '] ' + response_text
         response_text = strip_introspection_tags(response_text)
@@ -585,7 +607,7 @@ async def _process_images(
             history_response_text = f"[Стикер: {sticker_mood}]"
 
         # MEM-06: заглушку об ошибке не пишем в историю.
-        if not generation_failed and (cognitive_turn is None or not cognitive_turn.active):
+        if not generation_failed and (cognitive_turn is None or not cognitive_turn.uses_cognition):
             await _save_message(chat_id, "Арти", history_response_text)
 
         # === ОТПРАВКА СООБЩЕНИЯ (ТЕКСТ/ГОЛОС) ===
@@ -593,7 +615,7 @@ async def _process_images(
         has_text = bool(display_text.strip())
 
         if has_text:
-            text_preference = cognitive_turn is not None and cognitive_turn.active and (cognitive_turn.preferences.get('voice') is False or cognitive_turn.preferences.get('text') is True)
+            text_preference = cognitive_turn is not None and cognitive_turn.uses_cognition and (cognitive_turn.preferences.get('voice') is False or cognitive_turn.preferences.get('text') is True)
             if used_search or not TTS_ENABLED or text_preference:
                 sent_msg = await bot.send_message(
                     chat_id=chat_id, text=display_text,
@@ -659,7 +681,7 @@ async def _process_images(
             )
 
         # MEM-06: не учим память на заглушке об ошибке.
-        if not generation_failed and (cognitive_turn is None or not cognitive_turn.active):
+        if not generation_failed and (cognitive_turn is None or not cognitive_turn.uses_cognition):
             memory_task = asyncio.create_task(
                 remember_exchange(
                     chat_id=chat_id,
@@ -1029,6 +1051,7 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # AUTH-01 / S-04: лимит дорогих LLM/STT-операций (как для текстового пути).
     # Ставим после vclone-fast-path'ов, чтобы загрузка референса не съедала бюджет.
+    if not requested(update.effective_chat.type=='private'): return
     if _is_text_rate_limited(user_id):
         logger.warning(f"Rate limit: голосовое от user {user_id} в чате {chat_id} превысило лимит")
         return
@@ -1103,7 +1126,7 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
             and update.message.reply_to_message.from_user
             and update.message.reply_to_message.from_user.id == context.bot.id  # VAL-01
         )
-        if is_private or replied_to_bot or contains_arti(transcription):
+        if requested(is_private or replied_to_bot or contains_arti(transcription)):
             await enqueue_reply(
                 chat_id=chat_id, user_id=user_id,
                 user_name=update.message.from_user.first_name,
@@ -1198,7 +1221,7 @@ async def handle_video_upload_message(update: Update, context: ContextTypes.DEFA
     )
     is_private = update.effective_chat.type == "private"
 
-    if is_private or bool(re.search(r'\bарти\b', user_caption.lower())) or replied_to_bot:
+    if requested(is_private or bool(re.search(r'\bарти\b', user_caption.lower())) or replied_to_bot):
         await _save_message(chat_id, user_name, user_caption, user_id=user_id,message_id=update.message.message_id,occurred_at=update.message.date)
         await enqueue_reply(chat_id, user_id, user_name, user_caption, message_id, context, is_voice=True, video_file_id=video_file_id)
     else:
@@ -1238,6 +1261,7 @@ async def handle_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if handled:
                 return
 
+    if not requested(update.effective_chat.type=='private'): return
     video_note_id = update.message.video_note.file_id
     # У круглешков нет подписей, поэтому используем дефолтный промпт
     user_prompt = "Проанализируй этот круглешочек."
@@ -1331,7 +1355,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         and update.message.reply_to_message.from_user.id == context.bot.id
     )
     caption_mentions_arti = bool(re.search(r'\bарти\b', (update.message.caption or "").lower()))
-    if not (is_private or replied_to_bot or caption_mentions_arti):
+    if not requested(is_private or replied_to_bot or caption_mentions_arti):
         logger.info("Документ в группе без триггера (нет reply/упоминания) — пропускаем.")
         return
 
@@ -1931,6 +1955,16 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
 
     # AUTH-03: в выключенном (/stop) чате реакции не влияют на состояние.
     if not await is_responses_enabled(chat_id):
+        return
+    if reaction_update.chat.type in ('group','supergroup'):
+        from cognition.runtime import get_runtime
+        from cognition.scope import TransportScope
+        runtime=get_runtime()
+        added=[getattr(r,'emoji','') for r in reaction_update.new_reaction or []]
+        positive={'👍','❤️','🎉','🔥','👏'}; negative={'👎','🤬'}
+        signal=.4 if any(e in positive for e in added) else -.6 if '👎' in added else -.2 if '🤬' in added else 0.
+        if runtime and runtime.mode!='legacy':
+            await runtime.groups.feedback(TransportScope(chat_id,-1,reaction_update.chat.type,user_id),message_id,user_id,signal)
         return
 
     # AUTH-03: реагируем ТОЛЬКО на реакции к сообщениям самого бота. Telegram не

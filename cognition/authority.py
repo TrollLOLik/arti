@@ -12,5 +12,5 @@ async def legacy_permitted(chat_id,mode=None):
         mode = 'rp' if rp_mode_state.get(chat_id) else 'default'
     context = await runtime.context(chat_id,mode)
     async with runtime.pool.acquire() as conn:
-        authority = await conn.fetchval('SELECT authority FROM cognitive_contexts WHERE persona_id=$1 AND chat_id=$2 AND mode=$3 AND scene_id=$4',*context.identity())
+        authority = await conn.fetchval('SELECT authority FROM cognitive_contexts WHERE persona_id=$1 AND chat_id=$2 AND mode=$3 AND scene_id=$4 AND topic_id=$5',*context.identity())
     return (authority or runtime.mode)!='active'

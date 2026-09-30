@@ -11,7 +11,7 @@ async def due_intentions(runtime):
         return []
     now = runtime.clock()
     async with runtime.pool.acquire() as conn:
-        rows = await conn.fetch("""SELECT a.*,c.chat_id,c.mode,c.scene_id,c.suppression_epoch FROM cognitive_artifacts a
+        rows = await conn.fetch("""SELECT a.*,c.chat_id,c.mode,c.scene_id,c.topic_id,c.suppression_epoch FROM cognitive_artifacts a
             JOIN cognitive_contexts c ON c.id=a.context_id WHERE a.kind='intention' AND a.suppressed_at IS NULL
               AND a.payload IS NOT NULL AND c.authority='active' AND NOT c.rebuilding AND a.projection_epoch=c.suppression_epoch
               AND coalesce((a.payload->>'delivered')::boolean,false)=false
@@ -36,8 +36,11 @@ async def due_intentions(runtime):
                         and 86400 <= (now-created).total_seconds() <= 14*86400)
         if eligible and row['mode']=='rp':
             from config import rp_mode_state
-            current = await runtime.context(row['chat_id'],'rp')
-            eligible = bool(rp_mode_state.get(row['chat_id'])) and current.scene_id==row['scene_id']
+            current = await runtime.context(row['chat_id'],'rp',row['topic_id'])
+            from cognition.scope import CURRENT_SCOPE,TransportScope
+            token=CURRENT_SCOPE.set(TransportScope(row['chat_id'],row['topic_id'],'supergroup' if row['chat_id']<0 else 'private'))
+            try: eligible = bool(rp_mode_state.get(row['chat_id'])) and current.scene_id==row['scene_id']
+            finally: CURRENT_SCOPE.reset(token)
         if eligible:
             result.append(({**dict(row),'payload':p},model))
     return result
@@ -46,6 +49,20 @@ async def due_intentions(runtime):
 async def run_intention_cycle(runtime,bot):
     for row,relationship in await due_intentions(runtime):
         p = row['payload']
+        if row['chat_id']<0 or row['topic_id']>=0:
+            async with runtime.pool.acquire() as conn:
+                source=await conn.fetchrow('SELECT payload FROM cognitive_events WHERE context_id=$1 AND source_id=$2 AND suppressed_at IS NULL',row['context_id'],p['source_id'])
+            if not source: continue
+            event=load_event(source['payload'])
+            if not event.audience.permits(row['chat_id'],row['topic_id']): continue
+            # A preference of one owner never grants group permission. Existing
+            # commitments enter the same scoped coordinator as other actions.
+            try:
+                member=await bot.get_chat_member(row['chat_id'],row['owner_id'])
+                if member.status in ('left','kicked'): continue
+            except Exception: continue
+            await runtime.groups.propose_intention(row,event)
+            continue
         async with runtime.pool.acquire() as conn:
             source = await conn.fetchrow('SELECT * FROM cognitive_events WHERE context_id=$1 AND source_id=$2 AND suppressed_at IS NULL',row['context_id'],p['source_id'])
             prior_delivery = await conn.fetchval('''SELECT 1 FROM cognitive_outbox WHERE context_id=$1 AND delivery_key LIKE $2

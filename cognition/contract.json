@@ -1,7 +1,14 @@
 {
   "model_version": "cognition-2026-09-30.4",
   "default_authority": "shadow",
-  "context_dimensions": ["persona_id", "chat_id", "mode", "scene_id", "owner_id"],
+  "context_dimensions": [
+    "persona_id",
+    "chat_id",
+    "topic_id",
+    "mode",
+    "scene_id",
+    "owner_id"
+  ],
   "invariants": {
     "private_owner_promotions": 0,
     "suppressed_source_revivals": 0,
@@ -56,5 +63,83 @@
     "human_blind_ratings_completed": false,
     "biological_validity_demonstrated": false,
     "real_chat_pilot_window_completed": false
+  },
+  "group_participation": {
+    "version": "group-2026-09-30.2",
+    "default_mode": "mentions",
+    "default_execution": "shadow",
+    "scope": {
+      "unknown_topic_id": -1,
+      "observed_nonforum_topic_id": 0,
+      "forum_topic_id": "positive Telegram message_thread_id",
+      "unknown_audience_is_public": false,
+      "cross_topic_public_promotion": false,
+      "private_rag_in_group_prompt": false
+    },
+    "actions": [
+      "direct_reply",
+      "open_question",
+      "shared_task",
+      "social_moment",
+      "topic_seed",
+      "explicit_reminder",
+      "consented_followup",
+      "reaction"
+    ],
+    "permissions": {
+      "group_policy_owner": "administrator",
+      "personal_opt_out_grants_group_permission": false,
+      "full_visibility_required_for_spontaneous_actions": true,
+      "social_requires_social_mode": true,
+      "silence_is_rejection": false,
+      "group_off_overrides_topic_on": true,
+      "group_admin_check_uses_telegram_membership": true
+    },
+    "bounds": {
+      "observations": 64,
+      "branches": 8,
+      "questions": 16,
+      "arbiter_messages": 32,
+      "arbiter_message_bytes": 12000,
+      "message_characters": 1600,
+      "response_characters": 600,
+      "pending_per_topic": 64,
+      "pending_per_chat": 128,
+      "default_assessments_per_chat_hour": 12,
+      "default_initiatives_per_chat_day": 3,
+      "default_spacing_seconds": 900,
+      "default_share": 0.15,
+      "initial_wait_seconds": [
+        12,
+        45
+      ],
+      "candidate_ttl_seconds": 300,
+      "maximum_deferrals": 2,
+      "provider_attempts_per_call": 2,
+      "provider_timeout_seconds": 90,
+      "action_lease_seconds": 180,
+      "lease_renewal_seconds": 30,
+      "coordinator_due_batch": 20,
+      "direct_action_lease_seconds": 120,
+      "direct_lease_wait_seconds": 20
+    },
+    "delivery": {
+      "revalidate_policy_sources_frame_and_lease": true,
+      "direct_answers_tracked_in_shadow": true,
+      "unknown_automatic_resends": 0,
+      "reaction_confirmation": "Boolean, target message, no synthetic Message receipt",
+      "chat_migration": "cancel pending actions; reset permission; no automatic history or consent transfer"
+    },
+    "reminders": {
+      "explicit_due_reminders_bypass_social_quiet_hours_and_spontaneous_quota": true,
+      "pause_disabled_stop_and_membership_still_apply": true,
+      "use_original_public_topic": true
+    },
+    "evaluation": {
+      "frozen_held_out_fixture": "tests/fixtures/group_held_out.json",
+      "human_ratings_completed": false,
+      "telegram_group_pilot_completed": false,
+      "llm_scores_are_calibrated_probabilities": false
+    }
   }
 }

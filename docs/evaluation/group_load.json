@@ -1,0 +1,25 @@
+{
+  "version": "group-load-2026-09-30.1",
+  "messages": 1000,
+  "participants": 40,
+  "topics": 5,
+  "peak_pending_candidates": 128,
+  "peak_frame_messages": 64,
+  "peak_branches": 2,
+  "peak_questions": 16,
+  "recorded_assessments": 12,
+  "reserved_attempts": 12,
+  "provider_calls": 0,
+  "telegram_calls": 0,
+  "candidate_statuses": {
+    "cancelled": 500,
+    "abstained": 12
+  },
+  "ingest_p50_ms": 7.34,
+  "ingest_p95_ms": 13.96,
+  "seconds": 12.87,
+  "working_database_mutated": false,
+  "real_history_used": false,
+  "cost_measurement": "Offline; no actual API cost. Separate live report contains provider usage.",
+  "passed": true
+}

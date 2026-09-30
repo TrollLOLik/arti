@@ -1,5 +1,6 @@
 """Raw transcript compatibility, committed under the same suppression fence."""
 from cognition.serialization import dump
+from dataclasses import asdict
 
 
 async def save_source_history(conn,cid,eid,event,name,text,transport_id=None):
@@ -12,10 +13,11 @@ async def save_source_history(conn,cid,eid,event,name,text,transport_id=None):
     table = 'chat_history_rp' if event.context.mode=='rp' else 'chat_history'
     await conn.execute(f'INSERT INTO {table}(chat_id,timestamp,user_name,message_text) VALUES($1,$2,$3,$4)',event.context.chat_id,event.observed_at.replace(tzinfo=None),name,text)
     await conn.execute(f'DELETE FROM {table} WHERE chat_id=$1 AND id NOT IN (SELECT id FROM {table} WHERE chat_id=$1 ORDER BY timestamp DESC,id DESC LIMIT 30)',event.context.chat_id)
-    role = 'user' if event.evidence.origin.value=='user' else 'assistant'
+    role = 'assistant' if event.evidence.origin.value=='delivered_action' else 'user'
     mid = await conn.fetchval('''INSERT INTO memory_messages(chat_id,user_id,user_name,role,mode,source,message_text,metadata)
         VALUES($1,$2,$3,$4,$5,'confirmed_transport',$6,$7::jsonb) RETURNING id''',event.context.chat_id,event.evidence.owner_id,name,role,event.context.mode,text,
-        dump(dict(cognitive_source_id=event.evidence.source_id,transport_id=transport_id,scene_id=event.context.scene_id)))
+        dump(dict(cognitive_source_id=event.evidence.source_id,transport_id=transport_id,scene_id=event.context.scene_id,
+                  topic_id=event.context.topic_id,audience=asdict(event.audience))))
     await conn.execute("INSERT INTO cognitive_legacy_map VALUES('memory_messages',$1,$2,$3,NULL,'imported','linked_transport_source') ON CONFLICT DO NOTHING",mid,cid,eid)
     return mid
 

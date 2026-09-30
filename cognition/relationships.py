@@ -14,7 +14,7 @@ def relationship_transition(previous, event, situation):
     import copy
     result = copy.deepcopy(previous or initial_relationship())
     group = event.evidence.independent_group
-    if event.evidence.origin.value != 'user' or group in result['groups']:
+    if event.evidence.origin.value != 'user' or group in result['groups'] or not event.addressed_to_arti:
         return result
     result['groups'].append(group)
     # Contact supplies familiarity, never reliability. Habituation bounds dense noise.

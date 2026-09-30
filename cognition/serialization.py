@@ -4,7 +4,7 @@ from dataclasses import asdict
 from datetime import datetime
 
 from cognition.types import (CognitiveEvent, CognitiveState, ContextKey, EmotionEpisode,AffectiveResidue,
-                             EvidenceRef, Origin)
+                             EvidenceRef, Origin, AudienceScope)
 
 
 def dump(value) -> str:
@@ -27,7 +27,8 @@ def load_event(value) -> CognitiveEvent:
     return CognitiveEvent(data['event_id'], ContextKey(**data['context']),
                           EvidenceRef(**{**data['evidence'], 'origin': Origin(data['evidence']['origin'])}),
                           datetime.fromisoformat(data['occurred_at']), datetime.fromisoformat(data['observed_at']),
-                          data['text'], data['actor_id'], data.get('target_id'),data.get('event_kind','utterance'))
+                          data['text'], data['actor_id'], data.get('target_id'),data.get('event_kind','utterance'),
+                          AudienceScope(**data.get('audience',{})),data.get('addressed_to_arti',True),data.get('reply_to_id'))
 
 
 def load_state(value) -> CognitiveState:

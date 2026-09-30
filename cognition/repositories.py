@@ -75,13 +75,13 @@ class CognitiveRepository:
         state = initial_state(event.context, event.observed_at)
         async with self.pool.acquire() as conn, conn.transaction():
             cid = await conn.fetchval("""
-                INSERT INTO cognitive_contexts(persona_id, chat_id, mode, scene_id, model_version, state)
-                VALUES($1,$2,$3,$4,$5,$6::jsonb)
-                ON CONFLICT(persona_id,chat_id,mode,scene_id) DO NOTHING RETURNING id
+                INSERT INTO cognitive_contexts(persona_id, chat_id, mode, scene_id, topic_id, model_version, state)
+                VALUES($1,$2,$3,$4,$5,$6,$7::jsonb)
+                ON CONFLICT(persona_id,chat_id,mode,scene_id,topic_id) DO NOTHING RETURNING id
             """, *event.context.identity(), MODEL_VERSION, dump(state))
             if cid is None:
                 cid = await conn.fetchval("""
-                    SELECT id FROM cognitive_contexts WHERE persona_id=$1 AND chat_id=$2 AND mode=$3 AND scene_id=$4
+                    SELECT id FROM cognitive_contexts WHERE persona_id=$1 AND chat_id=$2 AND mode=$3 AND scene_id=$4 AND topic_id=$5
                 """, *event.context.identity())
             # Serialize registration and suppression inside one context.
             await conn.fetchval('SELECT revision FROM cognitive_contexts WHERE id=$1 FOR UPDATE', cid)
@@ -241,7 +241,7 @@ class CognitiveRepository:
                     UNION
                     SELECT e.id FROM cognitive_events e JOIN cognitive_event_dependencies d ON d.event_id=e.id
                     JOIN affected r ON r.id=d.source_event_id
-                    WHERE e.context_id=$1 AND e.owner_id=$3 AND e.suppressed_at IS NULL
+                    WHERE e.context_id=$1 AND (e.owner_id=$3 OR e.origin='delivered_action') AND e.suppressed_at IS NULL
                 ) SELECT id FROM affected WHERE id IN (SELECT id FROM seeds)
                     OR id IN (SELECT id FROM cognitive_events WHERE origin='delivered_action')
             """, context_id, source_id, owner_id)
@@ -285,6 +285,9 @@ class CognitiveRepository:
             await conn.execute("UPDATE cognitive_jobs SET status='pending',lease_token=NULL,lease_until=NULL,last_error_code='stale_revision',available_at=NOW() WHERE context_id=$1 AND status='running'",context_id)
             await conn.execute('UPDATE cognitive_contexts SET suppression_epoch=suppression_epoch+1,worker_token=NULL,worker_lease_until=NULL WHERE id=$1',context_id)
             await conn.execute("UPDATE cognitive_outbox SET status='cancelled',payload=NULL WHERE context_id=$1 AND event_id=ANY($2::bigint[])",context_id,ids)
+            await conn.execute('UPDATE group_observations SET payload=NULL,suppressed_at=NOW() WHERE context_id=$1 AND event_id=ANY($2::bigint[])',context_id,ids)
+            await conn.execute("UPDATE group_candidates SET status='cancelled',payload=NULL WHERE context_id=$1 AND source_ids && $2::bigint[] AND status IN ('pending','deferred','claimed')",context_id,ids)
+            await conn.execute('DELETE FROM group_feedback WHERE context_id=$1 AND source_ids && $2::bigint[]',context_id,ids)
             await conn.execute('DELETE FROM cognitive_embeddings WHERE context_id=$1 AND artifact_id=ANY($2::bigint[])',context_id,[r['id'] for r in invalid])
             await conn.execute('DELETE FROM cognitive_retrievals WHERE context_id=$1 AND artifact_ids && $2::bigint[]',context_id,[r['id'] for r in invalid])
             await conn.execute('UPDATE cognitive_reappraisals SET perception=NULL WHERE context_id=$1 AND (cause_event_id=ANY($2::bigint[]) OR support_event_id=ANY($2::bigint[]))',context_id,ids)

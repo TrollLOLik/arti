@@ -76,7 +76,7 @@ async def schedule_rebuild(pool,cid,owner):
         existing = await conn.fetchval('SELECT id FROM cognitive_events WHERE context_id=$1 AND event_key=$2',cid,source)
     if existing is None:
         at = datetime.now(timezone.utc)
-        event = CognitiveEvent(source,ContextKey(ctx['persona_id'],ctx['chat_id'],ctx['mode'],ctx['scene_id']),
+        event = CognitiveEvent(source,ContextKey(ctx['persona_id'],ctx['chat_id'],ctx['mode'],ctx['scene_id'],ctx['topic_id']),
             EvidenceRef(source,source,Origin.SYSTEM,owner),at,at,'',None,event_kind='system')
         _,existing = await CognitiveRepository(pool).observe(event)
     jid = await JobQueue(pool).enqueue(cid,existing,'rebuild')

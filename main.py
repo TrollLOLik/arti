@@ -94,7 +94,9 @@ def run_with_restart():
                     await init_db()
                     from database import connection
                     from cognition.runtime import start_runtime
-                    await start_runtime(connection._pool)
+                    runtime=await start_runtime(connection._pool)
+                    runtime.bot_id=app.bot.id
+                    runtime.bot_username=app.bot.username
                     logger.info("База данных инициализирована")
                 except Exception as e:
                     logger.error(f"Ошибка при инициализации БД: {e}", exc_info=True)
@@ -121,6 +123,8 @@ def run_with_restart():
                 from cognition.runtime import get_runtime
                 from cognition.intentions import intention_scheduler
                 spawn_worker(run_supervised(intention_scheduler,'cognitive_intentions',get_runtime(),app.bot))
+                from cognition.proactivity import group_scheduler
+                spawn_worker(run_supervised(group_scheduler,'group_proactivity',get_runtime(),app.bot))
                 logger.info("Проактивный воркер шедулера запущен (supervised).")
                 logger.info("Транспорт готов; active-контексты сохраняют квитанции и не повторяют неоднозначные отправки.")
 
@@ -160,6 +164,9 @@ def run_with_restart():
 
             # Регистрируем хендлеры команд
             application.add_handler(CommandHandler("clear_context", clear_context))
+            from bot.group_commands import proactivity_command,quiet_command
+            application.add_handler(CommandHandler('proactivity',proactivity_command))
+            application.add_handler(CommandHandler('quiet',quiet_command))
             from bot.commands import handle_memory_archive_command
             application.add_handler(CommandHandler("memory_archive",handle_memory_archive_command))
             application.add_handler(CommandHandler("arti_commands", arti_commands))
@@ -209,6 +216,10 @@ def run_with_restart():
 
             # Обработчик ошибок
             application.add_error_handler(error_handler)
+            from cognition.scope import wrap_callback
+            for handlers in application.handlers.values():
+                for handler in handlers:
+                    handler.callback=wrap_callback(handler.callback)
 
             logger.info("Бот запускается в режиме polling...")
             application.run_polling(

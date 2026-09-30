@@ -1,0 +1,15 @@
+{
+  "version": "group-2026-09-30.1",
+  "scenarios": [
+    {"id":"open_question","messages":[{"owner_id":1,"text":"Кто знает, как сортировать список в Python?"}],"candidate":"open_question","decision":"speak"},
+    {"id":"human_reply","messages":[{"owner_id":1,"text":"Кто знает, как сортировать список?"},{"owner_id":2,"text":"Используй sorted(items)","reply_to_id":1}],"candidate":null,"decision":"abstain"},
+    {"id":"human_conversation","messages":[{"owner_id":1,"text":"Мы вчера встретились"},{"owner_id":2,"text":"Да, было приятно"}],"candidate":null,"decision":"abstain"},
+    {"id":"rhetorical","messages":[{"owner_id":1,"text":"Кто бы мог подумать?"}],"candidate":null,"decision":"abstain"},
+    {"id":"name_in_quote","messages":[{"owner_id":1,"text":"«Арти, объясни это» — так он написал"}],"candidate":null,"decision":"abstain"},
+    {"id":"personal_address","messages":[{"owner_id":1,"text":"Маша, ты принесёшь книгу?","addressed_elsewhere":true}],"candidate":null,"decision":"abstain"},
+    {"id":"shared_task","messages":[{"owner_id":1,"text":"Нам нужно выбрать время встречи"}],"candidate":"shared_task","decision":"speak"},
+    {"id":"social_success","messages":[{"owner_id":1,"text":"Ура, получилось!"}],"mode":"social","candidate":"social_moment","decision":"speak"},
+    {"id":"serious_social","messages":[{"owner_id":1,"text":"В больнице тяжёлая ситуация"},{"owner_id":2,"text":"Ура, получилось!"}],"mode":"social","candidate":null,"decision":"abstain"},
+    {"id":"explicit_resolution","messages":[{"owner_id":1,"text":"Как исправить ошибку?"},{"owner_id":1,"text":"Вопрос снят, разобрались"}],"candidate":null,"decision":"abstain"}
+  ]
+}

@@ -246,6 +246,8 @@ async def _extract_photo_urls(update, context) -> list:
 async def _execute_generation_task(task: dict):
     from cognition.runtime import CURRENT_TURN
     CURRENT_TURN.set(task.get('_cognitive_turn'))
+    from cognition.scope import CURRENT_SCOPE
+    CURRENT_SCOPE.set(task.get('_telegram_scope'))
     chat_id = task['chat_id']
     task_type = task['type']
     prompt = task.get('prompt', '')
@@ -583,6 +585,8 @@ async def music_worker():
 async def enqueue_generation(task: dict, bot, chat_id):
     from cognition.runtime import CURRENT_TURN
     task['_cognitive_turn'] = CURRENT_TURN.get()
+    from cognition.scope import CURRENT_SCOPE
+    task['_telegram_scope'] = CURRENT_SCOPE.get()
     """Добавляет медиа-задачу в очередь СВОЕГО типа и сообщает позицию (REL-01)."""
     task.setdefault('enqueued_at', time.monotonic())  # REL-03: метка для /cancel
     task_type = task.get('type')
@@ -602,12 +606,26 @@ async def enqueue_generation(task: dict, bot, chat_id):
 
 
 async def enqueue_reply(chat_id, user_id, user_name, user_message, message_id, context, is_voice=True, base64_image=None, document_text=None, video_file_id=None, is_video_note=False):
+    from cognition.scope import CURRENT_SCOPE
+    scope=CURRENT_SCOPE.get()
+    if scope and scope.group and scope.sender_kind=='chat':
+        user_id=0
+        user_name='Анонимный участник'
     from cognition.runtime import get_runtime
     runtime = get_runtime()
-    source_context = None
-    if runtime and runtime.mode!='legacy' and user_id and message_id is not None:
-        _,_,source_event = await runtime.ingest(chat_id,user_id,user_message,message_id,'rp' if rp_mode_state.get(chat_id) else 'default')
-        source_context = source_event.context
+    source_context = None; source_ids=[]
+    if runtime and runtime.mode!='legacy' and scope and scope.group and message_id is not None:
+        from cognition.types import Origin
+        cid,eid,source_event=await runtime.ingest(chat_id,scope.user_id,user_message,message_id,
+            'rp' if rp_mode_state.get(chat_id) else 'default',origin=Origin.SYSTEM if scope.sender_kind=='chat' else Origin.USER)
+        source_context=source_event.context; source_ids=[eid]
+        if scope.reply_to_id:
+            async with runtime.pool.acquire() as conn:
+                reference=await conn.fetchval('SELECT o.event_id FROM group_observations o JOIN cognitive_events e ON e.id=o.event_id WHERE o.context_id=$1 AND o.message_id=$2 AND o.suppressed_at IS NULL AND e.suppressed_at IS NULL',cid,scope.reply_to_id)
+            if reference: source_ids.append(reference)
+    elif runtime and runtime.mode!='legacy' and user_id and message_id is not None:
+        _,eid,source_event = await runtime.ingest(chat_id,user_id,user_message,message_id,'rp' if rp_mode_state.get(chat_id) else 'default')
+        source_context = source_event.context; source_ids=[eid]
     elif runtime and runtime.mode!='legacy' and message_id is not None:
         # Auto replies reuse the original observed participant and scene.
         from cognition.serialization import load_event
@@ -633,23 +651,28 @@ async def enqueue_reply(chat_id, user_id, user_name, user_message, message_id, c
         'is_video_note': is_video_note
     }
     request['_cognitive_context'] = source_context
+    request['_cognitive_source_ids'] = source_ids
+    from cognition.scope import CURRENT_SCOPE
+    request['_telegram_scope'] = CURRENT_SCOPE.get()
     
     # RACE-02: постановку в очередь и (пере)запуск воркера делаем под per-user локом,
     # чтобы это не пересекалось с самозавершением воркера (которое тоже под этим локом).
-    async with _get_user_lock(user_id):
-        queue = _user_queues.get(user_id)
+    scope=CURRENT_SCOPE.get()
+    queue_key=(chat_id,scope.topic_id) if scope and scope.group else user_id
+    async with _get_user_lock(queue_key):
+        queue = _user_queues.get(queue_key)
         if queue is None:
             queue = asyncio.Queue()
-            _user_queues[user_id] = queue
+            _user_queues[queue_key] = queue
 
         await queue.put(request)
 
         # Запускаем воркер для пользователя, если ещё не запущен
-        worker = _user_workers.get(user_id)
+        worker = _user_workers.get(queue_key)
         if worker is None or worker.done():
-            task = asyncio.create_task(_user_text_worker(user_id))
+            task = asyncio.create_task(_user_text_worker(queue_key))
             _track_task(task)
-            _user_workers[user_id] = task
+            _user_workers[queue_key] = task
 
 
 async def _user_text_worker(user_id: int):
@@ -681,9 +704,13 @@ async def _user_text_worker(user_id: int):
         while True:
             try:
                 extra = await asyncio.wait_for(queue.get(), timeout=_DEBOUNCE_WINDOW_SEC)
-                if extra['chat_id']!=request['chat_id'] or extra.get('_cognitive_context')!=request.get('_cognitive_context'):
+                if extra.get('user_id')!=request.get('user_id') or extra['chat_id']!=request['chat_id'] or extra.get('_cognitive_context')!=request.get('_cognitive_context') or extra.get('_telegram_scope') and request.get('_telegram_scope') and extra['_telegram_scope'].topic_id!=request['_telegram_scope'].topic_id:
                     carry = extra
                     break
+                sources=sorted(set(request.get('_cognitive_source_ids',[]))|set(extra.get('_cognitive_source_ids',[])))
+                if len(sources)>16 or len(request.get('user_message',''))+len(extra.get('user_message',''))>8000:
+                    carry=extra; break
+                request['_cognitive_source_ids']=sources
                 extra_msg = extra.get('user_message', '')
                 if extra_msg:
                     request['user_message'] = request.get('user_message', '') + '\n' + extra_msg
@@ -876,6 +903,8 @@ async def extract_and_save_events_task(chat_id: int, user_message: str, user_tz:
 
 
 async def process_user_reply(request, bot):
+    from cognition.scope import CURRENT_SCOPE
+    CURRENT_SCOPE.set(request.get('_telegram_scope'))
     """Обрабатывает текстовый ответ: генерация, очистка, голос, медиа-теги."""
     chat_id = request['chat_id']
     user_id = request['user_id']
@@ -918,12 +947,14 @@ async def process_user_reply(request, bot):
     mode = "rp" if rp_mode_state.get(chat_id) else "default"
     from cognition.runtime import prepare_turn
     cognitive_turn = await prepare_turn(chat_id,profile_user_id,user_message,message_id,mode,source_context=request.get('_cognitive_context'))
-    if cognitive_turn is not None and cognitive_turn.active and cognitive_turn.repeated_delivery:
+    using_cognition=cognitive_turn is not None and (cognitive_turn.active or cognitive_turn.event.audience.kind in ('group','topic'))
+    if cognitive_turn: cognitive_turn.supporting_event_ids=request.get('_cognitive_source_ids',[])
+    if using_cognition and cognitive_turn.repeated_delivery:
         return
-    if cognitive_turn is not None and cognitive_turn.active:
+    if using_cognition:
         if cognitive_turn.preferences.get('voice') is False or cognitive_turn.preferences.get('text') is True:
             is_voice = False
-    user_profile = await MemoryUserProfile.get(chat_id, profile_user_id, mode) if profile_user_id else None
+    user_profile = await MemoryUserProfile.get(chat_id, profile_user_id, mode) if profile_user_id and not using_cognition else None
     if user_profile and user_profile.get("profile_json"):
         prof_json = json.loads(user_profile["profile_json"]) if isinstance(user_profile["profile_json"], str) else user_profile["profile_json"]
         closeness = prof_json.get("affective", {}).get("closeness", 0.1)
@@ -932,11 +963,11 @@ async def process_user_reply(request, bot):
     # apply_turn_sentiment пост-генерации, отдав приоритет интроспекции самой LLM, а словарь
     # оставив как fail-closed фолбэк. Распад/заряд/циркадная база считаются как раньше.
     emotion_source_key = f"message:{mode}:{message_id}" if message_id is not None else None
-    updated_state = ({'user_tz':None} if cognitive_turn is not None and cognitive_turn.active else
+    updated_state = ({'user_tz':None} if using_cognition else
                      await ChatEmotionalState.update_state(chat_id, user_message, closeness, user_id=profile_user_id, defer_sentiment=True, source_key=emotion_source_key))
     # Рост близости от ОБЫЧНОГО общения (+ бонус за ответ на проактивный пуш),
     # а не только от эмодзи-реакций — иначе closeness почти никогда не растёт.
-    if (cognitive_turn is None or not cognitive_turn.active) and not updated_state.get("repeated_input"):
+    if not using_cognition and not updated_state.get("repeated_input"):
         await MemoryUserProfile.grow_closeness(
             chat_id, profile_user_id, mode,
             proactive_reply=updated_state.get("was_proactive_reply", False),
@@ -944,7 +975,7 @@ async def process_user_reply(request, bot):
     user_tz = updated_state.get("user_tz")
     # Экстрактор событий: если tz ещё не определён, берём фолбэк (UTC) —
     # абсолютные даты резолвятся корректно, иначе раннее событие потерялось бы.
-    if cognitive_turn is None or not cognitive_turn.active:
+    if not using_cognition:
         asyncio.create_task(extract_and_save_events_task(chat_id, user_message, user_tz if user_tz is not None else 0))
 
     action_type = 'record_audio' if is_voice else 'typing'
@@ -1071,7 +1102,7 @@ async def process_user_reply(request, bot):
         else:
             chat_context = await get_chat_context(chat_id)
 
-        memory_context = cognitive_turn.memory if cognitive_turn is not None and cognitive_turn.active else await build_memory_context(
+        memory_context = cognitive_turn.memory if using_cognition else await build_memory_context(
             chat_id=chat_id,
             user_id=user_id,
             user_message=user_message,
@@ -1114,7 +1145,7 @@ async def process_user_reply(request, bot):
             enable_introspection=True,
             emotional_state=updated_state,
             memory_context=memory_context,
-            expression_plan=cognitive_turn.expression if cognitive_turn is not None and cognitive_turn.active else None,
+            expression_plan=cognitive_turn.expression if using_cognition else None,
         )
         
         if uploaded_video_file:
@@ -1146,12 +1177,12 @@ async def process_user_reply(request, bot):
         # Парсим тег ТОЛЬКО из сгенерированного текста Арти (инъекции из ввода юзера сюда не попадают).
         # apply_turn_sentiment: при валидном теге применяет дельты LLM, иначе fail-closed фолбэк на словарь.
         from database.models import strip_introspection_tags
-        introspection_sticker = None if generation_failed or (cognitive_turn is not None and cognitive_turn.active) else await ChatEmotionalState.apply_turn_sentiment(
+        introspection_sticker = None if generation_failed or (using_cognition) else await ChatEmotionalState.apply_turn_sentiment(
             chat_id, response_text, updated_state.get("keyword_mood_delta"), source_key=emotion_source_key
         )
         if not sticker_mood and introspection_sticker:
             sticker_mood = introspection_sticker
-        if cognitive_turn is not None and cognitive_turn.active:
+        if using_cognition:
             sticker_mood = None if generation_failed else cognitive_turn.expression.sticker_mood
             if cognitive_turn.expression.tts_style:
                 response_text = '[' + cognitive_turn.expression.tts_style + '] ' + response_text
@@ -1164,7 +1195,7 @@ async def process_user_reply(request, bot):
 
         # Извлекаем и сохраняем техническое описание для истории (если есть)
         history_match = re.search(r'<HISTORY>(.*?)</HISTORY>', response_text, re.DOTALL | re.IGNORECASE)
-        if history_match and (cognitive_turn is None or not cognitive_turn.active):
+        if history_match and not using_cognition:
             memory_text = history_match.group(1).strip()
             # Сохраняем "память" в историю чата
             if rp_mode_state.get(chat_id):
@@ -1234,7 +1265,7 @@ async def process_user_reply(request, bot):
             history_response_text = f"[Стикер: {sticker_mood}]"
 
         # MEM-06: ответ-заглушку об ошибке не пишем в историю.
-        if not generation_failed and (cognitive_turn is None or not cognitive_turn.active):
+        if not generation_failed and not using_cognition:
             if rp_mode_state.get(chat_id):
                 await save_chat_message_rp(chat_id, "Арти", history_response_text)
             else:
@@ -1319,7 +1350,7 @@ async def process_user_reply(request, bot):
             )
 
         # MEM-06: не учим долговременную память на заглушке об ошибке.
-        if not generation_failed and (cognitive_turn is None or not cognitive_turn.active):
+        if not generation_failed and not using_cognition:
             memory_task = asyncio.create_task(
                 remember_exchange(
                     chat_id=chat_id,
@@ -1413,6 +1444,10 @@ async def dubbing_worker():
         if task is None:
             break
 
+        from cognition.scope import CURRENT_SCOPE
+        from cognition.runtime import CURRENT_TURN
+        CURRENT_SCOPE.set(task.get('_telegram_scope'))
+        CURRENT_TURN.set(task.get('_cognitive_turn'))
         chat_id = task['chat_id']
         url = task.get('url') or ""
         input_file = task.get('input_file')  # локальный путь, если файл
@@ -1639,6 +1674,10 @@ async def dubbing_worker():
 
 
 async def enqueue_dubbing(task: dict, bot, chat_id):
+    from cognition.scope import CURRENT_SCOPE
+    from cognition.runtime import CURRENT_TURN
+    task['_telegram_scope']=CURRENT_SCOPE.get()
+    task['_cognitive_turn']=CURRENT_TURN.get()
     """Кладёт задачу дубляжа в очередь и сообщает позицию."""
     if not TTS_ENABLED:
         await bot.send_message(
@@ -1732,6 +1771,10 @@ async def vclone_worker():
         if task is None:
             break
 
+        from cognition.scope import CURRENT_SCOPE
+        from cognition.runtime import CURRENT_TURN
+        CURRENT_SCOPE.set(task.get('_telegram_scope'))
+        CURRENT_TURN.set(task.get('_cognitive_turn'))
         chat_id = task['chat_id']
         user_id = task['user_id']
         user_name = task.get('user_name', 'Пользователь')
@@ -1965,6 +2008,10 @@ async def vclone_worker():
 
 
 async def enqueue_vclone(task: dict, bot, chat_id):
+    from cognition.scope import CURRENT_SCOPE
+    from cognition.runtime import CURRENT_TURN
+    task['_telegram_scope']=CURRENT_SCOPE.get()
+    task['_cognitive_turn']=CURRENT_TURN.get()
     """Кладёт задачу /vclone в очередь и сообщает позицию пользователю.
 
     По образцу `enqueue_dubbing`, но в стиле Bot_Persona_Reply (Requirement 9.1).
@@ -2081,6 +2128,11 @@ async def vclone_fsm_timeout_watchdog(bot) -> None:
                         expired_save.append((chat_id, user_id, state))
 
             for chat_id, user_id, state in expired:
+                from cognition.scope import CURRENT_SCOPE,TransportScope
+                if isinstance(chat_id,tuple) and chat_id[0]=='topic':
+                    CURRENT_SCOPE.set(TransportScope(chat_id[1],chat_id[2],'supergroup',user_id))
+                    chat_id=chat_id[1]
+                else: CURRENT_SCOPE.set(None)
                 # 1. Удаляем стейт первым делом — чтобы юзер мог сразу запустить новый /vclone.
                 try:
                     vclone_flow_state[chat_id].pop(user_id, None)
@@ -2132,6 +2184,11 @@ async def vclone_fsm_timeout_watchdog(bot) -> None:
                 )
 
             for chat_id, user_id, state in expired_save:
+                from cognition.scope import CURRENT_SCOPE,TransportScope
+                if isinstance(chat_id,tuple) and chat_id[0]=='topic':
+                    CURRENT_SCOPE.set(TransportScope(chat_id[1],chat_id[2],'supergroup',user_id))
+                    chat_id=chat_id[1]
+                else: CURRENT_SCOPE.set(None)
                 try:
                     vclone_save_flow_state[chat_id].pop(user_id, None)
                 except Exception:
@@ -2208,6 +2265,14 @@ async def proactive_scheduler_worker(bot):
             
             for state in states:
                 chat_id = state["chat_id"]
+                from cognition.runtime import get_runtime
+                current_runtime=get_runtime()
+                if current_runtime:
+                    async with current_runtime.pool.acquire() as group_conn:
+                        managed=await group_conn.fetchval('SELECT 1 FROM group_chat_settings WHERE chat_id=$1',chat_id)
+                        observed=await group_conn.fetchval('SELECT 1 FROM group_observations o JOIN cognitive_contexts c ON c.id=o.context_id WHERE c.chat_id=$1 LIMIT 1',chat_id)
+                    if managed or observed:
+                        continue
                 last_act = state["last_activity_time"]
                 last_push = state["last_proactive_push_time"]
                 user_tz = state["user_tz"]

@@ -1,0 +1,221 @@
+{
+  "version": "group-2026-09-30.1",
+  "model": "stealth/space-bunny-alpha",
+  "live": true,
+  "scenarios": 10,
+  "passed": 8,
+  "provider_calls": 11,
+  "provider_usage": [
+    {
+      "prompt_tokens": 668,
+      "completion_tokens": 222,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 760,
+      "completion_tokens": 209,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 563,
+      "completion_tokens": 138,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 709,
+      "completion_tokens": 218,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 617,
+      "completion_tokens": 144,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 623,
+      "completion_tokens": 224,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 619,
+      "completion_tokens": 230,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 618,
+      "completion_tokens": 249,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 615,
+      "completion_tokens": 209,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 710,
+      "completion_tokens": 336,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 754,
+      "completion_tokens": 189,
+      "cost": 0
+    }
+  ],
+  "telegram_calls": 0,
+  "real_history_used": false,
+  "human_ratings": false,
+  "records": [
+    {
+      "id": "open_question",
+      "expected": "speak",
+      "action": "speak",
+      "reason": "useful_answer",
+      "passed": true,
+      "confidence": 0.94,
+      "seconds": 6.01,
+      "response": "Используйте `sorted(list)` для нового отсортированного списка или `list.sort()` для сортировки на месте. Например: `sorted(words, key=len, reverse=True)` отсортирует слова по длине по убыванию.",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "human_reply",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "already_answered",
+      "passed": true,
+      "confidence": 0.98,
+      "seconds": 3.9,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "human_conversation",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "already_answered",
+      "passed": true,
+      "confidence": 0.98,
+      "seconds": 2.78,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "rhetorical",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "rhetorical",
+      "passed": true,
+      "confidence": 0.99,
+      "seconds": 2.06,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "name_in_quote",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "no_added_value",
+      "passed": true,
+      "confidence": 0.99,
+      "seconds": 2.58,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "personal_address",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "human_addressed",
+      "passed": true,
+      "confidence": 0.99,
+      "seconds": 4.41,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "shared_task",
+      "expected": "speak",
+      "action": "abstain",
+      "reason": "defer_for_people",
+      "passed": false,
+      "confidence": 0.88,
+      "seconds": 4.35,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "social_success",
+      "expected": "speak",
+      "action": "abstain",
+      "reason": "no_added_value",
+      "passed": false,
+      "confidence": 0.96,
+      "seconds": 2.91,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "serious_social",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "sensitive",
+      "passed": true,
+      "confidence": 0.98,
+      "seconds": 3.46,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "explicit_resolution",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "already_answered",
+      "passed": true,
+      "confidence": 0.99,
+      "seconds": 2.19,
+      "response": "",
+      "layer": "live_arbiter"
+    }
+  ],
+  "fixture_sha256": "3997ace91605738189f5346fe5d73d1cc0c01eb9ea4da09e95aaa8aa481fde62",
+  "decision_metrics": {
+    "recall": {
+      "count": 1,
+      "total": 3,
+      "rate": 0.3333333333333333,
+      "wilson_95": [
+        0.061491944720398706,
+        0.7923403991979452
+      ]
+    },
+    "false_inclusions": {
+      "count": 0,
+      "total": 7,
+      "rate": 0.0,
+      "wilson_95": [
+        0.0,
+        0.35433043506667483
+      ]
+    },
+    "expected_label_precision": {
+      "count": 1,
+      "total": 1,
+      "rate": 1.0,
+      "wilson_95": [
+        0.20654931437724644,
+        0.9999999999999999
+      ]
+    },
+    "human_appropriateness_precision": null
+  },
+  "latency_seconds": {
+    "p50": 3.185,
+    "p95": 6.01
+  },
+  "usage_totals": {
+    "prompt_tokens": 7256,
+    "completion_tokens": 2368,
+    "cost": 0,
+    "calls_with_cost_reported": 11
+  }
+}

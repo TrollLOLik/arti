@@ -115,7 +115,8 @@ class OperationalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         second = CognitiveRuntime(self.pool,self.interpreter,'active',clock=lambda:self.at)
         await asyncio.wait_for(asyncio.gather(second.initialize(start_worker=False),self.runtime.process(cid,eid)),10)
         async with self.pool.acquire() as conn:
-            self.assertEqual(await conn.fetchval('SELECT COUNT(*) FROM cognitive_schema_migrations'),7)
+            from pathlib import Path
+            self.assertEqual(await conn.fetchval('SELECT COUNT(*) FROM cognitive_schema_migrations'),len(list(Path('cognition/migrations').glob('*.sql'))))
             self.assertEqual(await conn.fetchval('SELECT COUNT(*) FROM cognitive_effects'),1)
 
     async def test_forget_during_send_cannot_resurrect_confirmed_history(self):

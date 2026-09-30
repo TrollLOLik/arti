@@ -37,6 +37,7 @@ class ContextKey:
     chat_id: int
     mode: str = 'default'
     scene_id: str = ''
+    topic_id: int = -1
 
     def __post_init__(self):
         if not self.persona_id or len(self.persona_id) > 80:
@@ -47,9 +48,31 @@ class ContextKey:
             raise ValueError('Invalid mode or scene')
         if self.mode == 'rp' and not self.scene_id:
             raise ValueError('RP observations require an explicit scene id')
+        if isinstance(self.topic_id,bool) or not isinstance(self.topic_id,int) or self.topic_id < -1:
+            raise ValueError('Invalid topic id')
 
     def identity(self) -> tuple:
-        return self.persona_id, self.chat_id, self.mode, self.scene_id
+        return self.persona_id, self.chat_id, self.mode, self.scene_id, self.topic_id
+
+
+@dataclass(frozen=True)
+class AudienceScope:
+    kind: str = 'unknown'
+    chat_id: int | None = None
+    topic_id: int = -1
+
+    def __post_init__(self):
+        if self.kind not in ('unknown','private','group','topic'):
+            raise ValueError('Invalid audience')
+        if self.kind!='unknown' and (isinstance(self.chat_id,bool) or not isinstance(self.chat_id,int)):
+            raise ValueError('Audience chat required')
+        if isinstance(self.topic_id,bool) or not isinstance(self.topic_id,int) or self.topic_id < -1:
+            raise ValueError('Invalid audience topic')
+        if self.kind=='topic' and self.topic_id<=0:
+            raise ValueError('Topic audience requires a topic')
+
+    def permits(self,chat_id,topic_id):
+        return self.kind in ('group','topic') and self.chat_id==chat_id and self.topic_id==topic_id and topic_id>=0
 
 
 @dataclass(frozen=True)
@@ -81,6 +104,9 @@ class CognitiveEvent:
     actor_id: int | None
     target_id: int | None = None
     event_kind: str = 'utterance'
+    audience: AudienceScope = field(default_factory=AudienceScope)
+    addressed_to_arti: bool = True
+    reply_to_id: int | None = None
 
     def __post_init__(self):
         if not self.event_id or len(self.event_id) > 200 or not isinstance(self.text, str):
@@ -89,6 +115,10 @@ class CognitiveEvent:
             raise ValueError('Event text budget exceeded')
         if self.event_kind not in ('utterance','reaction','media_request','delivery','system','historical'):
             raise ValueError('Invalid event kind')
+        if not isinstance(self.audience,AudienceScope) or not isinstance(self.addressed_to_arti,bool):
+            raise ValueError('Invalid audience or addressing')
+        if self.audience.kind!='unknown' and self.audience.chat_id!=self.context.chat_id:
+            raise ValueError('Audience differs from context')
         for name in ('actor_id','target_id'):
             value = getattr(self,name)
             if value is not None and (isinstance(value,bool) or not isinstance(value,int)):

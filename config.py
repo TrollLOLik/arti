@@ -4,6 +4,7 @@
 import os
 import logging
 from collections import defaultdict
+from cognition.scope import ScopedDict, ScopedDefaultDict
 from datetime import timedelta
 from dotenv import load_dotenv
 
@@ -186,37 +187,37 @@ if not PRIVILEGED_USER_IDS:
 # ============================================================================
 
 # Состояния для пошагового диалога /music
-music_flow_state = defaultdict(lambda: defaultdict(lambda: None))
+music_flow_state = ScopedDefaultDict(lambda: defaultdict(lambda: None))
 SKIP_WORDS = {"скип", "skip", "-", "пропустить", "скипнуть"}
 
 # Ожидание промпта для /video
-waiting_for_video_prompt = defaultdict(lambda: defaultdict(bool))
-pending_video_inputs = defaultdict(lambda: defaultdict(list))
+waiting_for_video_prompt = ScopedDefaultDict(lambda: defaultdict(bool))
+pending_video_inputs = ScopedDefaultDict(lambda: defaultdict(list))
 
 # Ожидание промпта для /image (in-memory fallback)
-waiting_for_image_prompt = defaultdict(lambda: defaultdict(bool))
-pending_image_inputs = defaultdict(lambda: defaultdict(list))
+waiting_for_image_prompt = ScopedDefaultDict(lambda: defaultdict(bool))
+pending_image_inputs = ScopedDefaultDict(lambda: defaultdict(list))
 
 # Состояние пошагового диалога /dub: {chat_id: {user_id: {...}}}
-dub_flow_state = defaultdict(lambda: defaultdict(lambda: None))
+dub_flow_state = ScopedDefaultDict(lambda: defaultdict(lambda: None))
 
 # Состояние пошагового диалога /vclone (alias /steal): {chat_id: {user_id: {...}}}
-vclone_flow_state = defaultdict(lambda: defaultdict(lambda: None))
-vclone_save_flow_state = defaultdict(lambda: defaultdict(lambda: None))
+vclone_flow_state = ScopedDefaultDict(lambda: defaultdict(lambda: None))
+vclone_save_flow_state = ScopedDefaultDict(lambda: defaultdict(lambda: None))
 
 # Pending действия по URL-видео: {(chat_id, user_id, message_id): {"url": str, "bot_message_id": int}}
-pending_video_url_action = {}
+pending_video_url_action = ScopedDict()
 
 # Ожидание действия с фото (без caption)
 # {(chat_id, user_id): {"images": [base64...], "message_id": int, "replied_to_bot": bool, "is_private": bool, "bot_message_id": int}}
-pending_photo_action = {}
+pending_photo_action = ScopedDict()
 
 # Ожидание действия с документом
 # {(chat_id, user_id): {"text": str, "file_name": str, "message_id": int, "bot_message_id": int}}
-pending_doc_action = {}
+pending_doc_action = ScopedDict()
 
 # Ожидание геолокации для возобновления запроса
-pending_map_requests = {}
+pending_map_requests = ScopedDict()
 
 # L-17: user_game_state удалён — нигде не использовался.
 
@@ -224,7 +225,7 @@ pending_map_requests = {}
 DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
 
 # Состояние ожидания поискового запроса модели (для админов)
-waiting_for_model_search = defaultdict(lambda: defaultdict(bool))
+waiting_for_model_search = ScopedDefaultDict(lambda: defaultdict(bool))
 
 
 # ============================================================================
@@ -287,7 +288,7 @@ except Exception as e:
     RP_SYSTEM_PROMPT = ""
 
 # RP-режим: {chat_id: True/False}
-rp_mode_state = {}
+rp_mode_state = ScopedDict()
 
 # ============================================================================
 # СИСТЕМНЫЙ ПРОМПТ АРТИ

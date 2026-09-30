@@ -10,7 +10,7 @@ async def active_context(runtime,chat_id,mode):
         return None
     context = await runtime.context(chat_id,mode)
     async with runtime.pool.acquire() as conn:
-        row = await conn.fetchrow('SELECT id,authority FROM cognitive_contexts WHERE persona_id=$1 AND chat_id=$2 AND mode=$3 AND scene_id=$4',*context.identity())
+        row = await conn.fetchrow('SELECT id,authority FROM cognitive_contexts WHERE persona_id=$1 AND chat_id=$2 AND mode=$3 AND scene_id=$4 AND topic_id=$5',*context.identity())
     return row['id'] if row and row['authority']=='active' else None
 
 
@@ -51,7 +51,10 @@ async def operational_metrics(pool):
         jobs = await conn.fetch('SELECT status,COUNT(*) AS count FROM cognitive_jobs GROUP BY status')
         deliveries = await conn.fetch('SELECT status,COUNT(*) AS count FROM cognitive_outbox GROUP BY status')
         contexts = await conn.fetch('SELECT authority,COUNT(*) AS count FROM cognitive_contexts GROUP BY authority')
+        group_states=await conn.fetch('SELECT status,COUNT(*) AS count FROM group_candidates GROUP BY status')
+        group_reasons=await conn.fetch('SELECT reason,COUNT(*) AS count FROM group_decisions GROUP BY reason')
         return dict(jobs={r['status']:r['count'] for r in jobs},deliveries={r['status']:r['count'] for r in deliveries},contexts={r['authority']:r['count'] for r in contexts},
+                    group_candidates={r['status']:r['count'] for r in group_states},group_decisions={r['reason']:r['count'] for r in group_reasons},
                     rebuilding_contexts=await conn.fetchval('SELECT COUNT(*) FROM cognitive_contexts WHERE rebuilding'),
                     oldest_ready_job_seconds=await conn.fetchval("SELECT coalesce(EXTRACT(EPOCH FROM NOW()-MIN(available_at)),0)::double precision FROM cognitive_jobs WHERE status='pending' AND kind!='replay' AND available_at<=NOW()"),
                     private_owner_violations=await conn.fetchval('''SELECT COUNT(*) FROM cognitive_provenance p JOIN cognitive_artifacts a ON a.id=p.artifact_id

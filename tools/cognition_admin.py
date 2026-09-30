@@ -98,9 +98,9 @@ async def run(args):
         if args.command=='migrate':
             return await HistoricalMigration(pool).run(batch_size=args.batch_size,max_rows=args.max_rows)
         if args.command=='authority':
-            context = ContextKey('arti',args.chat_id,args.mode,args.scene_id)
+            context = ContextKey('arti',args.chat_id,args.mode,args.scene_id,args.topic_id)
             async with pool.acquire() as conn:
-                cid = await conn.fetchval('SELECT id FROM cognitive_contexts WHERE persona_id=$1 AND chat_id=$2 AND mode=$3 AND scene_id=$4',*context.identity())
+                cid = await conn.fetchval('SELECT id FROM cognitive_contexts WHERE persona_id=$1 AND chat_id=$2 AND mode=$3 AND scene_id=$4 AND topic_id=$5',*context.identity())
             if cid is None:
                 raise ValueError('Unknown context: observe/migrate first')
             await CognitiveRuntime(pool,None,'legacy').set_authority(cid,args.value)
@@ -128,6 +128,7 @@ if __name__=='__main__':
     authority.add_argument('--chat-id',type=int,required=True)
     authority.add_argument('--mode',choices=('default','rp'),default='default')
     authority.add_argument('--scene-id',default='')
+    authority.add_argument('--topic-id',type=int,default=-1)
     authority.add_argument('--value',choices=('shadow','active','legacy'),required=True)
     reconcile = sub.add_parser('cancel-unknown')
     reconcile.add_argument('--outbox-id',type=int,required=True)

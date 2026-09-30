@@ -16,7 +16,8 @@ from cognition.regulation import regulate
 from cognition.reappraisal import ReappraisalRepository,explained_perception
 from cognition.repositories import CognitiveRepository,ensure_schema,SuppressedEvidence,StaleRevision
 from cognition.serialization import load_event,object_value,dump
-from cognition.types import (ContextKey,CognitiveEvent,EvidenceRef,Origin,Perception,PERCEPTION_VERSION,DEFAULT_GOALS,MODEL_VERSION)
+from cognition.types import (ContextKey,CognitiveEvent,EvidenceRef,Origin,Perception,PERCEPTION_VERSION,DEFAULT_GOALS,MODEL_VERSION,AudienceScope)
+from cognition.scope import CURRENT_SCOPE
 from cognition.worker import CognitiveWorker
 
 CURRENT_TURN = contextvars.ContextVar('arti_cognitive_turn',default=None)
@@ -42,6 +43,15 @@ class PreparedTurn:
     def active(self):
         return self.authority=='active'
 
+    @property
+    def uses_cognition(self):
+        return self.active or (self.runtime.mode!='legacy' and self.event.audience.kind in ('group','topic'))
+
+    @property
+    def tracks_delivery(self):
+        return self.active or (self.authority=='shadow' and self.runtime.mode!='legacy'
+                               and self.event.audience.kind in ('group','topic') and self.event.context.topic_id>=0)
+
 
 class CognitiveRuntime:
     def __init__(self,pool,interpreter,mode='shadow',clock=None):
@@ -55,6 +65,8 @@ class CognitiveRuntime:
         self.jobs = JobQueue(pool)
         self.worker = CognitiveWorker(self.jobs,self.handle_job)
         self.locks = WeakValueDictionary()
+        from cognition.proactivity import GroupService
+        self.groups = GroupService(self)
 
     async def initialize(self,start_worker=True):
         await ensure_schema(self.pool)
@@ -67,32 +79,36 @@ class CognitiveRuntime:
 
     async def close(self):
         await self.worker.stop()
+        await self.groups.close()
         close = getattr(self.interpreter,'close',None)
         if close:
             await close()
 
-    async def context(self,chat_id,mode='default'):
+    async def context(self,chat_id,mode='default',topic_id=None):
+        scope = CURRENT_SCOPE.get()
+        topic_id = topic_id if topic_id is not None else scope.topic_id if scope and scope.chat_id==chat_id else -1
         scene = ''
         if mode=='rp':
             async with self.pool.acquire() as conn:
-                scene = await conn.fetchval('''INSERT INTO cognitive_scenes(chat_id,scene_id) VALUES($1,$2)
-                    ON CONFLICT(chat_id) DO UPDATE SET scene_id=cognitive_scenes.scene_id RETURNING scene_id''',chat_id,uuid.uuid4().hex)
-        return ContextKey('arti',chat_id,mode,scene)
+                scene = await conn.fetchval('''INSERT INTO cognitive_scenes(chat_id,scene_id,topic_id) VALUES($1,$2,$3)
+                    ON CONFLICT(chat_id,topic_id) DO UPDATE SET scene_id=cognitive_scenes.scene_id RETURNING scene_id''',chat_id,uuid.uuid4().hex,topic_id)
+        return ContextKey('arti',chat_id,mode,scene,topic_id)
 
     async def new_scene(self,chat_id):
+        topic = (await self.context(chat_id)).topic_id
         async with self.pool.acquire() as conn,conn.transaction():
             await conn.execute('SELECT pg_advisory_xact_lock($1::bigint)',chat_id)
-            await conn.execute("UPDATE cognitive_contexts SET suppression_epoch=suppression_epoch+1,authority='shadow' WHERE chat_id=$1 AND mode='rp'",chat_id)
-            await conn.execute("UPDATE cognitive_outbox SET status='cancelled',payload=NULL WHERE context_id IN (SELECT id FROM cognitive_contexts WHERE chat_id=$1 AND mode='rp') AND status='prepared'",chat_id)
-            return await conn.fetchval('''INSERT INTO cognitive_scenes(chat_id,scene_id) VALUES($1,$2)
-                ON CONFLICT(chat_id) DO UPDATE SET scene_id=EXCLUDED.scene_id,updated_at=NOW() RETURNING scene_id''',chat_id,uuid.uuid4().hex)
+            await conn.execute("UPDATE cognitive_contexts SET suppression_epoch=suppression_epoch+1,authority='shadow' WHERE chat_id=$1 AND topic_id=$2 AND mode='rp'",chat_id,topic)
+            await conn.execute("UPDATE cognitive_outbox SET status='cancelled',payload=NULL WHERE context_id IN (SELECT id FROM cognitive_contexts WHERE chat_id=$1 AND topic_id=$2 AND mode='rp') AND status='prepared'",chat_id,topic)
+            return await conn.fetchval('''INSERT INTO cognitive_scenes(chat_id,scene_id,topic_id) VALUES($1,$2,$3)
+                ON CONFLICT(chat_id,topic_id) DO UPDATE SET scene_id=EXCLUDED.scene_id,updated_at=NOW() RETURNING scene_id''',chat_id,uuid.uuid4().hex,topic)
 
-    async def ingest(self,chat_id,owner,text,message_id,mode='default',occurred_at=None,origin=Origin.USER,context=None,event_kind='utterance'):
+    async def ingest(self,chat_id,owner,text,message_id,mode='default',occurred_at=None,origin=Origin.USER,context=None,event_kind='utterance',audience=None,addressed_to_arti=None,reply_to_id=None):
         context = context or await self.context(chat_id,mode)
         source = f'telegram:{chat_id}:{message_id}:{origin.value}'
         async with self.pool.acquire() as conn:
             existing = await conn.fetchrow('''SELECT e.* FROM cognitive_events e JOIN cognitive_contexts c ON c.id=e.context_id
-                WHERE c.persona_id=$1 AND c.chat_id=$2 AND c.mode=$3 AND c.scene_id=$4 AND e.event_key=$5''',*context.identity(),source)
+                WHERE c.persona_id=$1 AND c.chat_id=$2 AND c.mode=$3 AND c.scene_id=$4 AND c.topic_id=$5 AND e.event_key=$6''',*context.identity(),source)
         if existing:
             if existing['suppressed_at'] is not None:
                 raise SuppressedEvidence()
@@ -104,8 +120,13 @@ class CognitiveRuntime:
         if occurred_at.tzinfo is None:
             occurred_at = occurred_at.replace(tzinfo=timezone.utc)
         occurred_at = min(occurred_at,at)
+        scope = CURRENT_SCOPE.get()
+        scoped = scope is not None and scope.chat_id==chat_id
+        audience = audience or (AudienceScope('topic' if scope.topic_id>0 else 'group' if scope.group and scope.topic_id==0 else 'private' if scope.chat_type=='private' else 'unknown',chat_id,scope.topic_id) if scoped else AudienceScope())
+        addressed_to_arti = addressed_to_arti if addressed_to_arti is not None else scope.addressed if scoped else True
+        reply_to_id = reply_to_id if reply_to_id is not None else scope.reply_to_id if scoped else None
         evidence = EvidenceRef(source,source,origin,owner)
-        event = CognitiveEvent(source,context,evidence,occurred_at,at,str(text or ''),owner if origin==Origin.USER else None,owner if origin==Origin.DELIVERED_ACTION else None,event_kind)
+        event = CognitiveEvent(source,context,evidence,occurred_at,at,str(text or ''),owner if origin==Origin.USER else None,owner if origin==Origin.DELIVERED_ACTION else None,event_kind,audience,addressed_to_arti,reply_to_id)
         cid,eid = await self.repo.observe(event)
         async with self.pool.acquire() as conn:
             await conn.execute('UPDATE cognitive_contexts SET authority=$2 WHERE id=$1 AND revision=0 AND NOT authority_explicit',cid,self.mode)
@@ -177,7 +198,7 @@ class CognitiveRuntime:
             late = event.observed_at<before.last_at
             if source['perception']:
                 p = Perception.from_dict(object_value(source['perception']))
-            elif event.evidence.origin in (Origin.USER,Origin.DELIVERED_ACTION) and event.event_kind!='historical':
+            elif event.evidence.origin in (Origin.USER,Origin.DELIVERED_ACTION) and event.event_kind!='historical' and event.addressed_to_arti:
                 # Preliminary retrieval does not strengthen traces or supply a new
                 # external evidence group. The current event is not yet encoded.
                 raw = await self.memory.artifacts(cid,event.evidence.owner_id,'trace',limit=32,query=event.text)
@@ -228,6 +249,8 @@ class CognitiveRuntime:
             else:
                 await self.memory.encode(cid,eid,p,before,after,worker_token=worker_token,expected_epoch=context['suppression_epoch'])
             if p.situation:
+                if event.audience.kind in ('group','topic') and 'proactive' in p.situation.preferences:
+                    await self.groups.policies.opt_out(event.context.chat_id,event.evidence.owner_id,p.situation.preferences['proactive'] is False)
                 for revision in p.situation.revisions:
                     async with self.pool.acquire() as conn:
                         cause = await conn.fetchrow('SELECT * FROM cognitive_events WHERE context_id=$1 AND source_id=$2 AND suppressed_at IS NULL',cid,revision['source_id'])
@@ -245,7 +268,7 @@ class CognitiveRuntime:
                                     event.evidence.owner_id,[cause['id'],eid])
             # Durable replay is low priority through availability and chronological
             # ordering. One job per source, capped processing per source group.
-            if event.evidence.origin==Origin.USER:
+            if event.evidence.origin==Origin.USER and event.addressed_to_arti:
                 jid = await self.jobs.enqueue(cid,eid,'replay')
                 async with self.pool.acquire() as conn:
                     await conn.execute("UPDATE cognitive_jobs SET available_at=GREATEST(available_at,NOW()+INTERVAL '1 day') WHERE id=$1 AND status='pending'",jid)
@@ -303,6 +326,9 @@ class CognitiveRuntime:
                                         implicit_cue=cue,implicit_expression_bias=implicit),owner,[eid])
         turn = PreparedTurn(self,cid,eid,event,plan,memory,ctx['suppression_epoch'],ctx['authority'],bool(delivered))
         turn.preferences = dict(relationship['preferences'])
+        if event.audience.kind in ('group','topic'):
+            turn.memory = ''
+            turn.expression = replace(turn.expression,disclosure=0.)
         CURRENT_TURN.set(turn)
         return turn
 
@@ -372,6 +398,18 @@ async def stop_runtime():
 
 async def prepare_turn(chat_id,user_id,text,message_id,mode='default',task_serious=False,source_context=None):
     runtime = get_runtime()
+    scope=CURRENT_SCOPE.get()
+    if runtime and runtime.mode!='legacy' and scope and scope.group and scope.sender_kind=='chat' and message_id is not None:
+        cid=await runtime.groups.context_id(scope,mode)
+        async with runtime.pool.acquire() as conn:
+            source=await conn.fetchrow('SELECT * FROM cognitive_events WHERE context_id=$1 AND event_key=$2 AND suppressed_at IS NULL',cid,f'telegram:{chat_id}:{message_id}:system')
+            ctx=await conn.fetchrow('SELECT * FROM cognitive_contexts WHERE id=$1',cid)
+        if source and ctx:
+            event=load_event(source['payload'])
+            style=replace(expression(await runtime.personal_state(cid,None)),disclosure=0.)
+            turn=PreparedTurn(runtime,cid,source['id'],event,style,'',ctx['suppression_epoch'],ctx['authority'])
+            CURRENT_TURN.set(turn)
+            return turn
     if not runtime or runtime.mode=='legacy' or user_id is None or message_id is None:
         CURRENT_TURN.set(None)
         return None

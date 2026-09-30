@@ -1,0 +1,121 @@
+{
+  "version": "group-2026-09-30.1",
+  "model": "rules",
+  "live": false,
+  "scenarios": 10,
+  "passed": 10,
+  "provider_calls": 0,
+  "provider_usage": [],
+  "telegram_calls": 0,
+  "real_history_used": false,
+  "human_ratings": false,
+  "records": [
+    {
+      "id": "open_question",
+      "expected": "speak",
+      "action": "speak",
+      "passed": true,
+      "layer": "candidate_rules"
+    },
+    {
+      "id": "human_reply",
+      "expected": "abstain",
+      "action": "abstain",
+      "passed": true,
+      "layer": "candidate_rules"
+    },
+    {
+      "id": "human_conversation",
+      "expected": "abstain",
+      "action": "abstain",
+      "passed": true,
+      "layer": "candidate_rules"
+    },
+    {
+      "id": "rhetorical",
+      "expected": "abstain",
+      "action": "abstain",
+      "passed": true,
+      "layer": "candidate_rules"
+    },
+    {
+      "id": "name_in_quote",
+      "expected": "abstain",
+      "action": "abstain",
+      "passed": true,
+      "layer": "candidate_rules"
+    },
+    {
+      "id": "personal_address",
+      "expected": "abstain",
+      "action": "abstain",
+      "passed": true,
+      "layer": "candidate_rules"
+    },
+    {
+      "id": "shared_task",
+      "expected": "speak",
+      "action": "speak",
+      "passed": true,
+      "layer": "candidate_rules"
+    },
+    {
+      "id": "social_success",
+      "expected": "speak",
+      "action": "speak",
+      "passed": true,
+      "layer": "candidate_rules"
+    },
+    {
+      "id": "serious_social",
+      "expected": "abstain",
+      "action": "abstain",
+      "passed": true,
+      "layer": "candidate_rules"
+    },
+    {
+      "id": "explicit_resolution",
+      "expected": "abstain",
+      "action": "abstain",
+      "passed": true,
+      "layer": "candidate_rules"
+    }
+  ],
+  "fixture_sha256": "3997ace91605738189f5346fe5d73d1cc0c01eb9ea4da09e95aaa8aa481fde62",
+  "decision_metrics": {
+    "recall": {
+      "count": 3,
+      "total": 3,
+      "rate": 1.0,
+      "wilson_95": [
+        0.4385029682449681,
+        1.0
+      ]
+    },
+    "false_inclusions": {
+      "count": 0,
+      "total": 7,
+      "rate": 0.0,
+      "wilson_95": [
+        0.0,
+        0.35433043506667483
+      ]
+    },
+    "expected_label_precision": {
+      "count": 3,
+      "total": 3,
+      "rate": 1.0,
+      "wilson_95": [
+        0.4385029682449681,
+        1.0
+      ]
+    },
+    "human_appropriateness_precision": null
+  },
+  "usage_totals": {
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "cost": 0,
+    "calls_with_cost_reported": 0
+  }
+}

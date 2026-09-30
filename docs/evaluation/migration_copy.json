@@ -20,7 +20,7 @@
       "quarantined": 281
     },
     "complete": false,
-    "seconds": 0.09206419996917248,
+    "seconds": 0.08376719999978377,
     "model_version": "cognition-2026-09-30.4",
     "historical_emotions_inferred": 0,
     "timezone_policy": "legacy naive timestamps assumed UTC; original retained"
@@ -36,7 +36,7 @@
       "quarantined": 396
     },
     "complete": true,
-    "seconds": 0.6336614999454468,
+    "seconds": 0.6195196999997279,
     "model_version": "cognition-2026-09-30.4",
     "historical_emotions_inferred": 0,
     "timezone_policy": "legacy naive timestamps assumed UTC; original retained"
@@ -52,7 +52,7 @@
       "quarantined": 396
     },
     "complete": true,
-    "seconds": 0.002113000024110079,
+    "seconds": 0.0021071999999549007,
     "model_version": "cognition-2026-09-30.4",
     "historical_emotions_inferred": 0,
     "timezone_policy": "legacy naive timestamps assumed UTC; original retained"
@@ -63,6 +63,8 @@
     "contexts": {
       "shadow": 3
     },
+    "group_candidates": {},
+    "group_decisions": {},
     "rebuilding_contexts": 0,
     "oldest_ready_job_seconds": 0.0,
     "private_owner_violations": 0,

@@ -57,6 +57,12 @@ async def build_memory_context(
     fact_limit: int = 5,
     log_limit: int = 2,
 ) -> str:
+    from cognition.scope import CURRENT_SCOPE
+    scope=CURRENT_SCOPE.get()
+    if scope and scope.group and scope.chat_id==chat_id:
+        # Public group transcript has a separate provenance-preserving reader.
+        # Legacy RAG has no audience/topic metadata and cannot be broadcast.
+        return ''
     query = keyword_query(user_message) or compact_text(user_message, 160)
     if not query:
         return ""

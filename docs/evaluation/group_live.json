@@ -1,0 +1,226 @@
+{
+  "version": "group-2026-09-30.1",
+  "model": "stealth/space-bunny-alpha",
+  "live": true,
+  "scenarios": 10,
+  "passed": 9,
+  "provider_calls": 12,
+  "provider_usage": [
+    {
+      "prompt_tokens": 857,
+      "completion_tokens": 162,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 765,
+      "completion_tokens": 362,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 570,
+      "completion_tokens": 65,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 714,
+      "completion_tokens": 165,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 720,
+      "completion_tokens": 238,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 806,
+      "completion_tokens": 214,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 716,
+      "completion_tokens": 257,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 715,
+      "completion_tokens": 393,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 712,
+      "completion_tokens": 270,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 807,
+      "completion_tokens": 296,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 851,
+      "completion_tokens": 194,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 517,
+      "completion_tokens": 406,
+      "cost": 0
+    }
+  ],
+  "telegram_calls": 0,
+  "real_history_used": false,
+  "human_ratings": false,
+  "records": [
+    {
+      "id": "open_question",
+      "expected": "speak",
+      "action": "speak",
+      "reason": "useful_answer",
+      "passed": true,
+      "confidence": 0.95,
+      "seconds": 5.87,
+      "response": "Для списка используйте метод sort(): numbers.sort() — сортирует по возрастанию на месте. sorted(numbers) создаёт новый отсортированный список, а sort(key=lambda x: x['name']) сортирует по заданному признаку.",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "human_reply",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "already_answered",
+      "passed": true,
+      "confidence": 0.98,
+      "seconds": 2.57,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "human_conversation",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "already_answered",
+      "passed": true,
+      "confidence": 0.98,
+      "seconds": 8.37,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "rhetorical",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "rhetorical",
+      "passed": true,
+      "confidence": 0.99,
+      "seconds": 2.11,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "name_in_quote",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "no_added_value",
+      "passed": true,
+      "confidence": 0.99,
+      "seconds": 2.76,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "personal_address",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "human_addressed",
+      "passed": true,
+      "confidence": 0.99,
+      "seconds": 4.16,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "shared_task",
+      "expected": "speak",
+      "action": "abstain",
+      "reason": "topic_seed",
+      "passed": false,
+      "confidence": 0.96,
+      "seconds": 5.25,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "social_success",
+      "expected": "speak",
+      "action": "speak",
+      "reason": "social_fit",
+      "passed": true,
+      "confidence": 0.95,
+      "seconds": 9.75,
+      "response": "Здорово! Когда результат достигнут, можно немного выдохнуть и порадоваться успеху 🎉",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "serious_social",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "sensitive",
+      "passed": true,
+      "confidence": 0.97,
+      "seconds": 5.33,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "explicit_resolution",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "already_answered",
+      "passed": true,
+      "confidence": 0.99,
+      "seconds": 2.11,
+      "response": "",
+      "layer": "live_arbiter"
+    }
+  ],
+  "fixture_sha256": "3997ace91605738189f5346fe5d73d1cc0c01eb9ea4da09e95aaa8aa481fde62",
+  "decision_metrics": {
+    "recall": {
+      "count": 2,
+      "total": 3,
+      "rate": 0.6666666666666666,
+      "wilson_95": [
+        0.20765960080205476,
+        0.9385080552796012
+      ]
+    },
+    "false_inclusions": {
+      "count": 0,
+      "total": 7,
+      "rate": 0.0,
+      "wilson_95": [
+        0.0,
+        0.35433043506667483
+      ]
+    },
+    "expected_label_precision": {
+      "count": 2,
+      "total": 2,
+      "rate": 1.0,
+      "wilson_95": [
+        0.34238022750666547,
+        1.0
+      ]
+    },
+    "human_appropriateness_precision": null
+  },
+  "latency_seconds": {
+    "p50": 4.705,
+    "p95": 9.75
+  },
+  "usage_totals": {
+    "prompt_tokens": 8750,
+    "completion_tokens": 3022,
+    "cost": 0,
+    "calls_with_cost_reported": 12
+  }
+}
