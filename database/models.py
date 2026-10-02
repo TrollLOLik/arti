@@ -364,7 +364,11 @@ class SavedVoice:
         cleaned: bool = False,
         duration_sec: float = None,
     ) -> dict:
-        async with get_db() as conn:
+        async with get_db() as conn, conn.transaction():
+            from bot.saved_voice_sources import revoke
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",f'saved-voice-name:{user_id}:{name}')
+            previous=await conn.fetchrow('SELECT id FROM saved_voices WHERE user_id=$1 AND name=$2 FOR UPDATE',user_id,name)
+            if previous: await revoke(conn,user_id,previous['id'])
             row = await conn.fetchrow("""
                 INSERT INTO saved_voices (
                     user_id, chat_id, name, catbox_url, catbox_file_id,
@@ -419,23 +423,24 @@ class SavedVoice:
 
     @staticmethod
     async def delete(user_id: int, voice_id: int) -> Optional[dict]:
-        async with get_db() as conn:
-            row = await conn.fetchrow("""
-                DELETE FROM saved_voices
-                WHERE user_id = $1 AND id = $2
-                RETURNING *
-            """, user_id, voice_id)
-            return dict(row) if row else None
+        async with get_db() as conn, conn.transaction():
+            from bot.saved_voice_sources import revoke
+            row=await conn.fetchrow('SELECT * FROM saved_voices WHERE user_id=$1 AND id=$2 FOR UPDATE',user_id,voice_id)
+            if row is None: return None
+            await revoke(conn,user_id,voice_id)
+            await conn.execute('DELETE FROM saved_voices WHERE user_id=$1 AND id=$2',user_id,voice_id)
+            return dict(row)
 
     @staticmethod
     async def delete_by_name(user_id: int, name: str) -> Optional[dict]:
-        async with get_db() as conn:
-            row = await conn.fetchrow("""
-                DELETE FROM saved_voices
-                WHERE user_id = $1 AND name = $2
-                RETURNING *
-            """, user_id, name)
-            return dict(row) if row else None
+        async with get_db() as conn, conn.transaction():
+            from bot.saved_voice_sources import revoke
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",f'saved-voice-name:{user_id}:{name}')
+            row=await conn.fetchrow('SELECT * FROM saved_voices WHERE user_id=$1 AND name=$2 FOR UPDATE',user_id,name)
+            if row is None: return None
+            await revoke(conn,user_id,row['id'])
+            await conn.execute('DELETE FROM saved_voices WHERE user_id=$1 AND id=$2',user_id,row['id'])
+            return dict(row)
 
     @staticmethod
     async def touch(user_id: int, voice_id: int):

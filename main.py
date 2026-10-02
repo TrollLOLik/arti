@@ -49,7 +49,6 @@ from bot.commands import (
     handle_charge_command, profile_callback,
 )
 from bot.queue import (
-    dubbing_worker, vclone_worker,
     vclone_fsm_timeout_watchdog,
     run_supervised
 )
@@ -138,15 +137,15 @@ def run_with_restart():
                 from bot.request_runtime import worker as request_worker
                 for slot in range(10):
                     spawn_worker(run_supervised(request_worker, f"request_text_{slot}", app.bot, ['text']))
-                for kind in ('image', 'video', 'music'):
+                for kind in ('image', 'video', 'music', 'dubbing', 'vclone'):
                     spawn_worker(run_supervised(request_worker, f"request_{kind}", app.bot, [kind]))
                 logger.info("Медиа-воркеры (image/video/music) запущены (supervised).")
-                spawn_worker(run_supervised(dubbing_worker, "dubbing_worker"))
                 logger.info("Воркер дубляжа видео запущен (supervised).")
-                spawn_worker(run_supervised(vclone_worker, "vclone_worker"))
                 logger.info("Воркер vclone запущен (supervised).")
                 spawn_worker(run_supervised(vclone_fsm_timeout_watchdog, "vclone_fsm_watchdog", app.bot))
                 logger.info("Watchdog vclone FSM запущен (supervised).")
+                from bot.media_jobs import maintenance_worker as media_maintenance
+                spawn_worker(run_supervised(media_maintenance, 'media_spool_cleanup'))
                 from organizer.runtime import worker as organizer_worker
                 spawn_worker(run_supervised(organizer_worker,'native_organizer',app.bot))
                 from cognition.runtime import get_runtime
@@ -268,6 +267,9 @@ def run_with_restart():
             application.add_handler(CallbackQueryHandler(photo_action_callback, pattern="^photo_act:"))
             application.add_handler(CallbackQueryHandler(document_action_callback, pattern="^doc_act:"))
             application.add_handler(CallbackQueryHandler(video_url_action_callback, pattern="^vurl:"))
+            from bot.media_jobs import save_voice_callback as durable_voice_save, retry_callback as durable_media_retry
+            application.add_handler(CallbackQueryHandler(durable_voice_save, pattern="^media_voice_save:[0-9a-f]{32}$"))
+            application.add_handler(CallbackQueryHandler(durable_media_retry, pattern="^media_retry:[0-9a-f]{32}$"))
             application.add_handler(CallbackQueryHandler(vclone_clean_callback, pattern="^vclone_clean:"))
             application.add_handler(CallbackQueryHandler(vclone_save_callback, pattern="^vsave:"))
             application.add_handler(CallbackQueryHandler(saved_voice_callback, pattern="^(vsel|vdel):"))

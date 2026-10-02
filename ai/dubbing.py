@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -52,6 +53,7 @@ async def run_dubbing(
     input_file: Optional[Path] = None,
     audio_only: bool = False,
     timeout_seconds: float | None = None,
+    output_root: Path | None = None,
 ) -> tuple[bool, Optional[Path], str]:
     """
     Запускает videotrans/main.py.
@@ -64,6 +66,14 @@ async def run_dubbing(
     """
     budget = timeout_seconds if timeout_seconds is not None else float(os.getenv('ARTI_DUBBING_TIMEOUT_SECONDS','3600'))
     if not 0 < budget <= 14400: raise ValueError('invalid_dubbing_timeout')
+    if not isinstance(run_id,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',run_id):
+        raise ValueError('invalid_dubbing_run_id')
+    if output_root is not None:
+        if not isinstance(output_root,Path): raise ValueError('invalid_dubbing_output_root')
+        try: runs_root=output_root.resolve(strict=True)
+        except OSError: raise ValueError('invalid_dubbing_output_root') from None
+        if not runs_root.is_dir(): raise ValueError('invalid_dubbing_output_root')
+    else: runs_root=VIDEOTRANS_RUNS
 
     if not input_file and not is_supported_url(url):
         return False, None, "URL должен начинаться с http:// или https:// либо нужен файл"
@@ -83,9 +93,12 @@ async def run_dubbing(
     if not (VIDEOTRANS_DIR / "main.py").exists():
         return False, None, f"Не найден videotrans/main.py: {VIDEOTRANS_DIR}"
 
-    VIDEOTRANS_RUNS.mkdir(parents=True, exist_ok=True)
-    run_dir = VIDEOTRANS_RUNS / run_id
+    runs_root.mkdir(parents=True, exist_ok=True)
+    run_dir = runs_root / run_id
+    if run_dir.is_symlink(): raise ValueError('invalid_dubbing_run_directory')
     run_dir.mkdir(parents=True, exist_ok=True)
+    if run_dir.resolve(strict=True).parent!=runs_root.resolve(strict=True):
+        raise ValueError('invalid_dubbing_run_directory')
 
     work_dir = run_dir / "work"
     output_suffix = ".mp3" if audio_only else ".mp4"
@@ -125,12 +138,12 @@ async def run_dubbing(
     logger.info("Запускаю videotrans: %s", " ".join(cmd))
 
     try:
-        process = await asyncio.create_subprocess_exec(
+        from utils.process_limits import create_owned_subprocess_exec
+        process = await create_owned_subprocess_exec(
             *cmd,
             cwd=str(VIDEOTRANS_DIR),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            start_new_session=os.name=='posix',
         )
     except Exception as exc:
         logger.exception("Не удалось стартовать videotrans subprocess")

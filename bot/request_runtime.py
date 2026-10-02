@@ -15,6 +15,16 @@ CURRENT_REQUEST = contextvars.ContextVar('arti_request', default=None)
 logger = logging.getLogger(__name__)
 
 
+class MediaContextBusy(Exception):
+    """Temporary shared rebuild, not erasure of this request's sources."""
+
+
+async def _media_context_busy(job):
+    if job['kind'] not in ('dubbing','vclone') or not job.get('context_ids'): return False
+    async with store().pool.acquire() as conn:
+        return bool(await conn.fetchval('SELECT EXISTS(SELECT 1 FROM cognitive_contexts WHERE id=ANY($1::bigint[]) AND rebuilding)',job['context_ids']))
+
+
 def store():
     from database import connection
     if connection._pool is None:
@@ -31,7 +41,7 @@ def diagnostic(job, stage, started=None, **fields):
     logger.info('request_lifecycle', extra={'request_diagnostic': record})
 
 
-async def submit(request):
+async def submit(request, *, resources=()):
     from bot.request_codec import encode_request
     from cognition.scope import CURRENT_SCOPE
     scope = request.get('_telegram_scope') or CURRENT_SCOPE.get()
@@ -44,13 +54,20 @@ async def submit(request):
         identity += [{key: request.get(key) for key in ('prompt', 'style', 'instrumental',
                       'image_urls', 'image_aspect_ratio', 'image_resolution', 'image_num_images',
                       'video_model', 'video_duration', 'video_aspect_ratio')}, parent['id'] if parent else None]
+    if kind in ('dubbing','vclone'):
+        identity += [{key: request.get(key) for key in ('url','synthesis_text','cleaned','with_subs','audio_only')},
+                     {key: request[key].get('sha256') for key in ('input_media','reference_media') if request.get(key)}]
     if request.get('message_id') is None:
         raise ValueError('durable_request_requires_message_id')
     key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     payload = await encode_request(request)
     budget = float(os.getenv('ARTI_REQUEST_TEXT_BUDGET_SECONDS' if kind == 'text'
                               else 'ARTI_REQUEST_MEDIA_BUDGET_SECONDS', '180' if kind == 'text' else '900'))
-    job = await store().enqueue(kind, request['chat_id'], topic, key, payload, budget_seconds=budget)
+    if kind in ('dubbing', 'vclone'):
+        budget = float(os.getenv('ARTI_REQUEST_DISK_MEDIA_BUDGET_SECONDS', '604800'))
+        if not 60 <= budget <= 604800:
+            raise ValueError('invalid_disk_media_budget')
+    job = await store().enqueue(kind, request['chat_id'], topic, key, payload, budget_seconds=budget, resources=resources)
     from bot.intake import note_accepted
     note_accepted(job['id'])
     diagnostic(job, 'accepted')
@@ -163,8 +180,26 @@ async def _send(method, args, kwargs, channel):
     prepared = await decode_value(row['payload'])
     if prepared['channel'] != channel:
         raise DeliverySuppressed()
-    if not await store().begin_send(job['id'], job['token'], ordinal):
-        raise DeliverySuppressed()
+    # Open staged bytes only after the request/namespace ownership check. The
+    # descriptor, never a local path or copied 50 MiB blob, is the durable intent.
+    from contextlib import ExitStack
+    files = ExitStack()
+    try:
+        for key, value in list(prepared['kwargs'].items()):
+            if isinstance(value, dict) and '_arti_spooled_file' in value:
+                if set(value) != {'_arti_spooled_file'} or key not in ('audio','video','voice','document'):
+                    raise DeliverySuppressed()
+                from bot.media_jobs import spool
+                descriptor = value['_arti_spooled_file']
+                await store().assert_resources(job['id'], job['token'], [descriptor['namespace']])
+                prepared['kwargs'][key] = files.enter_context(spool().open_verified(descriptor))
+        if await _media_context_busy(job):
+            raise MediaContextBusy()
+        if not await store().begin_send(job['id'], job['token'], ordinal):
+            raise DeliverySuppressed()
+    except BaseException:
+        files.close()
+        raise
     started = time.monotonic()
     try:
         result = await send_with_receipt(method, prepared['args'], prepared['kwargs'], prepared['channel'])
@@ -183,6 +218,8 @@ async def _send(method, args, kwargs, channel):
         except Exception:
             pass  # The durable sending marker remains non-retryable on recovery.
         raise
+    finally:
+        files.close()
     diagnostic(job, 'delivery', started)
     return result
 
@@ -203,12 +240,20 @@ async def _execute(job, bot):
     from bot.request_codec import decode_request
     from bot.queue import process_user_reply, _execute_generation_task
     from utils.response_status import is_responses_enabled
+    if await _media_context_busy(job):
+        raise MediaContextBusy()
     request = await decode_request(job['payload'], bot)
     if not await is_responses_enabled(request['chat_id']):
         await store().finish(job['id'], job['token'], 'cancelled')
         return
     if job['kind'] == 'text':
         await process_user_reply(request, bot)
+    elif job['kind'] in ('dubbing', 'vclone'):
+        from bot.media_jobs import execute
+        await execute(request, bot)
+        outcome = await store().status(job['id'])
+        if outcome and outcome['state']=='paused':
+            return
     else:
         await _execute_generation_task(request)
     await store().finish(job['id'], job['token'], 'completed')
@@ -250,10 +295,23 @@ async def worker(bot, kinds):
             await asyncio.shield(store().release(job['id'], job['token']))
             if asyncio.current_task().cancelling():
                 raise
+        except MediaContextBusy:
+            await store().release(job['id'],job['token'],delay_seconds=1)
+            diagnostic(job,'waiting_for_source_rebuild',started)
         except (DeliveryUnknown, DeliverySuppressed, SuppressedEvidence, MaterialError) as exc:
-            await store().finish(job['id'], job['token'], 'delivery_unknown' if isinstance(exc, DeliveryUnknown) else 'cancelled', type(exc).__name__)
-            diagnostic(job, 'blocked', started, error_code=type(exc).__name__)
+            if not isinstance(exc,DeliveryUnknown) and await _media_context_busy(job):
+                await store().release(job['id'],job['token'],delay_seconds=1)
+                diagnostic(job,'waiting_for_source_rebuild',started)
+            else:
+                await store().finish(job['id'], job['token'], 'delivery_unknown' if isinstance(exc, DeliveryUnknown) else 'cancelled', type(exc).__name__)
+                diagnostic(job, 'blocked', started, error_code=type(exc).__name__)
         except Exception as exc:
+            if job['kind'] in ('dubbing', 'vclone'):
+                try:
+                    async with asyncio.timeout(2):
+                        await _failure_notice(job, bot)
+                except Exception:
+                    pass
             # No blind provider retries after an unknown side effect. Crash recovery
             # is distinct from an explicit application failure.
             await store().finish(job['id'], job['token'], 'failed', type(exc).__name__)
@@ -285,10 +343,22 @@ async def request_status(update, context):
         await update.effective_message.reply_text('Запрос не найден в этом чате.')
         return
     labels = {'queued':'в очереди', 'running':'обрабатывается', 'prepared':'готовится отправка',
-              'completed':'завершён', 'expired':'истёк срок ожидания', 'succeeded':'завершён', 'failed':'остановлен', 'cancelled':'отменён',
+              'paused':'приостановлен после прерывания генерации; нужен явный повтор', 'completed':'завершён', 'expired':'истёк срок ожидания', 'succeeded':'завершён', 'failed':'остановлен', 'cancelled':'отменён',
               'delivery_unknown':'отправка не подтверждена; автоматического повтора не будет'}
     label = 'истёк срок ожидания' if row.get('error_code') == 'deadline_exceeded' else labels.get(row['state'], row['state'])
-    await update.effective_message.reply_text(f"Запрос {row['id']}: {label}.")
+    text=f"Запрос {row['id']}: {label}."
+    markup=None
+    if row['kind'] in ('dubbing','vclone'):
+        from bot.media_retention import Retention
+        owner=update.effective_user.id
+        retained=await Retention(store().pool).load(row['id'],'result',owner,row['chat_id'],row['topic_id'])
+        if retained:
+            text+=f"\nЛокальный результат сохранён до {retained['expires_at'].isoformat()}. ID: {row['id']}. Экспорт на ПК: python -m tools.export_media_result --request {row['id']} --owner {owner} --output ИМЯ_ФАЙЛА"
+        if row['state']=='paused':
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            text+=f"\nДанные доступны до {row['deadline_at'].isoformat()}. Прерванный вызов мог уже завершиться у провайдера. Повтор может заново использовать GPU или платный API."
+            markup=InlineKeyboardMarkup([[InlineKeyboardButton('Повторить генерацию (возможны расходы)',callback_data='media_retry:'+row['id'])]])
+    await update.effective_message.reply_text(text,reply_markup=markup)
 
 
 async def _notice(job, bot, ordinal, text):
@@ -313,3 +383,20 @@ async def _progress(job, bot):
             f"Запрос {job['id']} ещё обрабатывается в фоне. Статус: /request {job['id']}. Отменить: /cancel.")
     except Exception:
         diagnostic(job, 'wait_notice_unconfirmed')
+
+
+async def _failure_notice(job, bot, text=None):
+    """Update a cosmetic wait receipt; never fall back after unknown media send."""
+    if not await store().guard(job['id'], job['token']): return
+    async with store().pool.acquire() as conn:
+        unknown = await conn.fetchval("SELECT EXISTS(SELECT 1 FROM arti_request_sends WHERE request_id=$1 AND ordinal>0 AND state IN ('sending','delivery_unknown'))",job['id'])
+        row = await conn.fetchrow('SELECT state,receipt FROM arti_request_sends WHERE request_id=$1 AND ordinal=0',job['id'])
+    if unknown: return
+    text = text or f"Запрос {job['id']} остановлен: не удалось подготовить медиа. Статус: /request {job['id']}. Можно повторить запрос."
+    if row and row['state']=='delivered':
+        receipt = json.loads(row['receipt']) if isinstance(row['receipt'],str) else row['receipt']
+        if isinstance(receipt,dict) and receipt.get('message_id'):
+            from telegram.ext import ExtBot
+            await ExtBot.edit_message_text(bot, chat_id=job['chat_id'],message_id=receipt['message_id'],text=text)
+    elif row is None or row['state']=='prepared':
+        await _notice(job,bot,0,text)

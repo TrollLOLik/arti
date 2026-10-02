@@ -5,6 +5,7 @@ import re
 import random
 import logging
 import asyncio
+from contextlib import asynccontextmanager
 from typing import Optional, List, Tuple, Dict, Any
 
 import telegram
@@ -20,6 +21,8 @@ from config import (
     waiting_for_model_search, TTS_ENABLED, PRIVILEGED_USER_IDS,
     MEDIA_RATE_LIMIT, MEDIA_RATE_WINDOW
 )
+from cognition.scope import CURRENT_SCOPE
+from bot.media_provenance import reference_source as _media_reference_source
 from utils.rate_limit import is_rate_limited
 from utils.spam_protection import handle_spam_protection
 from utils.admin import is_admin
@@ -1399,6 +1402,7 @@ async def _enqueue_dub_task(
     input_file: str | None = None,
     with_subs: bool = False,
     audio_only: bool = False,
+    reference_source: dict | None = None,
 ):
     chat_id = update.effective_chat.id
     user = update.message.from_user
@@ -1416,7 +1420,10 @@ async def _enqueue_dub_task(
         'user_name': user_name,
         'with_subs': with_subs,
         'run_id': run_id,
+        'reference_source': reference_source,
     }
+    from bot.media_intake import owned_intake
+    task['_owned_intake']=owned_intake(input_file)
     await enqueue_dubbing(task, context.bot, chat_id)
     logger.info(
         f"Дубляж поставлен в очередь: chat={chat_id}, user={user.id}, "
@@ -1553,6 +1560,7 @@ async def handle_dub_attachment(
         dub_flow_state[chat_id].pop(user_id, None)
         return True
 
+    state["reference_source"] = _media_reference_source(update.message, CURRENT_SCOPE.get())
     state["input_file"] = str(local_path)
     state["audio_only"] = (media_kind == "audio")
 
@@ -1569,6 +1577,7 @@ async def handle_dub_attachment(
             input_file=str(local_path),
             with_subs=False,
             audio_only=True,
+            reference_source=state.get("reference_source"),
         )
         return True
 
@@ -1664,6 +1673,7 @@ async def handle_dub_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             input_file=input_file,
             with_subs=with_subs,
             audio_only=audio_only,
+            reference_source=state.get("reference_source"),
         )
         return True
 
@@ -1809,13 +1819,21 @@ def _vclone_build_task(
     cleaned: bool,
     source_kind: str,
     context: ContextTypes.DEFAULT_TYPE,
+    reference_source: dict | None = None,
+    saved_voice_id: int | None = None,
+    saved_voice_version: str | None = None,
 ) -> dict:
+    from bot.media_intake import owned_intake
     return {
+        "_owned_intake": owned_intake(reference_path, cleaned_path),
         "chat_id": chat_id,
         "user_id": user_id,
         "user_name": user_name,
         "message_id": message_id,
         "reference_path": reference_path,
+        "reference_source": reference_source,
+        "saved_voice_id": saved_voice_id,
+        "saved_voice_version": saved_voice_version,
         "synthesis_text": synthesis_text,
         "cleaned_path": cleaned_path,
         "cleaned": cleaned,
@@ -1836,6 +1854,8 @@ def _vclone_cleanup_save_state(chat_id: int, user_id: int) -> None:
     state = vclone_save_flow_state.get(chat_id, {}).pop(user_id, None)
     if not isinstance(state, dict):
         return
+    if state.get("media_retained_id"):
+        return  # Durable retention owns this file until its bounded expiry.
     cleanup_paths = state.get("cleanup_paths") or []
     if not cleanup_paths and state.get("reference_path"):
         cleanup_paths = [state.get("reference_path")]
@@ -2122,10 +2142,17 @@ async def _vclone_setup_cleanup_choice(
     source_kind: str,
     save_only: bool = False,
     suggested_name: str | None = None,
+    reference_message=None,
 ) -> None:
     """Сохраняет state в FSM (step="cleanup_choice") и отправляет inline-клавиатуру."""
     chat_id = update.effective_chat.id
     user_id = update.message.from_user.id
+
+    if reference_message is None:
+        reference_message = (
+            update.message.reply_to_message if source_kind.startswith("reply_")
+            else update.message
+        )
 
     sent = await update.message.reply_text(
         "🧹 <b>Очистка голоса</b>\n\n"
@@ -2137,6 +2164,7 @@ async def _vclone_setup_cleanup_choice(
     vclone_flow_state[chat_id][user_id] = {
         "step": "cleanup_choice",
         "reference_path": str(reference_path),
+        "reference_source": _media_reference_source(reference_message, CURRENT_SCOPE.get()),
         "cleaned_path": None,
         "synthesis_text": synthesis_text,
         "source_kind": source_kind,
@@ -2260,6 +2288,7 @@ async def handle_vclone_command(update: Update, context: ContextTypes.DEFAULT_TY
                 reference_path=final_path,
                 synthesis_text=synthesis_text,
                 source_kind=source_kind,
+                reference_message=media_msg,
             )
             return
 
@@ -2419,6 +2448,7 @@ async def handle_vclone_attachment(
     vclone_flow_state[chat_id][user_id] = {
         "step": "cleanup_choice",
         "reference_path": str(final_path),
+        "reference_source": _media_reference_source(update.message, CURRENT_SCOPE.get()),
         "cleaned_path": None,
         "synthesis_text": existing_synthesis,
         "source_kind": source_kind,
@@ -2513,6 +2543,7 @@ async def handle_vclone_flow(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 vclone_flow_state[chat_id][user_id] = {
                     "step": "cleanup_choice",
                     "reference_path": str(final_path),
+                    "reference_source": _media_reference_source(reply_msg, CURRENT_SCOPE.get()),
                     "cleaned_path": None,
                     "synthesis_text": existing_synthesis,
                     "source_kind": f"stepwise_reply_{source_kind}",
@@ -2579,6 +2610,7 @@ async def handle_vclone_flow(update: Update, context: ContextTypes.DEFAULT_TYPE)
         vclone_flow_state[chat_id][user_id] = {
             "step": "cleanup_choice",
             "reference_path": str(final_path),
+            "reference_source": _media_reference_source(update.message, CURRENT_SCOPE.get()),
             "cleaned_path": None,
             "synthesis_text": existing_synthesis,
             "source_kind": "stepwise_url",
@@ -2630,6 +2662,9 @@ async def handle_vclone_flow(update: Update, context: ContextTypes.DEFAULT_TYPE)
             cleaned=cleaned_flag,
             source_kind=source_kind,
             context=context,
+            reference_source=state.get("reference_source"),
+            saved_voice_id=state.get("saved_voice_id"),
+            saved_voice_version=state.get("saved_voice_version"),
         )
 
         # Чистим FSM до enqueue, чтобы юзер сразу мог запускать новый /vclone.
@@ -2850,6 +2885,9 @@ async def vclone_clean_callback(update: Update, context: ContextTypes.DEFAULT_TY
             cleaned=cleaned_flag,
             source_kind=source_kind,
             context=context,
+            reference_source=state.get("reference_source"),
+            saved_voice_id=state.get("saved_voice_id"),
+            saved_voice_version=state.get("saved_voice_version"),
         )
 
         # Чистим FSM до enqueue.
@@ -2936,6 +2974,35 @@ async def vclone_save_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
 
+@asynccontextmanager
+async def _vclone_save_reference(state, chat_id, user_id):
+    """Revalidate durable offers at the name reply; never trust their copied path."""
+    request_id = state.get("media_retained_id")
+    if not request_id:
+        yield state.get("reference_path")
+        return
+
+    from bot.media_retention import Retention, RetentionUnavailable
+    from bot.media_jobs import spool
+    from bot.request_runtime import store
+
+    scope = CURRENT_SCOPE.get()
+    if scope is None or scope.chat_id != chat_id or scope.user_id != user_id:
+        raise RetentionUnavailable("retained_scope_invalid")
+    retention = Retention(store().pool)
+    retained = await retention.load(request_id, "voice_reference", user_id, chat_id, scope.topic_id)
+    if retained is None:
+        raise RetentionUnavailable("retained_expired_or_unavailable")
+    disk = spool()
+    with disk.hold(retained["namespace"]):
+        # The offer can expire or be forgotten while acquiring the disk lease.
+        current = await retention.load(request_id, "voice_reference", user_id, chat_id, scope.topic_id)
+        if current is None or current["namespace"] != retained["namespace"]:
+            raise RetentionUnavailable("retained_expired_or_unavailable")
+        path = await asyncio.to_thread(disk.resolve, current["descriptor"])
+        yield str(path)
+
+
 async def handle_vclone_save_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     chat_id = update.effective_chat.id
     user_id = update.message.from_user.id
@@ -2954,7 +3021,7 @@ async def handle_vclone_save_flow(update: Update, context: ContextTypes.DEFAULT_
         return True
 
     reference_path = state.get("reference_path")
-    if not reference_path or not _Path(reference_path).exists():
+    if not state.get("media_retained_id") and (not reference_path or not _Path(reference_path).exists()):
         _vclone_cleanup_save_state(chat_id, user_id)
         await update.message.reply_text(
             "❌ <b>Голос потерялся</b>\n\n"
@@ -2970,17 +3037,18 @@ async def handle_vclone_save_flow(update: Update, context: ContextTypes.DEFAULT_
     )
 
     try:
-        upload_result = await catbox_upload_file(reference_path)
-        saved = await SavedVoice.save(
-            user_id=user_id,
-            chat_id=chat_id,
-            name=name,
-            catbox_url=upload_result.url,
-            catbox_file_id=upload_result.file_id,
-            source_kind=state.get("source_kind") or "vclone",
-            cleaned=bool(state.get("cleaned", False)),
-            duration_sec=state.get("duration_sec"),
-        )
+        async with _vclone_save_reference(state, chat_id, user_id) as reference_path:
+            upload_result = await catbox_upload_file(reference_path)
+            saved = await SavedVoice.save(
+                user_id=user_id,
+                chat_id=chat_id,
+                name=name,
+                catbox_url=upload_result.url,
+                catbox_file_id=upload_result.file_id,
+                source_kind=state.get("source_kind") or "vclone",
+                cleaned=bool(state.get("cleaned", False)),
+                duration_sec=state.get("duration_sec"),
+            )
     except Exception as exc:
         await status_msg.edit_text(
             "❌ <b>Не удалось сохранить голос</b>\n\n"
@@ -2992,7 +3060,8 @@ async def handle_vclone_save_flow(update: Update, context: ContextTypes.DEFAULT_
 
     cleanup_paths = state.get("cleanup_paths") or [reference_path]
     vclone_save_flow_state[chat_id].pop(user_id, None)
-    cleanup_vclone_files(*cleanup_paths)
+    if not state.get("media_retained_id"):
+        cleanup_vclone_files(*cleanup_paths)
 
     warning = ""
     if "litter.catbox.moe" in upload_result.url:
@@ -3270,6 +3339,7 @@ async def saved_voice_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     cleaned_path = str(downloaded) if _Path(final_path) != _Path(downloaded) else None
     await SavedVoice.touch(user_id, voice_id)
+    from bot.saved_voice_sources import version_of
 
     vclone_flow_state[chat_id][user_id] = {
         "step": "text",
@@ -3282,6 +3352,7 @@ async def saved_voice_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         "created_at": _time.time(),
         "bot_message_id": query.message.message_id if query.message else None,
         "saved_voice_id": voice_id,
+        "saved_voice_version": version_of(voice),
     }
 
     await query.edit_message_text(
