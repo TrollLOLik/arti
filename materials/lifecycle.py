@@ -6,6 +6,10 @@ from materials.types import MaterialError
 async def erase_locked(conn, ids):
     if not ids:
         return 0
+    # Match durable checkpoint lock order: assets before request rows.
+    await conn.fetch('SELECT id FROM material_assets WHERE id=ANY($1::text[]) ORDER BY id FOR UPDATE', ids)
+    from bot.request_store import RequestStore
+    await RequestStore(None).erase_materials(ids, conn)
     await conn.execute('UPDATE material_assets SET erased_at=COALESCE(erased_at,NOW()),generation=generation+1,filename=\'\' WHERE id=ANY($1::text[])', ids)
     await conn.execute('UPDATE material_extractions SET payload=NULL WHERE asset_id=ANY($1::text[])', ids)
     await conn.execute('''UPDATE material_derivatives SET payload=NULL,invalidated_at=NOW() WHERE id IN

@@ -42,7 +42,10 @@ async def _send_with_receipt(method,args,kwargs,channel):
         kwargs['message_thread_id']=topic
     runtime = turn.runtime
     turn.send_ordinal += 1
-    delivery_key = f'{turn.event.event_id}:{channel}:{turn.send_ordinal}'
+    from bot.request_runtime import CURRENT_REQUEST
+    request = CURRENT_REQUEST.get()
+    request_namespace = ':' + request['id'] if request else ''
+    delivery_key = f'{turn.event.event_id}{request_namespace}:{channel}:{turn.send_ordinal}'
     text = str(kwargs.get('text') or kwargs.get('caption') or '')
     # Files, API tokens, reply markup and raw provider errors are never serialized.
     payload = dict(text=text,channel=channel,topic_id=topic,reply_to_id=kwargs.get('message_id') if channel=='reaction' else getattr(kwargs.get('reply_parameters'),'message_id',None) or kwargs.get('reply_to_message_id'))

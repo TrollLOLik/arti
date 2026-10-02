@@ -49,7 +49,6 @@ from bot.commands import (
     handle_charge_command, profile_callback,
 )
 from bot.queue import (
-    image_worker, video_worker, music_worker,
     dubbing_worker, vclone_worker,
     vclone_fsm_timeout_watchdog,
     run_supervised
@@ -135,9 +134,11 @@ def run_with_restart():
 
                 # L-03: воркеры под супервизором — упавший автоматически перезапустится.
                 # REL-01: раздельные воркеры по типам медиа (image/video/music).
-                spawn_worker(run_supervised(image_worker, "image_worker"))
-                spawn_worker(run_supervised(video_worker, "video_worker"))
-                spawn_worker(run_supervised(music_worker, "music_worker"))
+                from bot.request_runtime import worker as request_worker
+                for slot in range(10):
+                    spawn_worker(run_supervised(request_worker, f"request_text_{slot}", app.bot, ['text']))
+                for kind in ('image', 'video', 'music'):
+                    spawn_worker(run_supervised(request_worker, f"request_{kind}", app.bot, [kind]))
                 logger.info("Медиа-воркеры (image/video/music) запущены (supervised).")
                 spawn_worker(run_supervised(dubbing_worker, "dubbing_worker"))
                 logger.info("Воркер дубляжа видео запущен (supervised).")
@@ -277,6 +278,8 @@ def run_with_restart():
             application.add_handler(MessageHandler(filters.VIDEO_NOTE, handle_video_note), group=5)
             application.add_handler(MessageHandler(filters.AUDIO, handle_audio_message), group=5)
             application.add_handler(MessageHandler(filters.LOCATION, handle_location_message), group=6)
+            from bot.request_runtime import request_status
+            application.add_handler(CommandHandler('request', request_status))
             application.add_handler(MessageReactionHandler(handle_message_reaction))
 
             # Обработчик ошибок

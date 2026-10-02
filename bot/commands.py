@@ -531,9 +531,11 @@ async def handle_cancel_command(update: Update, context: ContextTypes.DEFAULT_TY
     # и помечаем стоящие в очереди как отменённые (воркер их пропустит).
     try:
         from bot.queue import cancel_chat_generation
-        cancel_chat_generation(chat_id)
+        await cancel_chat_generation(chat_id)
     except Exception:
         logger.debug("Не удалось отменить генерацию для чата", exc_info=True)
+        await update.message.reply_text("Не удалось подтвердить отмену в базе. Проверь /request и повтори /cancel.")
+        return
 
     logger.info(f"Запрос отменен пользователем {user_id} в чате {chat_id}.")
     

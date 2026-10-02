@@ -1,6 +1,7 @@
 """
-Очередь генерации: медиа (image/video/music) через глобальный воркер,
-текст — параллельно через per-user микро-очереди с семафором.
+Обычные text/image/video/music запросы сохраняются в PostgreSQL request_runtime.
+Здесь остаются обработчики и совместимые локальные адаптеры; dubbing/vclone
+пока используют отдельные локальные очереди.
 """
 import os
 import re
@@ -18,6 +19,7 @@ from telegram import InputFile
 
 from config import MUSIC_COOLDOWN, TTS_ENABLED, rp_mode_state
 from ai.generation import generate_response_stream, is_error_response
+from bot.request_runtime import checkpoint
 from ai.image import generate_image, generate_video
 from ai.music import generate_music, prepare_audio_with_cover
 from ai.tts import text_to_speech_telegram, _wav_to_telegram_ogg
@@ -158,8 +160,10 @@ def _is_task_cancelled(task: dict) -> bool:
     return epoch is not None and enqueued_at <= epoch
 
 
-def cancel_chat_generation(chat_id: int):
+async def cancel_chat_generation(chat_id: int):
     """Полная отмена для чата: помечает очередь (стоящие задачи) + рубит запущенные."""
+    from bot.request_runtime import store
+    await store().cancel_chat(chat_id)
     mark_chat_generation_cancelled(chat_id)
     cancel_chat_tasks(chat_id)
 
@@ -247,6 +251,8 @@ async def _execute_generation_task(task: dict):
     CURRENT_MATERIAL_USE.set(task.get('_material_uses', ()))
     from materials.runtime import CURRENT_DERIVATIVE_USE
     CURRENT_DERIVATIVE_USE.set(task.get('_derivative_uses',()))
+    from materials.runtime import CURRENT_COMPUTATION_USE
+    CURRENT_COMPUTATION_USE.set(task.get('_computation_uses',()))
     from cognition.runtime import CURRENT_TURN
     CURRENT_TURN.set(task.get('_cognitive_turn'))
     from cognition.scope import CURRENT_SCOPE
@@ -269,7 +275,7 @@ async def _execute_generation_task(task: dict):
     video_duration = task.get('video_duration', '4')
     video_aspect_ratio = task.get('video_aspect_ratio', '16:9')
     user_name = task.get('user_name', 'Пользователь')
-    logger.info(f"Медиа-воркер: '{task_type}' для {user_name} в чате {chat_id}: '{prompt[:50]}...'")
+    logger.info("Media request kind=%s", task_type)
     try:
         if not await is_responses_enabled(chat_id):
             return
@@ -283,9 +289,9 @@ async def _execute_generation_task(task: dict):
                     if not await is_responses_enabled(chat_id):
                         return
                     try:
-                        image_result = await asyncio.to_thread(
+                        image_result = await checkpoint("image_result", lambda: asyncio.to_thread(
                             generate_image, prompt, image_urls, image_aspect_ratio, image_resolution, num_images=image_num_images
-                        )
+                        ))
                         if image_result: break
                     except ValueError as e:
                         # Модель отказалась генерировать изображение (вернула текст вместо картинки)
@@ -370,9 +376,9 @@ async def _execute_generation_task(task: dict):
                     if not await is_responses_enabled(chat_id):
                         return
                     try:
-                        video_result = await asyncio.to_thread(
+                        video_result = await checkpoint("video_result", lambda: asyncio.to_thread(
                             generate_video, prompt, image_urls, video_model, video_duration, video_aspect_ratio
-                        )
+                        ))
                         if video_result: break
                     except Exception as e:
                         error_text = str(e).lower()
@@ -421,14 +427,14 @@ async def _execute_generation_task(task: dict):
             title_system = "Ты — Арти: андроид с аристократичными манерами и точным, чуть ироничным умом. Придумай короткое и стильное название для песни (до 5 слов). Ответь ТОЛЬКО названием, без кавычек и лишних слов."
             
             try:
-                generated_title, _, _, _ = await generate_response_stream(
+                generated_title, _, _, _ = await checkpoint("music_title", lambda: generate_response_stream(
                     chat_id=chat_id,
                     prompt=title_prompt,
                     user_name=user_name,
                     chat_context="",
                     model="gemini-3.1-flash-lite-preview",
                     custom_system_prompt=title_system
-                )
+                ))
                 song_title = (generated_title or "").strip().replace('"', '').replace("'", "")
                 if not song_title or len(song_title) > 100:
                     song_title = f"Трек для {user_name}"
@@ -447,7 +453,7 @@ async def _execute_generation_task(task: dict):
                     if not await is_responses_enabled(chat_id):
                         return
                     try:
-                        video_url = await asyncio.to_thread(generate_music, prompt, music_instrumental, music_style)
+                        video_url = await checkpoint("music_result", lambda: asyncio.to_thread(generate_music, prompt, music_instrumental, music_style))
                         if video_url: 
                             break
                         
@@ -609,6 +615,8 @@ async def enqueue_generation(task: dict, bot, chat_id):
     task['_material_uses'] = CURRENT_MATERIAL_USE.get()
     from materials.runtime import CURRENT_DERIVATIVE_USE
     task['_derivative_uses']=CURRENT_DERIVATIVE_USE.get()
+    from materials.runtime import CURRENT_COMPUTATION_USE
+    task['_computation_uses']=CURRENT_COMPUTATION_USE.get()
     from cognition.runtime import CURRENT_TURN
     task['_cognitive_turn'] = CURRENT_TURN.get()
     from cognition.scope import CURRENT_SCOPE
@@ -621,17 +629,9 @@ async def enqueue_generation(task: dict, bot, chat_id):
         logger.error("enqueue_generation: неизвестный тип задачи %r", task_type)
         return
 
-    queue_pos = queue.qsize() + 1
-    # Menu navigation is short-lived; a queued result uses the real transport and
-    # cannot overwrite whichever menu screen the user opens afterwards.
     _detach_menu_context(task)
-    await queue.put(task)
-
-    type_emoji = {"image": "🎨", "video": "🎬", "music": "🎵"}.get(task_type, "⏳")
-    if queue_pos > 1:
-        await bot.send_message(chat_id=chat_id, text=f"⏳ Задача в очереди. Позиция: {queue_pos}")
-    else:
-        await bot.send_message(chat_id=chat_id, text=f"{type_emoji} Генерация началась...")
+    from bot.request_runtime import submit
+    return await submit(task)
 
 
 async def enqueue_reply(chat_id, user_id, user_name, user_message, message_id, context, is_voice=True, base64_image=None, document_text=None, video_file_id=None, is_video_note=False):
@@ -680,6 +680,7 @@ async def enqueue_reply(chat_id, user_id, user_name, user_message, message_id, c
         'video_file_id': video_file_id,
         'is_video_note': is_video_note
     }
+    request['_request_mode'] = 'rp' if rp_mode_state.get(chat_id) else 'default'
     request['_cognitive_context'] = source_context
     for use in getattr(document_text, 'material_uses', ()):
         if use.source_event_id is not None and source_context is not None:
@@ -690,30 +691,17 @@ async def enqueue_reply(chat_id, user_id, user_name, user_message, message_id, c
     request['_material_uses'] = tuple(getattr(document_text, 'material_uses', ()))
     from materials.runtime import CURRENT_DERIVATIVE_USE
     request['_derivative_uses']=CURRENT_DERIVATIVE_USE.get()
+    from materials.runtime import CURRENT_COMPUTATION_USE
+    request['_computation_uses']=CURRENT_COMPUTATION_USE.get()
     from cognition.scope import CURRENT_SCOPE
     request['_telegram_scope'] = CURRENT_SCOPE.get()
     
-    # RACE-02: постановку в очередь и (пере)запуск воркера делаем под per-user локом,
-    # чтобы это не пересекалось с самозавершением воркера (которое тоже под этим локом).
-    scope=CURRENT_SCOPE.get()
-    queue_key=(chat_id,scope.topic_id) if scope and scope.group else user_id
-    async with _get_user_lock(queue_key):
-        queue = _user_queues.get(queue_key)
-        if queue is None:
-            queue = asyncio.Queue()
-            _user_queues[queue_key] = queue
-
-        await queue.put(request)
-
-        # Запускаем воркер для пользователя, если ещё не запущен
-        worker = _user_workers.get(queue_key)
-        if worker is None or worker.done():
-            task = asyncio.create_task(_user_text_worker(queue_key))
-            _track_task(task)
-            _user_workers[queue_key] = task
+    from bot.request_runtime import submit
+    return await submit(request)
 
 
 async def _user_text_worker(user_id: int):
+    # Compatibility adapter only; production ordinary intake uses request_runtime.
     """Per-user воркер: обрабатывает текстовые запросы с debounce-склейкой сообщений."""
     queue = _user_queues.get(user_id)
     if not queue:
@@ -876,6 +864,8 @@ async def process_user_reply(request, bot):
     CURRENT_MATERIAL_USE.set(request.get('_material_uses', ()))
     from materials.runtime import CURRENT_DERIVATIVE_USE
     CURRENT_DERIVATIVE_USE.set(request.get('_derivative_uses',()))
+    from materials.runtime import CURRENT_COMPUTATION_USE
+    CURRENT_COMPUTATION_USE.set(request.get('_computation_uses',()))
     if request.get('_material_revoked'):
         from materials.types import MaterialError
         raise MaterialError('material_erased')
@@ -945,20 +935,21 @@ async def process_user_reply(request, bot):
     if document_text:
         document_text = strip_introspection_tags(document_text)
 
-    mode = "rp" if rp_mode_state.get(chat_id) else "default"
-    from cognition.runtime import prepare_turn
+    mode = request.get('_request_mode', "rp" if rp_mode_state.get(chat_id) else "default")
+    from bot.request_runtime import prepare_turn
     cognitive_turn = await prepare_turn(chat_id,profile_user_id,user_message,message_id,mode,source_context=request.get('_cognitive_context'))
-    cognitive_turn.supporting_event_ids=request.get('_cognitive_source_ids',[])
+    cognitive_turn.supporting_event_ids=sorted(set(getattr(cognitive_turn,'supporting_event_ids',())) | set(request.get('_cognitive_source_ids',[])))
     if cognitive_turn.repeated_delivery:
         return
     from ai.intents import resolve_intent
     import time
-    request['_intent'] = await resolve_intent(user_message,chat_id,
+    request['_intent'] = await checkpoint('intent', lambda: resolve_intent(user_message,chat_id,
         has_materials=bool(request.get('_material_uses') or document_text),
         allow_work=enabled() and os.getenv('ARTI_AGENTS_ENABLED','0').lower() in ('1','true','yes'),
-        recent_maps=time.time()-_recent_map_sessions.get(user_id,0)<300) if mode!='rp' else {}
+        recent_maps=time.time()-_recent_map_sessions.get(user_id,0)<300)) if mode!='rp' else {}
     from bot.agent_requests import handle_agent_request
-    if enabled() and user_id and await handle_agent_request(request,bot):
+    from bot.request_runtime import agent_handoff
+    if enabled() and user_id and await agent_handoff(lambda: handle_agent_request(request,bot)):
         return
     if cognitive_turn.preferences.get('voice') is False or cognitive_turn.preferences.get('text') is True:
         is_voice = False
@@ -1092,7 +1083,7 @@ async def process_user_reply(request, bot):
             )
 
         chat_model = await get_chat_model(chat_id)
-        response_text, used_search, grounding_links, found_search_images = await generate_response_stream(
+        response_text, used_search, grounding_links, found_search_images = await checkpoint("response", lambda: generate_response_stream(
             chat_id,
             final_prompt,
             user_name,
@@ -1108,7 +1099,9 @@ async def process_user_reply(request, bot):
             memory_context=memory_context,
             expression_plan=cognitive_turn.expression,
             request_intent=request['_intent'],
-        )
+        ))
+        from cognition.runtime import CURRENT_TURN
+        cognitive_turn = CURRENT_TURN.get() or cognitive_turn
         
         if uploaded_video_file:
             try:
@@ -1214,18 +1207,25 @@ async def process_user_reply(request, bot):
                 )
 
                 try:
-                    voice_ogg_path = await asyncio.to_thread(text_to_speech_telegram, response_text)
+                    async def render_voice():
+                        path = await asyncio.to_thread(text_to_speech_telegram, response_text)
+                        if not path or not os.path.exists(path):
+                            return None
+                        try:
+                            return await asyncio.to_thread(Path(path).read_bytes)
+                        finally:
+                            try: Path(path).unlink(missing_ok=True)
+                            except OSError: pass
+                    voice_bytes = await checkpoint('voice_result', render_voice)
                     
                     safe_caption = display_text
                     if len(safe_caption) > 1000:
                         safe_caption = fix_html_tags(re.sub(r'<[^>]*>', '', safe_caption[:1000])) + "..."
                     
-                    if voice_ogg_path and os.path.exists(voice_ogg_path):
+                    if voice_bytes:
                         record_action_task.cancel()
-                        
-                        with open(voice_ogg_path, 'rb') as voice_file:
-                            voice_input = InputFile(voice_file, filename="result.ogg")
-                            sent_msg = await callback_context.bot.send_voice(
+                        voice_input = InputFile(voice_bytes, filename="result.ogg")
+                        sent_msg = await callback_context.bot.send_voice(
                                 chat_id=chat_id,
                                 voice=voice_input,
                                 caption=safe_caption,
@@ -1267,8 +1267,7 @@ async def process_user_reply(request, bot):
             sticker_reply_to_message_id = sent_msg.message_id if sent_msg else message_id
             
             # Запускаем отправку стикера в фоновом режиме
-            asyncio.create_task(
-                send_mood_sticker_task(
+            await send_mood_sticker_task(
                     bot=callback_context.bot,
                     chat_id=chat_id,
                     user_id=user_id,
@@ -1277,7 +1276,6 @@ async def process_user_reply(request, bot):
                     mode=mode,
                     user_message_id=message_id
                 )
-            )
 
         # MEM-06: не учим долговременную память на заглушке об ошибке.
 

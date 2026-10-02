@@ -29,6 +29,19 @@ class PrivatePayloadFilter(logging.Filter):
                         trace = trace.tb_next
                     from pathlib import Path
                     record.msg += f' at={Path(trace.tb_frame.f_code.co_filename).name}:{trace.tb_lineno}'
+            diagnostic = getattr(record, 'request_diagnostic', None)
+            if isinstance(diagnostic, dict):
+                request_id = diagnostic.get('request_id')
+                if isinstance(request_id, str) and re.fullmatch(r'[a-f0-9]{32}', request_id):
+                    record.msg += ' request_id=' + request_id
+                for key in ('kind', 'stage', 'error_code'):
+                    value = diagnostic.get(key)
+                    if isinstance(value, str) and re.fullmatch(r'[A-Za-z_]{1,64}', value):
+                        record.msg += f' {key}={value}'
+                for key in ('duration_ms', 'queue_ms', 'attempt'):
+                    value = diagnostic.get(key)
+                    if isinstance(value, (int, float)) and 0 <= value <= 86400000:
+                        record.msg += f' {key}={round(value)}'
             record.args = ()
             record.exc_info = None
             record.exc_text = None
