@@ -513,7 +513,7 @@ async def _execute_generation_task(task: dict):
         from cognition.delivery import DeliveryUnknown,DeliverySuppressed
         if isinstance(e,(DeliveryUnknown,DeliverySuppressed)):
             logger.warning('Transport outcome prevents a second send: %s',type(e).__name__)
-            return
+            raise
         logger.exception(f"Критическая ошибка в медиа-воркере ({task_type}):")
         try:
             if await is_responses_enabled(chat_id):
@@ -953,10 +953,12 @@ async def process_user_reply(request, bot):
     from bot.intent_context import routing_context
     intent_context = await routing_context(request, cognitive_turn)
     import time
+    from utils.location_scope import location_scope_key
+    map_scope_key = location_scope_key(user_id, chat_id=chat_id)
     request['_intent'] = await checkpoint('intent', lambda: resolve_intent(user_message,chat_id,
         has_materials=bool(request.get('_material_uses') or document_text),
         allow_work=enabled() and os.getenv('ARTI_AGENTS_ENABLED','0').lower() in ('1','true','yes'),
-        recent_maps=time.time()-_recent_map_sessions.get(user_id,0)<300,context=intent_context)) if mode!='rp' else {}
+        recent_maps=map_scope_key is not None and time.time()-_recent_map_sessions.get(map_scope_key,0)<300,context=intent_context)) if mode!='rp' else {}
     if request['_intent'].get('clarification'):
         await bot.send_message(chat_id=chat_id, text=request['_intent']['clarification'], reply_to_message_id=message_id)
         return
@@ -1040,7 +1042,7 @@ async def process_user_reply(request, bot):
             intent = request['_intent']
 
             if intent.get("maps"):
-                location = await get_user_location(user_id)
+                location = await get_user_location(user_id, chat_id=chat_id)
 
                 if not location:
                     # Нет геопозиции — просим пользователя скинуть
@@ -1048,8 +1050,8 @@ async def process_user_reply(request, bot):
                         repeating_task.cancel()
 
                     # Сохраняем запрос, чтобы не заставлять юзера повторять его
-                    from config import pending_map_requests
-                    pending_map_requests[user_id] = user_message
+                    from utils.location_scope import set_pending_map_request
+                    set_pending_map_request(user_id, user_message, chat_id=chat_id, mode=mode)
 
                     await callback_context.bot.send_message(
                         chat_id=chat_id,
@@ -1067,8 +1069,9 @@ async def process_user_reply(request, bot):
 
                 # Есть геопозиция — сохраняем для инструмента Google Maps Grounding
                 user_location = location
-                _recent_map_sessions[user_id] = time.time()
-                logger.info(f"🗺 Ищу места для пользователя {user_id}: {location}")
+                if map_scope_key is not None:
+                    _recent_map_sessions[map_scope_key] = time.time()
+                logger.info("Maps search enabled for scoped location")
 
         # RP-режим: используем отдельную историю
         if rp_mode_state.get(chat_id):
@@ -1198,7 +1201,7 @@ async def process_user_reply(request, bot):
         display_text, reply_markup = extract_urls_and_make_keyboard(display_text, extra_links=grounding_links)
         
         # Удаляем неподдерживаемые HTML теги
-        display_text = fix_html_tags(display_text)
+        # The shared delivery helper sanitizes HTML while planning valid parts.
 
         # Если ответ состоял только из стикера, сохраняем в историю понятное текстовое представление
         history_response_text = response_text
@@ -1208,6 +1211,8 @@ async def process_user_reply(request, bot):
         # MEM-06: ответ-заглушку об ошибке не пишем в историю.
 
         # === ОТПРАВКА СООБЩЕНИЯ (ТЕКСТ/ГОЛОС) ===
+        from bot.text_delivery import send_html_reply
+        from cognition.delivery import DeliveryUnknown, DeliverySuppressed
         sent_msg = None
         has_text = bool(display_text.strip())
 
@@ -1231,9 +1236,9 @@ async def process_user_reply(request, bot):
                             except OSError: pass
                     voice_bytes = await checkpoint('voice_result', render_voice)
                     
-                    safe_caption = display_text
-                    if len(safe_caption) > 1000:
-                        safe_caption = fix_html_tags(re.sub(r'<[^>]*>', '', safe_caption[:1000])) + "..."
+                    from bot.text_delivery import html_chunks
+                    caption_parts = html_chunks(display_text, limit=990)
+                    safe_caption = (caption_parts[0] if caption_parts else '') + ('…' if len(caption_parts)>1 else '')
                     
                     if voice_bytes:
                         record_action_task.cancel()
@@ -1244,17 +1249,14 @@ async def process_user_reply(request, bot):
                                 caption=safe_caption,
                                 reply_to_message_id=message_id,
                                 reply_markup=reply_markup,
-                                parse_mode='HTML' if len(display_text) <= 1000 else None
+                                parse_mode='HTML'
                             )
                     else:
                         record_action_task.cancel()
-                        sent_msg = await callback_context.bot.send_message(
-                            chat_id=chat_id,
-                            text=display_text,
-                            reply_to_message_id=message_id,
-                            reply_markup=reply_markup,
-                            parse_mode='HTML'
-                        )
+                        sent_msg = await send_html_reply(callback_context.bot, chat_id=chat_id, text=display_text,
+                            reply_to_message_id=message_id, reply_markup=reply_markup)
+                except (DeliveryUnknown, DeliverySuppressed):
+                    raise
                 except Exception as e:
                     if 'record_action_task' in locals():
                         record_action_task.cancel()
@@ -1266,13 +1268,8 @@ async def process_user_reply(request, bot):
                     )
             else:
                 # ТЕКСТОВЫЙ ОТВЕТ
-                sent_msg = await callback_context.bot.send_message(
-                    chat_id=chat_id,
-                    text=display_text,
-                    reply_to_message_id=message_id,
-                    reply_markup=reply_markup,
-                    parse_mode='HTML'
-                )
+                sent_msg = await send_html_reply(callback_context.bot, chat_id=chat_id, text=display_text,
+                    reply_to_message_id=message_id, reply_markup=reply_markup)
 
         # === ОТПРАВКА СТИКЕРА В ФОНЕ ===
         if sticker_mood:

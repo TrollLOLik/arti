@@ -1,0 +1,60 @@
+{
+  "scope": "chat_stability_and_safety",
+  "validated_on": "2026-10-02",
+  "tested_repository_tree": "eb1769d75f3e4e82fde325365eadec8a3a73287d",
+  "full_suite": {
+    "tests": 790,
+    "passed": 790,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "duration_seconds": 291.509
+  },
+  "ordered_regression": {
+    "tests": 42,
+    "passed": 42,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "initial_aggregate": {
+    "tests": 787,
+    "failures": 1,
+    "errors": 1,
+    "resolved_fixture_issues": 2,
+    "fixture_repairs": [
+      "Honor text debounce eligibility before the inflight-cancellation probe.",
+      "Patch native handler import bindings independently of test import order."
+    ],
+    "production_assertions_removed": 0,
+    "tests_skipped_to_obtain_pass": 0
+  },
+  "environment": {
+    "python_telegram_bot": "22.8",
+    "database": "disposable PostgreSQL",
+    "provider_and_telegram_transport": "mocked",
+    "non_loopback_test_network": "blocked",
+    "live_telegram_run": false,
+    "live_provider_run": false,
+    "native_windows_run": false
+  },
+  "warning_checks": {
+    "unowned_task_warnings": 0,
+    "unawaited_coroutine_warnings": 0,
+    "asyncpg_internal_client_errors": 0,
+    "ptb_retry_after_deprecation_observed": true
+  },
+  "post_validation_changes": {
+    "runtime_files": 0,
+    "test_files": 0,
+    "documentation_only": [
+      "docs/durable_requests.md",
+      "docs/evaluation/chat_stability_tests.json"
+    ],
+    "runtime_and_tests_match_tested_tree": true
+  },
+  "durability_boundary": {
+    "accepted_requests": "Recovery begins after the durable request commit.",
+    "preacceptance_gap": "Polling may acknowledge an update before preparation commits. A crash can still lose unaccepted downloads, transcription, or unfinished menu input; lane sequencing is not a durable inbox."
+  }
+}

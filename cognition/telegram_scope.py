@@ -1,18 +1,133 @@
 """Task-local transport scope for commands and direct media handlers."""
+import asyncio
+import contextvars
 from telegram.ext import BaseUpdateProcessor
 from cognition.runtime import CURRENT_TURN,get_runtime
 from cognition.scope import CURRENT_SCOPE,from_update
 from dataclasses import replace
 
 
+CURRENT_INTAKE_PROCESSOR = contextvars.ContextVar('arti_intake_processor', default=None)
+
+
+async def cancel_pending_intake(chat_id, topic_id, owner_id=None):
+    processor = CURRENT_INTAKE_PROCESSOR.get()
+    if processor is None:
+        return 0
+    current = asyncio.current_task()
+    tasks = [task for task, scope in tuple(processor._intakes.items())
+             if task is not current and scope.chat_id == chat_id and (topic_id is None or scope.topic_id == topic_id)
+             and (owner_id is None or scope.user_id == owner_id)]
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        from utils.async_cleanup import await_owned
+        await await_owned(asyncio.gather(*tasks, return_exceptions=True))
+    return len(tasks)
+
+
+class _ControlProcessor(BaseUpdateProcessor):
+    def __init__(self, owner):
+        super().__init__(4)
+        self.owner = owner
+
+    async def initialize(self): pass
+    async def shutdown(self): pass
+    async def do_process_update(self, update, coroutine):
+        if update is None:
+            await coroutine
+        else:
+            await self.owner._scoped_process_update(update, coroutine)
+
+
 class CognitiveUpdateProcessor(BaseUpdateProcessor):
+    """PTB adapter: lane admission precedes PTB's global work semaphore.
+
+    PTB marks process_update typing.final, but its documented extension hook is
+    inside the semaphore. Overriding that wrapper is intentional and covered by
+    compatibility tests: delegation still awaits public super.process_update;
+    no detached handler task, private semaphore mutation or provider work occurs
+    during admission. Keep this contract tested when upgrading PTB.
+    """
+    MAX_PENDING_PER_LANE = 64
+    MAX_PENDING = 512
+
+    def __init__(self, max_concurrent_updates):
+        super().__init__(max_concurrent_updates)
+        self._lanes = {}
+        self._intakes = {}
+        self._controls = _ControlProcessor(self)
+
     async def initialize(self):
-        pass
+        await self._controls.initialize()
 
     async def shutdown(self):
-        pass
+        # PTB normally awaits process_update before shutdown; remain defensive.
+        tasks = [task for task in self._intakes if task is not asyncio.current_task()]
+        for task in tasks: task.cancel()
+        if tasks:
+            from utils.async_cleanup import await_owned
+            await await_owned(asyncio.gather(*tasks, return_exceptions=True))
+        await self._controls.shutdown()
 
-    async def do_process_update(self,update,coroutine):
+    async def process_update(self, update, coroutine):
+        runtime = get_runtime()
+        scope = from_update(update, getattr(runtime,'bot_id',0), getattr(runtime,'bot_username',''))
+        message = getattr(update,'effective_message',None)
+        text = getattr(message,'text',None) or ''
+        command = text.split()[0].split('@')[0] if text.split() else ''
+        # Business handlers still authorize the operation. Callback/menu input
+        # stays ordered; arbitrary text cannot acquire the control lane.
+        control = command in ('/cancel','/stop','/request')
+        token = CURRENT_INTAKE_PROCESSOR.set(self)
+        task = asyncio.current_task()
+        lane = None
+        key = (scope.chat_id, scope.topic_id) if scope else None
+        try:
+            if control:
+                return await self._controls.process_update(update, coroutine)
+            if key is None:
+                return await super().process_update(update, coroutine)
+            lane = self._lanes.get(key)
+            if lane is None:
+                lane = self._lanes[key] = {'lock':asyncio.Lock(), 'count':0}
+            if lane['count'] >= self.MAX_PENDING_PER_LANE or len(self._intakes) >= self.MAX_PENDING:
+                # This input has not been accepted. Explicit refusal is safer
+                # than an unbounded in-memory backlog or an implied save.
+                async def busy():
+                    if message is not None:
+                        async with asyncio.timeout(3):
+                            await message.reply_text('Слишком много сообщений в подготовке. Это сообщение не сохранено; проверь /request и отправь его позже.')
+                try:
+                    notice = busy()
+                    try:
+                        await self._controls.process_update(None, notice)
+                    finally:
+                        notice.close()
+                except Exception:
+                    pass
+                return
+            lane['count'] += 1
+            self._intakes[task] = scope
+            try:
+                # asyncio.Lock is FIFO; acquisition is queued before any menu,
+                # database, transcription or model await can overtake this input.
+                async with lane['lock']:
+                    return await super().process_update(update, coroutine)
+            finally:
+                self._intakes.pop(task, None)
+                lane['count'] -= 1
+        finally:
+            if lane is not None and lane['count'] == 0:
+                self._lanes.pop(key, None)
+            if hasattr(coroutine, 'close'):
+                coroutine.close()
+            CURRENT_INTAKE_PROCESSOR.reset(token)
+
+    async def do_process_update(self, update, coroutine):
+        return await self._scoped_process_update(update, coroutine)
+
+    async def _scoped_process_update(self,update,coroutine):
         token = CURRENT_TURN.set(None)
         runtime = get_runtime()
         scope = from_update(update,getattr(runtime,'bot_id',0),getattr(runtime,'bot_username',''))

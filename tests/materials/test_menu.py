@@ -557,7 +557,10 @@ class MenuSQLTests(unittest.IsolatedAsyncioTestCase):
         store,panel,actor=await self.setup_panel()
         self.update.callback_query=NS(id='create-project',from_user=self.update.effective_user)
         c=Controller(panel,self.update,self.context,actor); c.service=self.service
-        with patch('materials.runtime.actor_for_current',AsyncMock(return_value=actor)),patch('materials.runtime.service_for_bot',AsyncMock(return_value=self.service)),patch('materials.runtime.enabled',return_value=True):
+        # Patch the native handler's from-import bindings as well: lifecycle
+        # tests may import that module before this fixture is installed.
+        with patch('materials.runtime.actor_for_current',AsyncMock(return_value=actor)),patch('materials.runtime.service_for_bot',AsyncMock(return_value=self.service)),patch('materials.runtime.enabled',return_value=True), \
+             patch('bot.project_commands.actor_for_current',AsyncMock(return_value=actor)),patch('bot.project_commands.service_for_bot',AsyncMock(return_value=self.service)),patch('bot.project_commands.enabled',return_value=True):
             await c.begin('project_new',{}); await c.answer('Новый проект'); await c.answer('Проверить идеи'); await c.submit()
         p=await self.projects.current(actor)
         self.assertEqual('Новый проект',p.title)

@@ -137,7 +137,7 @@ class IntentTests(unittest.IsolatedAsyncioTestCase):
         from bot.handlers import error_handler
         from cognition.logging import PrivatePayloadFilter
         from unittest.mock import Mock
-        context=NS(error=Conflict('PRIVATE provider text'),application=NS(stop_running=Mock()))
+        context=NS(error=Conflict('PRIVATE provider text'),application=NS(stop_running=Mock(),bot_data={}))
         with self.assertLogs('bot.handlers',level='ERROR') as records:
             await error_handler(None,context)
         context.application.stop_running.assert_called_once()

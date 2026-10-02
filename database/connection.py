@@ -103,6 +103,8 @@ async def create_tables(conn=None):
 
 async def _create_tables_internal(conn):
     """Внутренняя функция создания таблиц"""
+    from utils.location_store import initialize as initialize_locations
+    await initialize_locations(conn)
     from bot.request_store import RequestStore
     await RequestStore(None).initialize(conn)
     from organizer.repository import initialize as initialize_organizer
@@ -813,4 +815,3 @@ async def close_db():
         await _pool.close()
         _pool = None
         logger.info("Пул соединений PostgreSQL закрыт")
-

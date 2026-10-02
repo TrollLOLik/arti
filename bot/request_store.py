@@ -78,6 +78,7 @@ class RequestStore:
                     receipt JSONB, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     PRIMARY KEY(request_id,ordinal)
                 );
+                ALTER TABLE arti_request_sends ADD COLUMN IF NOT EXISTS retry_at TIMESTAMPTZ;
             ''')
             from bot.media_retention import initialize as initialize_retention
             await initialize_retention(conn)
@@ -246,7 +247,7 @@ class RequestStore:
             if await conn.fetchval("SELECT EXISTS(SELECT 1 FROM arti_request_sends WHERE request_id=$1 AND ordinal>0 AND state IN ('sending','delivery_unknown'))",id):
                 await self._terminal(conn,id,'delivery_unknown','interrupted_send')
             else:
-                await conn.execute("UPDATE arti_requests SET state='queued',token=NULL,lease_until=NULL,available_at=NOW()+make_interval(secs=>$2),updated_at=NOW() WHERE id=$1",id,float(delay_seconds))
+                await conn.execute("UPDATE arti_requests SET state='queued',token=NULL,lease_until=NULL,available_at=GREATEST(available_at,NOW()+make_interval(secs=>$2)),updated_at=NOW() WHERE id=$1",id,float(delay_seconds))
             return True
 
     async def cancel_chat(self, chat_id, topic_id=None, conn=None):
@@ -258,6 +259,21 @@ class RequestStore:
             unknown=await conn.fetchval("SELECT EXISTS(SELECT 1 FROM arti_request_sends WHERE request_id=$1 AND ordinal>0 AND state IN ('sending','delivery_unknown'))",row['id'])
             await self._terminal(conn,row['id'],'delivery_unknown' if unknown else 'cancelled','cancelled')
         return len(rows)
+
+    async def cancel_owned(self, id, chat_id, topic_id, owner_id):
+        """Cancel only the request owner's work in this exact conversation."""
+        async with self.pool.acquire() as conn, conn.transaction():
+            row=await conn.fetchrow('''SELECT * FROM arti_requests WHERE
+                ($1::text IS NULL OR id=$1) AND chat_id=$2 AND topic_id=$3
+                AND state IN ('queued','running','paused')
+                AND payload->>'kind'='request'
+                AND payload->'value'->'items'->>'user_id'=$4
+                ORDER BY seq DESC FOR UPDATE LIMIT 1''',id,chat_id,topic_id,str(owner_id))
+            if not row: return None
+            unknown=await conn.fetchval("SELECT EXISTS(SELECT 1 FROM arti_request_sends WHERE request_id=$1 AND ordinal>0 AND state IN ('sending','delivery_unknown'))",row['id'])
+            state='delivery_unknown' if unknown else 'cancelled'
+            await self._terminal(conn,row['id'],state,'cancelled')
+            return {'id':row['id'],'state':state}
 
     async def erase_chat(self, chat_id, topic_id=None, conn=None):
         """Forget all retained request/send data while preserving dedupe tombstones."""
@@ -314,7 +330,27 @@ class RequestStore:
     async def begin_send(self, id, token, ordinal):
         async with self.pool.acquire() as conn, conn.transaction():
             if not await self._locked(conn,id,token): return False
-            return bool(await conn.fetchval("UPDATE arti_request_sends SET state='sending',updated_at=NOW() WHERE request_id=$1 AND ordinal=$2 AND state='prepared' AND NOT EXISTS(SELECT 1 FROM arti_request_sends s WHERE s.request_id=$1 AND s.ordinal>0 AND s.state IN ('sending','delivery_unknown')) RETURNING 1",id,ordinal))
+            return bool(await conn.fetchval("UPDATE arti_request_sends SET state='sending',updated_at=NOW() WHERE request_id=$1 AND ordinal=$2 AND state='prepared' AND (retry_at IS NULL OR retry_at<=NOW()) AND NOT EXISTS(SELECT 1 FROM arti_request_sends s WHERE s.request_id=$1 AND s.ordinal>0 AND s.state IN ('sending','delivery_unknown')) RETURNING 1",id,ordinal))
+
+    async def reject_send(self, id, token, ordinal, *, retry_seconds=None):
+        """Only an explicit API rejection can make a send retryable again."""
+        import math
+        if retry_seconds is not None and (not math.isfinite(retry_seconds) or retry_seconds<0):
+            raise ValueError('invalid_retry_delay')
+        async with self.pool.acquire() as conn, conn.transaction():
+            if not await self._locked(conn,id,token): return None
+            row=await conn.fetchrow('''UPDATE arti_request_sends SET state=$3,
+                retry_at=CASE WHEN $4::double precision IS NULL THEN NULL ELSE NOW()+make_interval(secs=>$4) END,
+                payload=CASE WHEN $4::double precision IS NULL THEN '{}'::jsonb ELSE payload END,updated_at=NOW()
+                WHERE request_id=$1 AND ordinal=$2 AND state='sending' RETURNING *''',
+                id,ordinal,'cancelled' if retry_seconds is None else 'prepared',retry_seconds)
+            if row and retry_seconds is not None:
+                await conn.execute('UPDATE arti_requests SET available_at=GREATEST(available_at,$2) WHERE id=$1',id,row['retry_at'])
+            elif row and ordinal>0:
+                # Fail atomically so generic legacy exception handlers cannot
+                # send a different fallback or claim completion afterwards.
+                await self._terminal(conn,id,'failed','telegram_rejected')
+            return _row(row)
 
     async def finish_send(self, id, token, ordinal, state, receipt=None):
         if state not in ('delivered','delivery_unknown'): raise ValueError('invalid_send_state')
