@@ -1,0 +1,296 @@
+{
+  "suite": "long-trajectories-v1",
+  "synthetic_only": true,
+  "provider_calls": 0,
+  "network_attempts": 0,
+  "real_transport_calls": 0,
+  "human_pilot_completed": false,
+  "model_quality_not_measured": true,
+  "turns": 96,
+  "scenarios": 4,
+  "invariants": 249,
+  "passed": 249,
+  "failed": 0,
+  "results": [
+    {
+      "scenario": "correction_and_ownership",
+      "turns": 24,
+      "invariants": 56,
+      "invariant_counts": {
+        "finite_state": {
+          "assessed": 24,
+          "passed": 24,
+          "failed": 0
+        },
+        "bounded_episodes": {
+          "assessed": 24,
+          "passed": 24,
+          "failed": 0
+        },
+        "delayed_exact_cue_recalls_original": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        },
+        "other_owner_never_recalled": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        },
+        "correction_replaces_current_belief": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        },
+        "old_claim_preserved_as_history": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        },
+        "correction_does_not_mutate_other_owner": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        },
+        "archive_owner_fence": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        },
+        "correction_source_retained": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        },
+        "minimum_twenty_turns": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        }
+      },
+      "measurements": {},
+      "passed": 56,
+      "failed": 0,
+      "failed_invariants": [],
+      "recorded_interpretations": 24
+    },
+    {
+      "scenario": "affect_preferences_erasure",
+      "turns": 24,
+      "invariants": 74,
+      "invariant_counts": {
+        "finite_state": {
+          "assessed": 24,
+          "passed": 24,
+          "failed": 0
+        },
+        "bounded_episodes": {
+          "assessed": 24,
+          "passed": 24,
+          "failed": 0
+        },
+        "preference_honored": {
+          "assessed": 17,
+          "passed": 17,
+          "failed": 0
+        },
+        "silence_creates_no_evidence": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        },
+        "silence_decays_not_escalates": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        },
+        "forgotten_source_not_archivable": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        },
+        "forgotten_detail_not_in_projection": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        },
+        "other_owner_survives_erasure": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        },
+        "mixed_affect_observed": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        },
+        "independent_preference_survives": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        },
+        "stale_prepared_turn_blocked": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        },
+        "minimum_twenty_turns": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        }
+      },
+      "measurements": {},
+      "passed": 74,
+      "failed": 0,
+      "failed_invariants": [],
+      "recorded_interpretations": 43
+    },
+    {
+      "scenario": "scene_boundaries",
+      "turns": 24,
+      "invariants": 54,
+      "invariant_counts": {
+        "finite_state": {
+          "assessed": 24,
+          "passed": 24,
+          "failed": 0
+        },
+        "bounded_episodes": {
+          "assessed": 24,
+          "passed": 24,
+          "failed": 0
+        },
+        "default_separate_from_roleplay": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        },
+        "scene_identity_changed": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        },
+        "new_scene_cannot_recall_old_source": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        },
+        "current_scene_keeps_own_source": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        },
+        "old_scene_turn_cannot_resume": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        },
+        "minimum_twenty_turns": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        }
+      },
+      "measurements": {},
+      "passed": 54,
+      "failed": 0,
+      "failed_invariants": [],
+      "recorded_interpretations": 24
+    },
+    {
+      "scenario": "durable_delivery",
+      "turns": 24,
+      "invariants": 65,
+      "invariant_counts": {
+        "finite_state": {
+          "assessed": 24,
+          "passed": 24,
+          "failed": 0
+        },
+        "bounded_episodes": {
+          "assessed": 24,
+          "passed": 24,
+          "failed": 0
+        },
+        "replay_has_no_transport": {
+          "assessed": 4,
+          "passed": 4,
+          "failed": 0
+        },
+        "checkpoint_not_recomputed": {
+          "assessed": 4,
+          "passed": 4,
+          "failed": 0
+        },
+        "unknown_not_reclaimed": {
+          "assessed": 2,
+          "passed": 2,
+          "failed": 0
+        },
+        "unknown_terminal": {
+          "assessed": 2,
+          "passed": 2,
+          "failed": 0
+        },
+        "one_transport_per_attempted_delivery": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        },
+        "confirmed_receipts_count": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        },
+        "ambiguous_receipts_count": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        },
+        "checkpoint_restarts_exercised": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        },
+        "minimum_twenty_turns": {
+          "assessed": 1,
+          "passed": 1,
+          "failed": 0
+        }
+      },
+      "measurements": {
+        "synthetic_transport_attempts": 24,
+        "confirmed_receipts": 22,
+        "ambiguous_receipts": 2,
+        "checkpoint_restarts": 4
+      },
+      "passed": 65,
+      "failed": 0,
+      "failed_invariants": [],
+      "recorded_interpretations": 45
+    }
+  ],
+  "assessed": [
+    "state_bounds",
+    "source_backed_exact_cue_recall",
+    "correction_history",
+    "owner_isolation",
+    "preference_retention",
+    "mixed_affect_projection",
+    "silence_decay",
+    "source_erasure",
+    "roleplay_scene_isolation",
+    "checkpoint_recovery",
+    "confirmed_and_ambiguous_delivery"
+  ],
+  "unassessed": [
+    "semantic_interpretation_quality",
+    "paraphrase_retrieval_quality",
+    "naturalness",
+    "human_satisfaction",
+    "live_provider_latency",
+    "live_telegram_delivery",
+    "human_pilot"
+  ]
+}

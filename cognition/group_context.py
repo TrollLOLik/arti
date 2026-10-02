@@ -113,3 +113,17 @@ def candidate_kind(frame,message,policy):
         if any(w in text for w in ('ура','получилось!','мы сделали','hooray','we did it')): return 'social_moment'
         if policy.topic_seeds and any(w in text for w in ('новая тема','о чём поговорим','new topic')): return 'topic_seed'
     return None
+
+
+def contextual_candidate(frame,message,policy):
+    """Eligibility for bounded semantic assessment, never permission to speak.
+
+    No question mark, overlap, emotion word or command dictionary is required.
+    Reply/addressing/visibility boundaries stay conservative; the arbiter receives
+    the actual recent public conversation and can abstain.
+    """
+    return (policy.mode in ('useful','social') and policy.full_visibility
+            and not message.get('is_bot') and not message.get('directed')
+            and not message.get('addressed_elsewhere') and not message.get('edited')
+            and message.get('sender_kind') == 'user'
+            and bool(str(message.get('text','')).strip()))

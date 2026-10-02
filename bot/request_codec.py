@@ -21,7 +21,7 @@ class CodecError(ValueError):
         super().__init__(code)
 
 
-REQUEST_FIELDS = frozenset('type chat_id user_id user_name user_message message_id is_voice base64_image base64_images document_text video_file_id is_video_note prompt image_urls image_aspect_ratio image_resolution image_num_images video_model video_duration video_aspect_ratio style instrumental _cognitive_context _cognitive_source_ids _material_uses _derivative_uses _computation_uses _cognitive_turn _telegram_scope _request_mode'.split())
+REQUEST_FIELDS = frozenset('type chat_id user_id user_name user_message message_id is_voice base64_image base64_images document_text video_file_id is_video_note prompt image_urls image_aspect_ratio image_resolution image_num_images video_model video_duration video_aspect_ratio style instrumental _cognitive_context _cognitive_source_ids _material_uses _derivative_uses _computation_uses _cognitive_turn _telegram_scope _request_mode _request_no_coalesce'.split())
 # These are process-local bookkeeping, never input to the resumed operation.
 TRANSIENT_FIELDS = frozenset(('bot', 'context', 'enqueued_at', 'started_at'))
 TELEGRAM_TYPES = frozenset(('Message', 'ReplyParameters', 'MessageEntity', 'InputMediaPhoto',
@@ -383,6 +383,9 @@ def coalesce_requests(parent,new):
         return d
     left=request(parent); right=request(new)
     if left is None or right is None: return None
+    if left.get('_request_no_coalesce') or right.get('_request_no_coalesce'): return None
+    from organizer.natural import parse as native_intent
+    if native_intent(left.get('user_message','')) or native_intent(right.get('user_message','')): return None
     if parent['fence']!=new['fence']: return None
     for field in ('chat_id','user_id','_cognitive_context','_request_mode'):
         if left.get(field)!=right.get(field): return None

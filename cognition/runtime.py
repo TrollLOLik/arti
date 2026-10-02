@@ -428,7 +428,7 @@ class CognitiveRuntime:
         decision,plan = regulate(state,p.situation,preferences,task_serious)
         if not source['perception']:
             # Do not express an earlier mood as a response to an unassessed event.
-            plan = replace(plan,sticker_mood=None,playfulness=0.,disclosure=0.,tone='calm and attentive',tts_style='neutral',cause_ids=())
+            plan = replace(plan,sticker_mood=None,playfulness=0.,disclosure=0.,tone='calm and attentive',tts_style='neutral',cause_ids=(),behaviors=(),mixed_affect=False)
         from cognition.relationships import relationship_view
         view = relationship_view(relationship,self.clock())
         cue = p.situation.topic.casefold().strip() if p.situation else ''

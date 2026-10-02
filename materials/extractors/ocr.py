@@ -11,6 +11,19 @@ import time
 from materials.types import MaterialError
 
 
+def compose_affine(left,right):
+    """Compose two 2D affine transforms without a BLAS workspace allocation."""
+    a,b,c,d,e,f=left; g,h,i,j,k,l=right
+    return (a*g+b*j,a*h+b*k,a*i+b*l+c,d*g+e*j,d*h+e*k,d*i+e*l+f)
+
+
+def inverse_affine(transform):
+    a,b,c,d,e,f=transform; determinant=a*e-b*d
+    if abs(determinant)<1e-12: raise MaterialError('ocr_geometry_invalid')
+    aa,bb,dd,ee=e/determinant,-b/determinant,-d/determinant,a/determinant
+    return (aa,bb,-aa*c-bb*f,dd,ee,-dd*c-ee*f)
+
+
 def installation():
     executable = os.getenv('ARTI_TESSERACT_CMD') or shutil.which('tesseract')
     if not executable and os.name == 'nt':
@@ -87,6 +100,9 @@ class OCR:
 
     def read(self, image, *, targeted=False, orientation_hint=None):
         import cv2
+        # OpenCV's pthread pool ignores OMP/BLAS caps. Its thread stacks and
+        # allocator arenas can exhaust the parser's fixed address-space budget.
+        cv2.setNumThreads(1)
         import numpy as np
         from PIL import Image
         image = image.convert('RGB')
@@ -107,12 +123,12 @@ class OCR:
         def rotated(angle):
             w, h = original_size
             if angle == 90:
-                return image.transpose(Image.Transpose.ROTATE_270), np.array([[0,-1,h],[1,0,0],[0,0,1]],float)
+                return image.transpose(Image.Transpose.ROTATE_270), (0,-1,h,1,0,0)
             if angle == 180:
-                return image.transpose(Image.Transpose.ROTATE_180), np.array([[-1,0,w],[0,-1,h],[0,0,1]],float)
+                return image.transpose(Image.Transpose.ROTATE_180), (-1,0,w,0,-1,h)
             if angle == 270:
-                return image.transpose(Image.Transpose.ROTATE_90), np.array([[0,1,0],[-1,0,w],[0,0,1]],float)
-            return image, np.eye(3)
+                return image.transpose(Image.Transpose.ROTATE_90), (0,1,0,-1,0,w)
+            return image, (1,0,0,0,1,0)
         working, transform = rotated(rotation)
         words = self.words(self._call(working, psm=6 if targeted else 3))
         def score(rows):
@@ -145,16 +161,17 @@ class OCR:
             reread = self.words(self._call(corrected, psm=6 if targeted else 3))
             if score(reread) >= score(words):
                 working, words = corrected, reread
-                transform = np.vstack([matrix,[0,0,1]]) @ transform
+                transform = compose_affine(tuple(float(v) for row in matrix for v in row),transform)
             else:
                 skew = 0
         else:
             skew = 0
-        inverse = np.linalg.inv(transform)
+        a,b,c,d,e,f = inverse_affine(transform)
         def bbox(box):
             x,y,w,h = box
-            points = np.array([[x,y,1],[x+w,y,1],[x+w,y+h,1],[x,y+h,1]]) @ inverse.T
-            x0,y0 = points[:,:2].min(axis=0); x1,y1 = points[:,:2].max(axis=0)
+            points = [(a*px+b*py+c,d*px+e*py+f) for px,py in ((x,y),(x+w,y),(x+w,y+h),(x,y+h))]
+            x0=min(p[0] for p in points); y0=min(p[1] for p in points)
+            x1=max(p[0] for p in points); y1=max(p[1] for p in points)
             ow,oh = original_size
             return [max(0,float(x0/ow)),max(0,float(y0/oh)),min(1,float(x1/ow)),min(1,float(y1/oh))]
         for word in words:

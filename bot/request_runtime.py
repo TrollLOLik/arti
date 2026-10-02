@@ -51,6 +51,8 @@ async def submit(request):
     budget = float(os.getenv('ARTI_REQUEST_TEXT_BUDGET_SECONDS' if kind == 'text'
                               else 'ARTI_REQUEST_MEDIA_BUDGET_SECONDS', '180' if kind == 'text' else '900'))
     job = await store().enqueue(kind, request['chat_id'], topic, key, payload, budget_seconds=budget)
+    from bot.intake import note_accepted
+    note_accepted(job['id'])
     diagnostic(job, 'accepted')
     return job
 

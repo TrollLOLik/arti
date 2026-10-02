@@ -37,14 +37,15 @@ def wrap(text,width,size):
 
 def scene(spec):
     style=StyleProfile.from_dict(spec.value.get('style',{})); pages=[]; page=None; y=0
-    def text(x,y,t,size=24,color=None): page.items.append(dict(kind='text',x=x,y=y,text=t,size=size,color=color or style.foreground))
+    def text(x,y,t,size=24,color=None,*,owner=None,panel=None):
+        page.items.append(dict(kind='text',x=x,y=y,text=t,size=size,color=color or style.foreground,owner=owner,panel=panel))
     def new_page():
         nonlocal page,y
         page=Page(); pages.append(page)
-        for i,line in enumerate(wrap(spec.value['title'],960,36)): text(60,64+i*44,line,36)
+        for i,line in enumerate(wrap(spec.value['title'],960,36)): text(60,64+i*44,line,36,owner='__title__')
         y=80+len(wrap(spec.value['title'],960,36))*44
         text(60,HEIGHT-48,f"АРТИ / {spec.value['format']} / {len(pages)}",18,style.muted)
-    def block(id,lines,*,chart=None):
+    def block(id,lines,*,chart=None,element=True):
         nonlocal y
         padding=32 if style.density=='compact' else 40; gap=10 if style.density=='compact' else 18
         # Long elements continue on another page rather than shrinking text.
@@ -53,9 +54,10 @@ def scene(spec):
             available=int((HEIGHT-110-y-padding)/32)
             if available<3: new_page(); available=int((HEIGHT-110-y-padding)/32)
             chunk=lines[offset:offset+available]; h=32*len(chunk)+padding
-            page.boxes.append((60,y,960,h)); page.elements.append(id)
+            page.boxes.append((60,y,960,h))
+            if element: page.elements.append(id)
             page.items.append(dict(kind='rect',x=60,y=y,w=960,h=h,color=style.background,stroke=style.accent))
-            for i,(line,size,color) in enumerate(chunk): text(80,y+padding/2+i*32,line,size,color)
+            for i,(line,size,color) in enumerate(chunk): text(80,y+padding/2+i*32,line,size,color,owner=id if element else None,panel=(60,y,960,h))
             y+=h+gap; offset+=len(chunk); first=False
         if chart:
             if y+100>HEIGHT-110: new_page()
@@ -74,9 +76,13 @@ def scene(spec):
     # Overview preserves IDs while the following cards carry full text/evidence.
     if spec.value['format'] in ('process','arguments','teaching','roadmap'):
         relations=spec.value.get('relations',[])
-        for begin in range(0,len(elements),6):
+        begin=0
+        while begin<len(elements):
             if begin: new_page()
-            group=elements[begin:begin+6]; positions={}
+            # Actual title height determines how many overview rows fit. Never
+            # shrink labels merely to retain a fixed six-card template.
+            rows=max(1,min(3,int((HEIGHT-110-y-48)/245)))
+            group=elements[begin:begin+rows*2]; positions={}
             text(60,y,'Карта структуры / типы связей и подробности далее',24,style.muted); y+=48
             top=y
             for i,e in enumerate(group):
@@ -97,7 +103,8 @@ def scene(spec):
                     if r['kind'] not in ('contrasts','correlates'):
                         back=bx-7 if bx>x else bx+7
                         page.items.extend([dict(kind='line',x=back,y=y2-4,x2=bx,y2=y2,color=style.foreground,width=2),dict(kind='line',x=back,y=y2+4,x2=bx,y2=y2,color=style.foreground,width=2)])
-            new_page()
+            begin+=len(group)
+        new_page()
     if spec.value['format'] in ('table','comparison'):
         text(60,y,'Сравнение / статус / значение',24,style.muted); y+=48
         for e in elements:
@@ -122,7 +129,7 @@ def scene(spec):
         if axis.get('scale')=='log': chart_bounds=(lo.ln(),hi.ln())
         disclosure=axis.get('disclosure') or ('Логарифмическая шкала; метки значений точные' if axis.get('scale')=='log' else 'Общая линейная шкала; интервалы из источника')
         if axis.get('scale','linear')=='linear' and any(0<abs(number(q['value']))/(hi-lo)*920<1 for q in numeric): disclosure+='; величины меньше пикселя показаны точной подписью'
-        block('axis',[(line,22,style.muted) for line in wrap(disclosure,920,22)])
+        block('axis',[(line,22,style.muted) for line in wrap(disclosure,920,22)],element=False)
     for n,e in enumerate(elements):
         lines=[(l,28,style.accent) for l in wrap(f"{n+1:02d}  {e['label']}",920,28)]
         lines.append((STATUS[e['status']],20,style.muted))
@@ -143,19 +150,49 @@ def scene(spec):
             lines.extend((l,18,style.muted) for l in wrap('Источник: '+label,920,18))
         block(e['id'],lines,chart=chart)
     for r in spec.value.get('relations',[]):
-        block(r['id'],[(l,22,style.muted) for l in wrap(f"{r['from']} → {r['to']}: {RELATION[r['kind']]} {r.get('label','')}",920,22)])
-    for question in spec.value.get('questions',[]): block('question',[(l,22,style.muted) for l in wrap('Открытый вопрос: '+question,920,22)])
+        block(r['id'],[(l,22,style.muted) for l in wrap(f"{r['from']} → {r['to']}: {RELATION[r['kind']]} {r.get('label','')}",920,22)],element=False)
+    for question in spec.value.get('questions',[]): block('question',[(l,22,style.muted) for l in wrap('Открытый вопрос: '+question,920,22)],element=False)
     check_layout(pages,spec)
     return pages,style
 
 def check_layout(pages,spec):
     if len(pages)>40: raise MaterialError('artifact_page_budget')
-    seen=set()
+    seen=set(); content={}; fonts={}
+    compact=lambda value: ''.join(str(value).split())
     for p in pages:
         seen.update(p.elements)
         for i,(x,y,w,h) in enumerate(p.boxes):
             if x<0 or y<0 or x+w>WIDTH or y+h>HEIGHT-95: raise MaterialError('artifact_overflow')
             if any(x<a+c and x+w>a and y<b+d and y+h>b for a,b,c,d in p.boxes[:i]): raise MaterialError('artifact_overlap')
+        text_bounds=[]
         for item in p.items:
-            if item['kind']=='text' and ImageFont.truetype(str(FONT),item['size']).getlength(item['text'])+item['x']>WIDTH-30: raise MaterialError('artifact_text_overflow')
+            if item['kind']!='text': continue
+            size=item['size']
+            if size<18: raise MaterialError('artifact_text_too_small')
+            if size not in fonts: fonts[size]=ImageFont.truetype(str(FONT),size)
+            font=fonts[size]
+            x,y=item['x'],item['y']; left,top,right,bottom=font.getbbox(item['text'],anchor='lt')
+            bounds=(x+left,y+top,x+right,y+bottom)
+            if bounds[0]<0 or bounds[1]<0 or bounds[2]>WIDTH-30 or bounds[3]>HEIGHT-20:
+                raise MaterialError('artifact_text_overflow')
+            panel=item.get('panel')
+            if panel:
+                a,b,w,h=panel
+                if bounds[0]<a or bounds[1]<b or bounds[2]>a+w or bounds[3]>b+h:
+                    raise MaterialError('artifact_text_outside_panel')
+            if compact(item['text']):
+                if any(bounds[0]<r and bounds[2]>l and bounds[1]<b and bounds[3]>t for l,t,r,b in text_bounds):
+                    raise MaterialError('artifact_text_overlap')
+                text_bounds.append(bounds)
+            owner=item.get('owner')
+            if owner: content.setdefault(owner,[]).append(compact(item['text']))
     if not {e['id'] for e in spec.value['elements']}<=seen: raise MaterialError('artifact_element_omitted')
+    if compact(spec.value['title']) not in ''.join(content.get('__title__',[])):
+        raise MaterialError('artifact_content_omitted')
+    for e in spec.value['elements']:
+        rendered=''.join(content.get(e['id'],[]))
+        required=[e['label'],e.get('text',''),STATUS[e['status']],e.get('when','')]
+        quantity=e.get('quantity')
+        if quantity: required.extend(quantity.get(k,'') for k in ('value','unit','lower','upper'))
+        if any(compact(value) not in rendered for value in required):
+            raise MaterialError('artifact_content_omitted')

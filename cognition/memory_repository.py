@@ -16,6 +16,7 @@ from cognition.serialization import dump,object_value,load_event,load_state
 from cognition.situations import Situation,goal_transition
 from cognition.types import MODEL_VERSION,Origin,utc
 from cognition.repositories import SuppressedEvidence,StaleRevision
+from cognition.semantic import query_terms,trace_names,retrieval_signals
 
 EMBEDDING_VERSION = 'arti-subword-192-v1'
 
@@ -250,6 +251,7 @@ class MemoryRepository:
         qvector = lexical_vector(query)
         traces = await self.candidates(cid,owner,query)
         topics = Counter(r['payload']['topic'] for r in traces)
+        requested_names=query_terms(query) & set().union(*(trace_names(r['payload']) for r in traces))
         candidates = {}
         async with self.pool.acquire() as conn:
             # Vector model/version are part of every query and persisted key.
@@ -259,18 +261,20 @@ class MemoryRepository:
             links = await conn.fetch('SELECT * FROM cognitive_memory_links WHERE context_id=$1 AND source_id=ANY($2::bigint[]) AND target_id=ANY($2::bigint[])',cid,[r['id'] for r in traces])
         for row in traces:
             t = row['payload']
-            overlap = len(words & tokens(t['gist'])) / max(1,len(words))
+            signals=retrieval_signals(query,t,requested_names=requested_names,semantic_score=row.get('semantic_score',0.))
+            overlap=signals['lexical']
             vector = max(0.,cosine(qvector,vectors.get(row['id'],[])))
             semantic = row.get('semantic_score',0.)
-            cue = max(overlap,semantic)
+            cue = max(overlap,semantic,signals['topic'],signals['action'])
             competition = (topics[t['topic']]-1)/12
             recollection = reconstruct(t,at,cue,competition,archive)
             accessible = max((d['accessibility'] for d in recollection['details']),default=.05)
             # Mood bias is small; no candidate is removed by its emotional sign.
             bias = max(-.05,min(.05,mood*t.get('emotional_valence',0.)*.05))
-            score = max(.55*overlap+.25*vector,.55*semantic+.20*overlap)+.15*accessible+bias
-            candidates[row['id']] = dict(row=row,score=score,cue=cue,recollection=recollection)
-        activation = {i:max(0.,v['score']-.2) for i,v in candidates.items()}
+            score = (max(.55*overlap+.25*vector,.55*semantic+.20*overlap)
+                     +.12*signals['topic']+.12*signals['action']+.25*signals['name']+.15*accessible+bias)
+            candidates[row['id']] = dict(row=row,score=score,cue=cue,recollection=recollection,eligible=signals['eligible'])
+        activation = {i:max(0.,v['score']-.2) if v['eligible'] else 0. for i,v in candidates.items()}
         for _ in range(2):
             increment = {}
             for link in links:
@@ -280,11 +284,11 @@ class MemoryRepository:
             for i,gain in increment.items():
                 candidates[i]['score'] += min(.08,gain)
         ranked = sorted(candidates.values(),key=lambda v:(-v['score'],-v['row']['id']))
-        selected = [r for r in ranked if r['score']>.18][:limit]
+        selected = [r for r in ranked if r['eligible'] and r['score']>.18][:limit]
         # Reserve one alternative/counterexample from a different emotional context.
         if len(selected)>=3:
             seen = {r['row']['id'] for r in selected}
-            opposite = next((r for r in ranked if r['row']['id'] not in seen and r['score']>.18
+            opposite = next((r for r in ranked if r['row']['id'] not in seen and r['eligible'] and r['score']>.18
                              and (r['row']['payload'].get('emotional_valence',0.)*mood<=0 or r['row']['payload']['salience']<.2)),None)
             if opposite:
                 selected[-1] = opposite

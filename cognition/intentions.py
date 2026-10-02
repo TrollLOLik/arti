@@ -18,6 +18,18 @@ async def due_intentions(runtime):
               AND ((a.payload->>'status'='reminder' AND (a.payload->>'deadline')::timestamptz<=$1)
                 OR (a.payload->>'status'='open' AND coalesce(a.payload->>'actor_id','')!='arti'
                     AND (a.payload->>'created_at')::timestamptz BETWEEN $1-INTERVAL '14 days' AND $1-INTERVAL '1 day'))
+              AND NOT EXISTS (
+                WITH RECURSIVE owned_ancestors(id) AS (
+                    SELECT p.source_event_id FROM cognitive_provenance p WHERE p.context_id=a.context_id AND p.artifact_id=a.id
+                    UNION SELECT d.source_event_id FROM cognitive_event_dependencies d
+                        JOIN owned_ancestors n ON d.event_id=n.id
+                        JOIN cognitive_events child ON child.id=d.event_id
+                        JOIN cognitive_events parent ON parent.id=d.source_event_id
+                        WHERE d.context_id=a.context_id AND (child.origin='delivered_action'
+                            OR child.payload->>'reply_to_id'=split_part(parent.source_id,':',3)))
+                SELECT 1 FROM owned_ancestors n JOIN cognitive_events e ON e.id=n.id AND e.context_id=a.context_id
+                    JOIN arti_organizer_source_routes r ON r.owner_id=e.owner_id AND r.chat_id=c.chat_id AND r.source_key=e.source_id
+                    WHERE c.chat_id=e.owner_id AND c.chat_id>0 AND c.topic_id<0)
               ORDER BY a.payload->>'deadline' NULLS LAST,a.id LIMIT 512""",now)
     result = []
     for row in rows:
@@ -78,21 +90,24 @@ async def run_intention_cycle(runtime,bot):
         turn.event = __import__('dataclasses').replace(event,event_id=p['delivery_key'])
         token = CURRENT_TURN.set(turn)
         try:
-            text = ('Напоминание: ' if p['status']=='reminder' else 'Как продвигается: ') + p['description']
-            from cognition.delivery import send_with_receipt
-            from bot.retry_bot import RetryBot
-            if isinstance(bot,RetryBot):
-                await bot.send_message(chat_id=row['chat_id'],text=text)
-            else:
-                await send_with_receipt(bot.send_message,(),dict(chat_id=row['chat_id'],text=text),'message')
-            async with runtime.pool.acquire() as conn,conn.transaction():
-                await conn.fetchval('SELECT revision FROM cognitive_contexts WHERE id=$1 FOR UPDATE',row['context_id'])
-                active = await conn.fetchrow('SELECT payload FROM cognitive_artifacts WHERE id=$1 AND suppressed_at IS NULL',row['id'])
-                if active:
-                    current = object_value(active['payload'])
-                    current['delivered'] = True
-                    current['delivered_at'] = runtime.clock().isoformat()
-                    await conn.execute('UPDATE cognitive_artifacts SET payload=$2::jsonb,revision=revision+1 WHERE id=$1',row['id'],dump(current))
+            from organizer.ownership import cognitive_delivery_allowed
+            async with cognitive_delivery_allowed(runtime.pool,row['owner_id'],row['chat_id'],row['context_id'],row['id']) as allowed:
+                if not allowed: continue
+                text = ('Напоминание: ' if p['status']=='reminder' else 'Как продвигается: ') + p['description']
+                from cognition.delivery import send_with_receipt
+                from bot.retry_bot import RetryBot
+                if isinstance(bot,RetryBot):
+                    await bot.send_message(chat_id=row['chat_id'],text=text)
+                else:
+                    await send_with_receipt(bot.send_message,(),dict(chat_id=row['chat_id'],text=text),'message')
+                async with runtime.pool.acquire() as conn,conn.transaction():
+                    await conn.fetchval('SELECT revision FROM cognitive_contexts WHERE id=$1 FOR UPDATE',row['context_id'])
+                    active = await conn.fetchrow('SELECT payload FROM cognitive_artifacts WHERE id=$1 AND suppressed_at IS NULL',row['id'])
+                    if active:
+                        current = object_value(active['payload'])
+                        current['delivered'] = True
+                        current['delivered_at'] = runtime.clock().isoformat()
+                        await conn.execute('UPDATE cognitive_artifacts SET payload=$2::jsonb,revision=revision+1 WHERE id=$1',row['id'],dump(current))
         finally:
             CURRENT_TURN.reset(token)
 

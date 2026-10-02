@@ -9,7 +9,7 @@ from materials.types import ContentBlock,ExtractionBundle,ExtractionManifest,Loc
 
 
 class VideoExtractor:
-    version='structured-video-1'
+    version='structured-video-2'
     def __init__(self,*,max_seconds=600,max_frames=24,image=None,audio=None):
         self.audio=audio or AudioExtractor(max_seconds=max_seconds)
         self.image=image or ImageExtractor(max_lines=40)
@@ -26,7 +26,7 @@ class VideoExtractor:
         analysis=await run_worker(dict(operation='video_frames',options={**self.options,'start_ms':start_ms,'end_ms':end_ms,'dense':dense},mime=mime),data,self.limits)
         if validate: await validate()
         loc=Locator('time',start_ms=analysis['start_ms'],end_ms=analysis['end_ms']); root=block_id(aid,version,'video',loc)
-        blocks=[ContentBlock(root,'video',loc,metadata={k:v for k,v in analysis.items() if k!='frames'}|dict(role='video_timeline',sampling='dense_interval' if dense else 'uniform_and_scenes',method=self.version))]
+        blocks=[ContentBlock(root,'video',loc,metadata={k:v for k,v in analysis.items() if k!='frames'}|dict(role='video_timeline',sampling='dense_interval' if dense else 'uniform_scenes_and_adaptive',method=self.version))]
         used=sum(len(b.text)+len(canonical(b.metadata)) for b in blocks)
         limitations=list(analysis['limitations']); frame_fingerprints=[]
         for frame in analysis['frames']:

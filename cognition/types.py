@@ -337,6 +337,20 @@ class CognitiveState:
             finite(goal['priority'],'goal priority',0,1)
 
 
+RESPONSE_BEHAVIORS = {
+    'answer_task': 'Address the actual request before optional emotional commentary.',
+    'ask_one_question': 'Ask one concrete question that resolves the missing fact; do not interrogate.',
+    'acknowledge_loss': 'Acknowledge the stated loss without forced optimism or rushing to fix it.',
+    'offer_choice': 'If help is appropriate, offer a choice between listening and a practical next step.',
+    'recognize_progress': 'Recognize the specific supported progress without exaggeration.',
+    'practical_step': 'Offer one feasible next step within the facts and permissions actually available.',
+    'boundary': 'State a brief respectful boundary if supported; do not punish, shame or demand reassurance.',
+    'repair': 'Correct a verified mistake and explain the concrete repair; do not invent blame or promises.',
+    'revise_understanding': 'Update the earlier interpretation using the new evidence, openly preserving uncertainty.',
+    'listen': 'Leave room for the person to continue; do not manufacture a question or an action.',
+}
+
+
 @dataclass(frozen=True)
 class ExpressionPlan:
     regulation: str
@@ -349,10 +363,15 @@ class ExpressionPlan:
     tts_style: str
     cause_ids: tuple[str, ...]
     uncertain_intent: bool
+    behaviors: tuple[str, ...] = ()
+    mixed_affect: bool = False
 
     def __post_init__(self):
         for key in ('warmth', 'directness', 'playfulness', 'disclosure'):
             finite(getattr(self, key), key, 0, 1)
+        if len(self.behaviors)>4 or any(b not in RESPONSE_BEHAVIORS for b in self.behaviors):
+            raise ValueError('Invalid response behavior')
+        if type(self.mixed_affect) is not bool: raise ValueError('Invalid mixed affect')
 
     def instruction(self) -> str:
         """A projection used by the generator; it never changes numerical state."""
@@ -364,4 +383,6 @@ class ExpressionPlan:
                 + warmth+' '+directness+' '+play+' '+disclosure+' '
                 + ('Ask briefly before attributing a hostile intention. ' if self.uncertain_intent else '')
                 + ('Ask for the missing information needed to carry out this request. ' if self.regulation=='clarify' and not self.uncertain_intent else '')
+                + ' '.join(RESPONSE_BEHAVIORS[b] for b in self.behaviors)+' '
+                + ("Let positive and unresolved aspects coexist; do not force one mood or invent the user's feelings. " if self.mixed_affect else '')
                 + 'Keep the reply relevant. Do not describe internal scores or demand attention.')

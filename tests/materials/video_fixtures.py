@@ -6,14 +6,14 @@ from tests.materials.audio_fixtures import wav
 from materials.extractors.media import installation
 
 
-def video(*,with_audio=True,offset=False):
+def video(*,with_audio=True,offset=False,transient_frame=14,transient_box=(340,25,440,110)):
     ffmpeg=installation()[0]
     with tempfile.TemporaryDirectory() as directory:
         root=Path(directory)
         for i in range(30):
             image=Image.new('RGB',(480,270),('navy','darkred','darkgreen')[i//10]); draw=ImageDraw.Draw(image)
             draw.text((30,80),'SLIDE '+str(i//10+1),fill='white',font_size=44)
-            if i==14: draw.rectangle((340,25,440,110),fill='yellow')
+            if i==transient_frame: draw.rectangle(transient_box,fill='yellow')
             image.save(root/f'frame_{i:03d}.png')
         (root/'audio.wav').write_bytes(wav())
         command=[ffmpeg,'-nostdin','-v','error','-threads','1','-framerate','10','-i',str(root/'frame_%03d.png')]

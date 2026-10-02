@@ -91,6 +91,13 @@ async def run_worker(request, data, limits, *, worker_path=None, trace=None):
                         await asyncio.wait_for(process.wait(), timeout=0.1)
                     except asyncio.TimeoutError:
                         pass
+                # The OS can reject a write (EFBIG/SIGXFSZ) and finish the
+                # worker between polls. Preserve the specific budget error.
+                size=temporary_size(root)
+                peak_disk=max(peak_disk,size)
+                file_limit_signal=getattr(signal,'SIGXFSZ',None)
+                if size>limits.disk_mb*1024**2 or (file_limit_signal is not None and process.returncode==-file_limit_signal):
+                    raise MaterialError('parser_disk_budget')
                 output = root / 'result.json'
                 if not output.is_file() or output.stat().st_size > limits.output_mb * 1024**2:
                     raise MaterialError('parser_resource_failure')

@@ -1,0 +1,80 @@
+{
+  "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+  "revision": "faf4aa4225822f3bc6376869cb1164e8e3feedd0",
+  "corpus": "seven_fixed_synthetic_russian_paraphrases",
+  "examples_are_synthetic": true,
+  "network_during_inference": false,
+  "real_provider_calls": 0,
+  "real_telegram_calls": 0,
+  "cold_batch_seconds": 1.885485187998711,
+  "warm_query_seconds": 0.005208152000705013,
+  "warm_default_budget_success": true,
+  "passed": 7,
+  "total": 7,
+  "cases": [
+    {
+      "case": "work_conflict",
+      "expected": "work_conflict",
+      "top": "work_conflict",
+      "passed": true,
+      "top_cosine": 0.58151,
+      "expected_cosine": 0.58151
+    },
+    {
+      "case": "lake_trip",
+      "expected": "lake_trip",
+      "top": "lake_trip",
+      "passed": true,
+      "top_cosine": 0.72164,
+      "expected_cosine": 0.72164
+    },
+    {
+      "case": "lost_keys",
+      "expected": "lost_keys",
+      "top": "lost_keys",
+      "passed": true,
+      "top_cosine": 0.53479,
+      "expected_cosine": 0.53479
+    },
+    {
+      "case": "dog_walk",
+      "expected": "dog_walk",
+      "top": "dog_walk",
+      "passed": true,
+      "top_cosine": 0.50209,
+      "expected_cosine": 0.50209
+    },
+    {
+      "case": "bike_repair",
+      "expected": "bike_repair",
+      "top": "bike_repair",
+      "passed": true,
+      "top_cosine": 0.63004,
+      "expected_cosine": 0.63004
+    },
+    {
+      "case": "exam",
+      "expected": "exam",
+      "top": "exam",
+      "passed": true,
+      "top_cosine": 0.31922,
+      "expected_cosine": 0.31922
+    },
+    {
+      "case": "cake",
+      "expected": "cake",
+      "top": "cake",
+      "passed": true,
+      "top_cosine": 0.54296,
+      "expected_cosine": 0.54296
+    }
+  ],
+  "limitations": [
+    "Small synthetic top-1 embedding probe, not end-to-end SQL retrieval or independent human/held-out validation.",
+    "One correct top-1 paraphrase (exam) scores0.31922 below the production0.42 semantic cutoff; nearest-neighbor rank does not prove retrieval admission. Threshold unchanged."
+  ],
+  "metric": "embedding_top1_sanity_not_retrieval_accuracy",
+  "semantic_cutoff": 0.42,
+  "above_semantic_cutoff": 6,
+  "human_pilot_completed": false
+}
