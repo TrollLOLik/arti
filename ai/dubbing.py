@@ -51,6 +51,7 @@ async def run_dubbing(
     with_subs: bool = False,
     input_file: Optional[Path] = None,
     audio_only: bool = False,
+    timeout_seconds: float | None = None,
 ) -> tuple[bool, Optional[Path], str]:
     """
     Запускает videotrans/main.py.
@@ -61,6 +62,9 @@ async def run_dubbing(
     Returns:
         (success, output_path, error_text)
     """
+    budget = timeout_seconds if timeout_seconds is not None else float(os.getenv('ARTI_DUBBING_TIMEOUT_SECONDS','3600'))
+    if not 0 < budget <= 14400: raise ValueError('invalid_dubbing_timeout')
+
     if not input_file and not is_supported_url(url):
         return False, None, "URL должен начинаться с http:// или https:// либо нужен файл"
 
@@ -126,39 +130,37 @@ async def run_dubbing(
             cwd=str(VIDEOTRANS_DIR),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            start_new_session=os.name=='posix',
         )
     except Exception as exc:
         logger.exception("Не удалось стартовать videotrans subprocess")
         return False, None, f"Не удалось запустить процесс: {exc}"
 
+    from utils.process_limits import stop_process
+    return_code = None
     log_tail: list[str] = []
     try:
-        assert process.stdout is not None
-        async for raw in process.stdout:
-            try:
-                line = raw.decode("utf-8", errors="replace").rstrip()
-            except Exception:
-                continue
-            if not line:
-                continue
-            log_tail.append(line)
-            if len(log_tail) > 200:
-                log_tail = log_tail[-200:]
-            logger.info("[videotrans] %s", line)
-            if log_callback:
-                try:
-                    await log_callback(line)
-                except Exception:
-                    logger.debug("log_callback бросил исключение", exc_info=True)
-    except Exception as exc:
-        logger.exception("Ошибка при чтении stdout videotrans")
-        try:
-            process.kill()
-        except ProcessLookupError:
-            pass
-        return False, None, f"Ошибка чтения вывода: {exc}"
-
-    return_code = await process.wait()
+        async with asyncio.timeout(budget):
+            assert process.stdout is not None
+            async for raw in process.stdout:
+                line = raw.decode('utf-8', errors='replace').rstrip()
+                if not line: continue
+                log_tail.append(line)
+                if len(log_tail)>200: del log_tail[:-200]
+                logger.info('[videotrans] %s',line)
+                if log_callback:
+                    try: await log_callback(line)
+                    except Exception: logger.debug('Dubbing progress callback failed')
+            return_code = await process.wait()
+    except TimeoutError:
+        return False,None,'Истёк срок выполнения дубляжа; процесс остановлен.'
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return False,None,'Не удалось прочитать результат процесса дубляжа.'
+    finally:
+        if return_code != 0:
+            await asyncio.shield(stop_process(process,process_group=os.name=='posix'))
 
     if return_code != 0:
         tail = "\n".join(log_tail[-15:])

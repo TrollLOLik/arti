@@ -54,6 +54,7 @@ from bot.queue import (
     run_supervised
 )
 from bot.retry_bot import RetryBot
+from bot.intake import bounded_intake
 from config import TELEGRAM_TOKEN
 
 
@@ -146,6 +147,8 @@ def run_with_restart():
                 logger.info("Воркер vclone запущен (supervised).")
                 spawn_worker(run_supervised(vclone_fsm_timeout_watchdog, "vclone_fsm_watchdog", app.bot))
                 logger.info("Watchdog vclone FSM запущен (supervised).")
+                from organizer.runtime import worker as organizer_worker
+                spawn_worker(run_supervised(organizer_worker,'native_organizer',app.bot))
                 from cognition.runtime import get_runtime
                 from cognition.intentions import intention_scheduler
                 spawn_worker(run_supervised(intention_scheduler,'cognitive_intentions',get_runtime(),app.bot))
@@ -203,6 +206,8 @@ def run_with_restart():
             )
 
             # Регистрируем хендлеры команд
+            from bot.organizer_commands import register as register_organizer
+            register_organizer(application)
             from bot.menu import menu_command,menu_callback,menu_input
             application.add_handler(CommandHandler(['menu','arti_commands'],menu_command))
             application.add_handler(CallbackQueryHandler(menu_callback,pattern='^menu:'))
@@ -270,14 +275,14 @@ def run_with_restart():
             application.add_handler(CallbackQueryHandler(profile_callback, pattern="^prof_"))
 
             # Обработчики сообщений
-            application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_all_messages))
-            application.add_handler(MessageHandler(filters.PHOTO, handle_image_message), group=2)
-            application.add_handler(MessageHandler(filters.VOICE, handle_voice_message), group=3)
-            application.add_handler(MessageHandler(filters.Document.ALL, handle_document), group=4)
-            application.add_handler(MessageHandler(filters.VIDEO, handle_video_upload_message), group=5)
-            application.add_handler(MessageHandler(filters.VIDEO_NOTE, handle_video_note), group=5)
-            application.add_handler(MessageHandler(filters.AUDIO, handle_audio_message), group=5)
-            application.add_handler(MessageHandler(filters.LOCATION, handle_location_message), group=6)
+            application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bounded_intake(handle_all_messages)))
+            application.add_handler(MessageHandler(filters.PHOTO, bounded_intake(handle_image_message)), group=2)
+            application.add_handler(MessageHandler(filters.VOICE, bounded_intake(handle_voice_message)), group=3)
+            application.add_handler(MessageHandler(filters.Document.ALL, bounded_intake(handle_document)), group=4)
+            application.add_handler(MessageHandler(filters.VIDEO, bounded_intake(handle_video_upload_message)), group=5)
+            application.add_handler(MessageHandler(filters.VIDEO_NOTE, bounded_intake(handle_video_note)), group=5)
+            application.add_handler(MessageHandler(filters.AUDIO, bounded_intake(handle_audio_message)), group=5)
+            application.add_handler(MessageHandler(filters.LOCATION, bounded_intake(handle_location_message)), group=6)
             from bot.request_runtime import request_status
             application.add_handler(CommandHandler('request', request_status))
             application.add_handler(MessageReactionHandler(handle_message_reaction))

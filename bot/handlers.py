@@ -69,6 +69,12 @@ def _is_text_rate_limited(user_id: int) -> bool:
 
 async def _save_message(chat_id: int, user_name: str, message_text: str, user_id: int = None, **source):
     """Сохраняет сообщение в обычную или RP-историю в зависимости от режима."""
+    from cognition.runtime import get_runtime
+    from cognition.scope import CURRENT_SCOPE
+    runtime=get_runtime(); scope=CURRENT_SCOPE.get()
+    if runtime and scope and scope.chat_type=='private' and source.get('message_id') is not None:
+        from organizer.natural import claim_input
+        await claim_input(runtime.pool,user_id,chat_id,source['message_id'],message_text,mode='rp' if rp_mode_state.get(chat_id) else 'default')
     if rp_mode_state.get(chat_id):
         await save_chat_message_rp(chat_id, user_name, message_text, user_id=user_id, **source)
     else:

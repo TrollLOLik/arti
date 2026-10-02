@@ -7,10 +7,14 @@ from datetime import datetime,timedelta
 from types import SimpleNamespace
 
 from cognition.group_policy import PolicyRepository
-from cognition.group_context import build_frame,candidate_kind
+from cognition.group_context import build_frame,candidate_kind,contextual_candidate
 from cognition.scope import CURRENT_SCOPE,TransportScope
 from cognition.serialization import dump,object_value,load_event
 from cognition.types import AudienceScope,Origin
+
+
+ASSESS_TIMEOUT_SECONDS = 8.
+COMPOSE_TIMEOUT_SECONDS = 12.
 
 
 class GroupService:
@@ -73,7 +77,7 @@ class GroupService:
             await conn.execute('''INSERT INTO group_topic_runtime(context_id,revision) VALUES($1,1)
                 ON CONFLICT(context_id) DO UPDATE SET revision=group_topic_runtime.revision+1,updated_at=NOW()''',cid)
         if not is_bot and not scope.addressed:
-            await self.propose(cid,eid,payload)
+            await self.propose(cid,eid,{**payload,'edited':edited})
         if not is_bot and scope.reply_to_id:
             import re
             signal=.7 if re.match(r'(?i)^\s*(спасибо|благодарю|thanks)\b',str(text)) else -.7 if re.match(r'(?i)^\s*(не вмешивайся|не надо вмешиваться|stop interrupting)\b',str(text)) else None
@@ -86,7 +90,9 @@ class GroupService:
         if policy.mode=='mentions' or not policy.full_visibility or message['sender_kind']=='bot': return
         if await self.policies.opted_out(frame.chat_id,message['owner_id']): return
         kind=candidate_kind(frame,message,policy)
-        if not kind: return
+        if not kind:
+            if not contextual_candidate(frame,message,policy): return
+            kind='contextual'
         now=self.runtime.clock()
         normalized=' '.join(__import__('re').findall(r'[\w]+',message['text'].casefold()))
         key=hashlib.sha256(f'{cid}:{kind}:{normalized}:{int(now.timestamp())//3600}'.encode()).hexdigest()
@@ -97,6 +103,12 @@ class GroupService:
                      reactions=policy.reactions,topic_seeds=policy.topic_seeds,branch=next((m['branch'] for m in frame.messages if m['message_id']==message['message_id']),None))
         async with self.pool.acquire() as conn,conn.transaction():
             await conn.execute('SELECT pg_advisory_xact_lock($1::bigint)',frame.chat_id)
+            if kind=='contextual':
+                # Coalesce assessment opportunities through the rolling public
+                # frame, rather than enqueue a provider call for every message.
+                recent_contextual=await conn.fetchval('''SELECT 1 FROM group_candidates
+                    WHERE context_id=$1 AND kind='contextual' AND created_at>$2 LIMIT 1''',cid,now-timedelta(seconds=90))
+                if recent_contextual: return
             queued=await conn.fetchrow('''SELECT count(*) AS total,count(*) FILTER (WHERE g.context_id=$2) AS topic
                 FROM group_candidates g JOIN cognitive_contexts c ON c.id=g.context_id
                 WHERE c.chat_id=$1 AND g.status IN ('pending','deferred','claimed') AND g.expires_at>$3''',frame.chat_id,cid,now)
@@ -180,7 +192,9 @@ class GroupService:
             if any(m['owner_id']==anchor['owner_id'] and (m.get('reply_to_id')==anchor['message_id'] or m['branch']==anchor['branch'])
                    and __import__('re').search(r'не возвращайся|не поднимай|не вмешивайся|не надо вмешиваться|stop interrupting',m['text'],__import__('re').I) for m in later):
                 return 'explicit_topic_refusal'
-            if len(later)>=8 and all(m['branch']!=anchor['branch'] for m in later[-6:]): return 'conversation_moved'
+            # Lexical branch IDs are only hints for the semantic sweep; a topic
+            # paraphrase must not discard it before the arbiter reads context.
+            if row['kind']!='contextual' and len(later)>=8 and all(m['branch']!=anchor['branch'] for m in later[-6:]): return 'conversation_moved'
         async with self.pool.acquire() as conn:
             if not await conn.fetchval('SELECT enabled FROM response_status WHERE chat_id=$1',frame.chat_id): return 'responses_disabled'
             sources=await conn.fetchval("SELECT count(*) FROM cognitive_events WHERE id=ANY($1::bigint[]) AND context_id=$2 AND suppressed_at IS NULL AND payload->'audience'->>'kind' IN ('group','topic') AND (payload->'audience'->>'chat_id')::bigint=$3 AND (payload->'audience'->>'topic_id')::bigint=$4",row['source_ids'],row['context_id'],frame.chat_id,frame.topic_id)
@@ -201,6 +215,12 @@ class GroupService:
                 JOIN cognitive_contexts c ON c.id=g.context_id WHERE c.chat_id=$1 AND g.kind!='reminder'
                 AND g.charged_at>$2''',frame.chat_id,now-timedelta(hours=1))
             if row['kind']!='reminder' and assessed>=min(policy.assessment_hourly_limit,group_policy.assessment_hourly_limit): return False
+            if row['kind']=='contextual':
+                used=await conn.fetchval('''SELECT coalesce(sum(g.attempts),0) FROM group_candidates g
+                    JOIN cognitive_contexts c ON c.id=g.context_id WHERE c.chat_id=$1 AND g.kind='contextual'
+                    AND g.charged_at>$2''',frame.chat_id,now-timedelta(hours=1))
+                # Leave at least half the assessment budget for explicit cues.
+                if used>=max(1,min(policy.assessment_hourly_limit,group_policy.assessment_hourly_limit)//2): return False
             if row['kind']!='reminder' and (len(charged)>=min(policy.daily_limit,group_policy.daily_limit) or charged and (now-charged[0]['created_at']).total_seconds()<max(policy.spacing_seconds,group_policy.spacing_seconds)):
                 return False
             if row['kind']!='reminder' and len(frame.messages)>=10 and sum(m['is_bot'] for m in frame.messages[-30:])/min(30,len(frame.messages))>=policy.max_share:
@@ -307,7 +327,8 @@ class GroupService:
                 ev=load_event(raw['payload'])
                 frame.messages=[dict(source_id=ev.evidence.source_id,message_id=p['message_id'],owner_id=ev.evidence.owner_id,text=ev.text[:2500],
                     sender_kind='user',reply_to_id=ev.reply_to_id,branch=p['message_id'],at=ev.observed_at.isoformat(),_at=ev.observed_at,event_id=raw['id'],directed=True,is_bot=False)]+frame.messages[-31:]
-            judgement=await self.judge.assess(frame,p)
+            async with asyncio.timeout(ASSESS_TIMEOUT_SECONDS):
+                judgement=await self.judge.assess(frame,p)
         if judgement.action=='defer' and row['attempts']<2:
             async with self.pool.acquire() as conn:
                 await conn.execute("UPDATE group_candidates SET status='deferred',due_at=$2,lease_token=NULL WHERE id=$1 AND lease_token=$3",row['id'],self.runtime.clock()+timedelta(seconds=judgement.defer_seconds),token)
@@ -337,7 +358,8 @@ class GroupService:
         from cognition.runtime import PreparedTurn,CURRENT_TURN
         event=load_event(source['payload'])
         style=expression(await self.runtime.personal_state(frame.context_id,event.evidence.owner_id),task_serious=frame.serious)
-        text=p['workflow_text'] if p.get('subscription_id') else (('Напоминание: '+p['description'])[:600] if row['kind']=='reminder' else await self.judge.compose(frame,p,judgement,replace(style,disclosure=0.).instruction()))
+        async with asyncio.timeout(COMPOSE_TIMEOUT_SECONDS):
+            text=p['workflow_text'] if p.get('subscription_id') else (('Напоминание: '+p['description'])[:600] if row['kind']=='reminder' else await self.judge.compose(frame,p,judgement,replace(style,disclosure=0.).instruction()))
         if not text: await self.cancel(row,'no_added_value'); return
         fresh=await self.frame(frame.context_id); latest,rev=await self.policies.get(frame.chat_id,frame.topic_id)
         reason=await self.valid(row,fresh,latest,rev)

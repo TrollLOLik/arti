@@ -30,10 +30,14 @@ class CognitiveUpdateProcessor(BaseUpdateProcessor):
             menu_input = await is_menu_input(update,getattr(runtime,'pool',None))
             if getattr(update,'callback_query',None) or menu_input:
                 text = None
-            if text and text.split()[0].split('@')[0] in ('/menu','/arti_commands','/forget','/clear_context','/rp','/charge','/my_profile','/memory_archive','/stop','/start','/cancel','/proactivity','/quiet'):
+            if text and text.split()[0].split('@')[0] in ('/menu','/arti_commands','/forget','/clear_context','/rp','/charge','/my_profile','/memory_archive','/stop','/start','/cancel','/proactivity','/quiet','/organizer','/todo','/event','/remind','/timezone','/request'):
                 # Control/diagnostic requests may contain the very topic being
                 # erased. They are not new autobiographical evidence.
                 text = None
+            if runtime and scope and scope.chat_type=='private' and text and user and message:
+                from organizer.natural import claim_input
+                from config import rp_mode_state
+                await claim_input(runtime.pool,user.id,scope.chat_id,message.message_id,text,mode='rp' if rp_mode_state.get(scope.chat_id) else 'default')
             if runtime and runtime.mode!='legacy' and scope and scope.group and message:
                 migrated_to=getattr(message,'migrate_to_chat_id',None)
                 migrated_from=getattr(message,'migrate_from_chat_id',None)

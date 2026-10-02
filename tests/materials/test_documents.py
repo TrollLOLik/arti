@@ -15,6 +15,50 @@ from materials.types import ExtractionBundle, MaterialError, Locator
 from tests.materials.document_fixtures import scanned_pdf, structured_pdf, rich_docx, damaged_page_pdf, conflicting_text_layer_pdf
 
 
+class AffineGeometryTests(unittest.TestCase):
+    def test_ocr_caps_native_threads_before_processing(self):
+        import cv2
+        from materials.extractors.ocr import OCR
+        previous=cv2.getNumThreads(); observed=[]
+        def probe(*args,**kwargs):
+            observed.append(cv2.getNumThreads())
+            raise MaterialError('stop_thread_probe')
+        try:
+            cv2.setNumThreads(2)
+            with Image.new('RGB',(20,20),'white') as image, patch.object(OCR,'_call',side_effect=probe):
+                with self.assertRaisesRegex(MaterialError,'stop_thread_probe'):
+                    OCR().read(image)
+            self.assertTrue(observed)
+            self.assertEqual({1},set(observed))
+        finally:
+            cv2.setNumThreads(previous)
+
+    def test_scalar_composition_and_inverse_match_matrix_reference(self):
+        import math
+        import numpy as np
+        from materials.extractors.ocr import compose_affine,inverse_affine
+        matrix=lambda t: np.array([t[:3],t[3:],(0,0,1)],dtype=float)
+        for angle in (0,3,-3,90,180,270):
+            radians=math.radians(angle); cosine=math.cos(radians); sine=math.sin(radians)
+            transform=(cosine,-sine,320,sine,cosine,-117)
+            right=(1.2,0,37,0,.8,29)
+            combined=compose_affine(transform,right)
+            np.testing.assert_allclose(matrix(combined),matrix(transform) @ matrix(right),atol=1e-12)
+            inverse=inverse_affine(combined)
+            np.testing.assert_allclose(matrix(inverse),np.linalg.inv(matrix(combined)),atol=1e-12)
+            np.testing.assert_allclose(matrix(compose_affine(inverse,combined)),np.eye(3),atol=1e-12)
+            for x,y in ((0,0),(480,0),(480,270),(0,270),(123.25,56.75)):
+                a,b,c,d,e,f=combined; xx,yy=a*x+b*y+c,d*x+e*y+f
+                a,b,c,d,e,f=inverse
+                self.assertAlmostEqual(x,a*xx+b*yy+c,places=10)
+                self.assertAlmostEqual(y,d*xx+e*yy+f,places=10)
+
+    def test_singular_affine_is_rejected(self):
+        from materials.extractors.ocr import inverse_affine
+        with self.assertRaisesRegex(MaterialError,'ocr_geometry_invalid'):
+            inverse_affine((1,2,0,2,4,0))
+
+
 class StructuredDocumentTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -199,6 +243,27 @@ class ParserIsolationTests(unittest.IsolatedAsyncioTestCase):
     async def test_disk_limit_returns_safe_error(self):
         with self.assertRaisesRegex(MaterialError,'parser_disk_budget'):
             await run_worker(dict(operation='disk'),b'x',WorkerLimits(disk_mb=8),worker_path=self.worker)
+
+    async def test_disk_limit_is_classified_when_worker_exits_between_polls(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        async def exited(*args,**kwargs):
+            # Model the actual EFBIG path: one file reaches the OS cap and
+            # the worker exits before the parent's first polling iteration.
+            (Path(args[-1])/'overflow').write_bytes(b'x'*(8*1024**2))
+            return SimpleNamespace(returncode=1)
+        with patch('materials.extractors.isolation.asyncio.create_subprocess_exec',new=AsyncMock(side_effect=exited)):
+            with self.assertRaisesRegex(MaterialError,'parser_disk_budget'):
+                await run_worker(dict(operation='disk'),b'x',WorkerLimits(disk_mb=8),worker_path=self.worker)
+
+    async def test_file_size_signal_is_classified_without_a_result_file(self):
+        import signal
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        if not hasattr(signal,'SIGXFSZ'): self.skipTest('POSIX file-size signal')
+        with patch('materials.extractors.isolation.asyncio.create_subprocess_exec',new=AsyncMock(return_value=SimpleNamespace(returncode=-signal.SIGXFSZ))):
+            with self.assertRaisesRegex(MaterialError,'parser_disk_budget'):
+                await run_worker(dict(operation='disk'),b'x',WorkerLimits(disk_mb=8),worker_path=self.worker)
 
     async def test_timeout_kills_worker_and_child(self):
         import psutil

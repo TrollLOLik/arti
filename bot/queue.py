@@ -163,7 +163,11 @@ def _is_task_cancelled(task: dict) -> bool:
 async def cancel_chat_generation(chat_id: int):
     """Полная отмена для чата: помечает очередь (стоящие задачи) + рубит запущенные."""
     from bot.request_runtime import store
-    await store().cancel_chat(chat_id)
+    requests=store()
+    async with requests.pool.acquire() as conn,conn.transaction():
+        await requests.cancel_chat(chat_id,conn=conn)
+        if chat_id>0:
+            await conn.execute('DELETE FROM arti_organizer_pending WHERE owner_id=$1 AND chat_id=$1',chat_id)
     mark_chat_generation_cancelled(chat_id)
     cancel_chat_tasks(chat_id)
 
@@ -643,6 +647,9 @@ async def enqueue_reply(chat_id, user_id, user_name, user_message, message_id, c
         user_name='Анонимный участник'
     from cognition.runtime import get_runtime
     runtime = get_runtime()
+    if runtime and scope and scope.chat_type=='private' and message_id is not None:
+        from organizer.natural import claim_input
+        await claim_input(runtime.pool,user_id,chat_id,message_id,user_message,mode='rp' if rp_mode_state.get(chat_id) else 'default')
     source_context = None; source_ids=[]
     if runtime and runtime.mode!='legacy' and scope and scope.group and message_id is not None:
         from cognition.types import Origin
@@ -681,6 +688,9 @@ async def enqueue_reply(chat_id, user_id, user_name, user_message, message_id, c
         'is_video_note': is_video_note
     }
     request['_request_mode'] = 'rp' if rp_mode_state.get(chat_id) else 'default'
+    if scope and scope.chat_type=='private' and scope.user_id==chat_id:
+        async with get_db() as conn:
+            request['_request_no_coalesce']=bool(await conn.fetchval('SELECT 1 FROM arti_organizer_pending WHERE owner_id=$1 AND chat_id=$1 AND expires_at>NOW()',chat_id))
     request['_cognitive_context'] = source_context
     for use in getattr(document_text, 'material_uses', ()):
         if use.source_event_id is not None and source_context is not None:
@@ -936,17 +946,30 @@ async def process_user_reply(request, bot):
         document_text = strip_introspection_tags(document_text)
 
     mode = request.get('_request_mode', "rp" if rp_mode_state.get(chat_id) else "default")
+    from cognition.runtime import get_runtime
+    runtime=get_runtime()
+    if runtime and CURRENT_SCOPE.get() and CURRENT_SCOPE.get().chat_type=='private':
+        from organizer.natural import claim_input
+        await claim_input(runtime.pool,user_id,chat_id,message_id,user_message,mode=mode)
     from bot.request_runtime import prepare_turn
     cognitive_turn = await prepare_turn(chat_id,profile_user_id,user_message,message_id,mode,source_context=request.get('_cognitive_context'))
     cognitive_turn.supporting_event_ids=sorted(set(getattr(cognitive_turn,'supporting_event_ids',())) | set(request.get('_cognitive_source_ids',[])))
     if cognitive_turn.repeated_delivery:
         return
+    from bot.organizer_commands import handle_natural as handle_organizer_request
+    if mode != 'rp' and await handle_organizer_request(request, bot):
+        return
     from ai.intents import resolve_intent
+    from bot.intent_context import routing_context
+    intent_context = await routing_context(request, cognitive_turn)
     import time
     request['_intent'] = await checkpoint('intent', lambda: resolve_intent(user_message,chat_id,
         has_materials=bool(request.get('_material_uses') or document_text),
         allow_work=enabled() and os.getenv('ARTI_AGENTS_ENABLED','0').lower() in ('1','true','yes'),
-        recent_maps=time.time()-_recent_map_sessions.get(user_id,0)<300)) if mode!='rp' else {}
+        recent_maps=time.time()-_recent_map_sessions.get(user_id,0)<300,context=intent_context)) if mode!='rp' else {}
+    if request['_intent'].get('clarification'):
+        await bot.send_message(chat_id=chat_id, text=request['_intent']['clarification'], reply_to_message_id=message_id)
+        return
     from bot.agent_requests import handle_agent_request
     from bot.request_runtime import agent_handoff
     if enabled() and user_id and await agent_handoff(lambda: handle_agent_request(request,bot)):
@@ -1640,14 +1663,15 @@ async def _vclone_probe_duration(wav: Path) -> float | None:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _stderr = await proc.communicate()
+        from utils.process_limits import communicate_bounded
+        stdout, _stderr = await communicate_bounded(proc, 15)
         if proc.returncode != 0:
             return None
         text = (stdout or b"").decode("utf-8", errors="replace").strip()
         if not text:
             return None
         return float(text.splitlines()[-1].strip())
-    except (OSError, ValueError):
+    except (OSError, ValueError, TimeoutError):
         return None
 
 
@@ -1664,9 +1688,10 @@ async def _vclone_wav_to_mp3(wav: Path, mp3: Path) -> bool:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        await proc.communicate()
+        from utils.process_limits import communicate_bounded
+        await communicate_bounded(proc, 120)
         return proc.returncode == 0 and mp3.exists()
-    except OSError:
+    except (OSError, TimeoutError):
         return False
 
 

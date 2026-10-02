@@ -14,7 +14,9 @@ class VideoTests(unittest.IsolatedAsyncioTestCase):
         first=await extractor.extract_async('v',1,data,'video/mp4'); second=await extractor.extract_async('v',1,data,'video/mp4')
         self.assertEqual(first,second); self.assertEqual('partial',first.manifest.coverage)
         frames=[b for b in first.blocks if b.metadata.get('role')=='video_frame']
-        self.assertEqual([0,1000,1500,2000,2900],[b.locator.start_ms for b in frames])
+        self.assertEqual([0,900,1000,1500,2000,2900],[b.locator.start_ms for b in frames])
+        self.assertEqual(1,first.blocks[0].metadata['adaptive_frame_budget'])
+        self.assertIn('adaptive_reinspection_is_bounded_not_exhaustive',first.manifest.limitations)
         self.assertIn('audio_not_available',first.manifest.limitations)
         self.assertIn('sparse_frames_do_not_prove_event_absence',first.manifest.limitations)
 

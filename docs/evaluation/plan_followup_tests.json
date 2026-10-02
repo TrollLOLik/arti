@@ -1,0 +1,16 @@
+{
+  "suite": "full_repository_unittest_discovery",
+  "tests_run": 624,
+  "passed": 624,
+  "failures": [],
+  "errors": [],
+  "skipped": [],
+  "duration_seconds": 266.616,
+  "synthetic_inputs": true,
+  "database": "disposable PostgreSQL",
+  "live_provider_calls": 0,
+  "live_telegram_calls": 0,
+  "human_pilot_completed": false,
+  "platform": "Linux",
+  "command": "ARTI_TEST_DB=1 python -m unittest discover -s tests -t ."
+}

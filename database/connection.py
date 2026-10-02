@@ -105,6 +105,12 @@ async def _create_tables_internal(conn):
     """Внутренняя функция создания таблиц"""
     from bot.request_store import RequestStore
     await RequestStore(None).initialize(conn)
+    from organizer.repository import initialize as initialize_organizer
+    await initialize_organizer(conn)
+    from organizer.natural import initialize as initialize_organizer_pending
+    await initialize_organizer_pending(conn)
+    from organizer.ownership import initialize as initialize_organizer_ownership
+    await initialize_organizer_ownership(conn)
     # История чатов (с датами)
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS chat_history (

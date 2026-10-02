@@ -215,26 +215,29 @@ def expression(state: CognitiveState, *, task_serious: bool = False,
                temperament=Temperament()) -> ExpressionPlan:
     active = sorted((e for e in state.episodes if e.intensity >= .025),
                     key=lambda e: (-e.intensity, e.id))
-    strong = active[:3]
+    # Keep independent causes and mixed affect instead of selecting one winner.
+    strong = active[:6]
+    positive = sum(e.intensity for e in strong if EMOTIONS[e.emotion][0] > .1)
+    negative_weight = sum(e.intensity for e in strong if EMOTIONS[e.emotion][0] < -.1)
+    total = positive+negative_weight
+    mixed = bool(total and min(positive,negative_weight)/total >= .18)
     uncertain = any(e.confidence < .6 and EMOTIONS[e.emotion][0] < 0 for e in strong)
-    dominant = strong[0].emotion if strong else 'neutral'
-    tone = {'anger': 'firm and measured', 'fear': 'careful and attentive', 'sadness': 'gentle and quiet',
-            'disappointment': 'calm and candid', 'guilt': 'responsible and concrete',
-            'embarrassment': 'reserved', 'joy': 'warm', 'gratitude': 'warm and appreciative',
-            'interest': 'curious', 'surprise': 'attentive', 'pride': 'pleased'}.get(dominant, 'calm')
-    regulation = 'clarify' if uncertain else ('problem_solve' if task_serious or dominant in ('fear', 'guilt') else 'acknowledge')
-    negative = dominant in ('anger', 'fear', 'sadness', 'disappointment', 'guilt', 'embarrassment')
-    sticker = {'joy': 'happy', 'gratitude': 'happy', 'sadness': 'sad', 'anger': 'angry',
-               'interest': 'thinking', 'surprise': 'thinking', 'pride': 'happy'}.get(dominant)
-    if task_serious or uncertain:
-        sticker = None
+    negative = negative_weight > positive or mixed
+    if mixed: tone = 'warm but measured'
+    elif negative: tone = 'gentle and concrete'
+    elif positive: tone = 'warm and attentive'
+    else: tone = 'calm'
+    regulation = 'clarify' if uncertain else 'problem_solve' if task_serious else 'acknowledge'
+    # Delivery is a choice, not an emotion label. Avoid a single-valence sticker
+    # when the state has competing causes or the task needs a serious answer.
+    sticker = 'happy' if positive and not negative_weight and not task_serious and not uncertain else None
     slow = affect(state)['mood_valence']
-    if not strong and slow<-.12:
-        tone = 'quiet and measured'
-    if state.effort_load>.8:
-        tone = 'concise and attentive'
+    if not strong and slow < -.12: tone = 'quiet and measured'
+    if state.effort_load > .8: tone = 'concise and attentive'
+    behaviors = ('ask_one_question',) if uncertain else ('answer_task',) if task_serious else ('listen',)
+
     return ExpressionPlan(regulation, tone, max(0.,min(1.,(.35 if negative else .65)+slow*.08)),
                           .8 if task_serious or negative else .5,
                           0. if task_serious or negative else .15, .3 * (1 - temperament.expression_reserve),
                           sticker, 'measured' if negative or task_serious else 'conversational',
-                          tuple(dict.fromkeys(e.cause_id for e in strong)), uncertain)
+                          tuple(dict.fromkeys(e.cause_id for e in strong)), uncertain, behaviors, mixed)

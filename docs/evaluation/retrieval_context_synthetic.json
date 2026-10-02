@@ -1,0 +1,73 @@
+{
+  "contract": "retrieval-context-synthetic-v1",
+  "encoder": "declared-384d-concept-equivalences",
+  "actual_embedding_quality_measured": false,
+  "provider_calls": 0,
+  "telegram_calls": 0,
+  "private_history_used": false,
+  "disposable_database": true,
+  "cases": [
+    {
+      "case": "named_finance",
+      "query": "What did Alice decide about spending?",
+      "expected_first": "alice_budget",
+      "retrieved": [
+        "alice_budget"
+      ],
+      "passed": true
+    },
+    {
+      "case": "named_travel",
+      "query": "How did Alice organize her journey?",
+      "expected_first": "alice_flight",
+      "retrieved": [
+        "alice_flight"
+      ],
+      "passed": true
+    },
+    {
+      "case": "zero_overlap_paraphrase",
+      "query": "Who funded expenditure?",
+      "expected_first": null,
+      "retrieved": [
+        "bob_budget",
+        "alice_budget"
+      ],
+      "passed": true
+    },
+    {
+      "case": "wrong_event_same_name",
+      "query": "Alice violin recital",
+      "expected_first": null,
+      "retrieved": [],
+      "passed": true
+    },
+    {
+      "case": "unrelated_abstention",
+      "query": "Who repaired the telescope?",
+      "expected_first": null,
+      "retrieved": [],
+      "passed": true
+    },
+    {
+      "case": "irrelevant_link_neighbor",
+      "retrieved": [
+        "bob_budget",
+        "alice_budget"
+      ],
+      "passed": true
+    },
+    {
+      "case": "suppressed_source_excluded",
+      "retrieved": [],
+      "passed": true
+    }
+  ],
+  "passed": 7,
+  "total": 7,
+  "limitations": [
+    "Synthetic finite corpus; no claim about real multilingual embedding accuracy.",
+    "Participant cues use exact source-backed name tokens; aliases and inflections are unmeasured.",
+    "Scoring weights are engineering heuristics, not calibrated probabilities."
+  ]
+}

@@ -19,6 +19,46 @@ VERSION = 'minilm-multilingual-384:'+REVISION+':mean-v1'
 FILES = ('model_optimized.onnx','config.json','special_tokens_map.json','tokenizer.json','tokenizer_config.json')
 
 
+# Engineering ranking signals, not probabilities or participant identity claims.
+_QUERY_STOPWORDS = frozenset('the a an and or of to in on for with is was were did do does what when where who how about me my our this that it tell remember please что как где когда кто это тот мне мы мой наш про расскажи напомни пожалуйста было были был'.split())
+
+
+def query_terms(text):
+    from cognition.memory_dynamics import tokens
+    # Preserve searchable parts of source identifiers (e.g. PRIVATE_ALPHA).
+    return (tokens(text) | tokens(str(text).replace('_',' '))) - _QUERY_STOPWORDS
+
+
+def trace_names(trace):
+    """Only names with source-backed encoded spans, never guessed from capitals."""
+    return set().union(*(query_terms(d.get('text','')) for d in trace.get('details',()) if d.get('kind')=='name'))
+
+
+def retrieval_signals(query, trace, *, requested_names=(), semantic_score=0.):
+    """Separate topical/action/name evidence from accessibility and mood.
+
+    Exact name tokens only: no unmeasured alias/inflection resolution. A known
+    named distractor cannot substitute for another explicitly queried name.
+    """
+    words=query_terms(query)
+    names=trace_names(trace)
+    requested=set(requested_names)
+    lexical=len(words & query_terms(trace.get('gist',''))) / max(1,len(words))
+    topic=len(words & query_terms(trace.get('topic',''))) / max(1,len(words))
+    actions=set().union(*(query_terms(d.get('text','')) for d in trace.get('details',()) if d.get('kind')=='action'))
+    action=len(words & actions) / max(1,len(words))
+    name_match=len(names & requested) / max(1,len(requested))
+    name_conflict=bool(requested and names and not names & requested)
+    semantic=max(0.,min(1.,float(semantic_score)))
+    # A shared name alone does not answer an event-specific question. Require
+    # remaining query content to match lexically, topically, or semantically.
+    event_words=words-requested
+    event_match=not event_words or bool(event_words & (query_terms(trace.get('gist','')) | query_terms(trace.get('topic','')) | actions)) or semantic>=.42
+    direct=bool(lexical or topic or action or semantic>=.42)
+    return dict(lexical=lexical,topic=topic,action=action,name=name_match,
+                semantic=semantic,eligible=direct and event_match and not name_conflict)
+
+
 def model_directory():
     return Path(os.getenv('ARTI_SEMANTIC_MODEL_DIR', str(Path(__file__).resolve().parents[1]/'data/models/semantic-minilm')))
 

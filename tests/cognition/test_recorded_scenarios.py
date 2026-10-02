@@ -1,4 +1,4 @@
-"""Replay observed outputs exactly, including the two failed held-out criteria."""
+"""Preserve historic appraisal evidence; assert the current expression contract."""
 import json
 import unittest
 from datetime import datetime, timezone
@@ -27,7 +27,13 @@ class RecordedScenarioTests(unittest.TestCase):
                     # New resource/circadian observables have separate scenarios.
                     for key,value in results[case['id']]['affect'].items():
                         self.assertAlmostEqual(value,affect(state)[key],places=12)
-                    self.assertEqual(expression(state).tone,results[case['id']]['expression']['tone'])
+                    # Expression policy intentionally evolved; old live reports
+                    # remain evidence of the old version, never relabeled success.
+                    plan=expression(state)
+                    self.assertEqual(plan.behaviors,('ask_one_question',) if case['id']=='ambiguity' else ('listen',))
+                    self.assertEqual(plan.mixed_affect,case['id'] in {'user_loss','service_failure','goal_conflict','heldout_grief'})
+                    self.assertTrue(set(plan.cause_ids)<={ev.event_id})
+                    if plan.mixed_affect: self.assertIsNone(plan.sticker_mood)
 
     def test_heldout_failures_remain_in_the_evaluation_record(self):
         report = json.loads((ROOT/'docs/evaluation/held_out_uncertainty_v2_live.json').read_text(encoding='utf-8'))
@@ -49,6 +55,12 @@ class RecordedScenarioTests(unittest.TestCase):
                 p = Perception.from_dict(json.loads((ROOT/'tests/fixtures/full_perceptions/frozen_final_v4/final_held_out'/f'{name}.json').read_text(encoding='utf-8')))
                 state = appraise(initial_state(ev.context,at),ev,p)
                 self.assertAlmostEqual(sum(e.intensity for e in state.episodes),rows[name]['impulse'],places=12)
-                self.assertEqual(expression(state).instruction(),rows[name]['expression'])
+                plan=expression(state)
+                self.assertEqual(plan.behaviors,('listen',))
+                self.assertEqual(plan.mixed_affect,name=='final_loss')
+                self.assertTrue(set(plan.cause_ids)<={ev.event_id})
+                if name=='final_loss':
+                    self.assertIn('do not force one mood',plan.instruction())
+                    self.assertIsNone(plan.sticker_mood)
         previous = json.loads((ROOT/'docs/evaluation/full_held_out_frozen_full_v3_live.json').read_text(encoding='utf-8'))
         self.assertEqual((previous['passed'],previous['total']),(14,16))
