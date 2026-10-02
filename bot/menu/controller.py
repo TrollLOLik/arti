@@ -61,11 +61,11 @@ class Controller:
         if '/artifact create' in text or '/decision propose' in text:
             text = 'Не получилось применить изменение. Возможно, версия или права уже изменились. Открой объект заново.'
         if state.get('pending'):
-            buttons += [[('Отменить ввод',dict(nav='home'))]]
+            buttons += [[('Отменить ввод',dict(nav=state.get('return_to','home'))), ('⌂ Меню',dict(nav='home'))]]
         elif state.get('view'):
             buttons += [[('‹ К результату',state['view']),('⌂ Меню',dict(nav='home'))]]
         else:
-            buttons += self.panel.navigation()
+            buttons += self.panel.navigation(state.get('return_to','home'))
         return await self.render(text, buttons, screen='legacy', state=state)
 
     def snapshot_legacy(self):
@@ -124,6 +124,10 @@ class Controller:
             getattr(config, key).get(self.actor.scope.chat_id, {}).pop(self.actor.user_id, None)
         for key in ('pending_base64_for_gen','pending_material_uses_for_gen'):
             self.context.user_data.pop(key,None)
+        if force:
+            # A photo awaiting its caption must not consume the first message
+            # after an explicit return to conversation. Its stored source remains.
+            config.pending_photo_action.pop((self.actor.scope.chat_id,self.actor.user_id),None)
 
     def legacy_waiting(self):
         import config
@@ -138,22 +142,68 @@ class Controller:
         return False
 
     async def show(self, screen='home', page=0, *, allow_create=False):
-        self.clear_legacy()
+        self.clear_legacy(force=screen in views.CONVERSATION_SCREENS)
         if screen in views.SECTIONS:
             text, buttons = deepcopy(views.SECTIONS[screen])
             # Shared entry screens may be used by another participant to open THEIR panel.
             state = dict(shared=True)
-            if screen != 'home':
-                buttons += self.panel.navigation(views.PARENTS.get(screen, 'home'))
-            else:
-                buttons += [[('Свернуть', dict(close=True))]]
-            if screen == 'home':
+            from config import PRIVILEGED_USER_IDS, rp_mode_state
+            private = self.actor.scope.chat_type == 'private'
+            in_scene = bool(private and rp_mode_state.get(self.actor.scope.chat_id))
+            if screen == 'settings':
+                from utils.admin import is_admin
+                admin = await is_admin(self.update.effective_user,self.actor.scope.chat_id,self.context)
+                buttons = [line for line in buttons if all(
+                    (not a.get('command') or admin) and (a.get('nav')!='chat_control' or admin)
+                    and (a.get('nav')!='group' or not private) for _,a in line)]
+                if self.actor.user_id in PRIVILEGED_USER_IDS:
+                    buttons.insert(-1,[views.nav('🔍 Диагностика','diagnostics')])
+                # Permission-dependent choices must not become another user's entry point.
+                state = {}
+            elif screen == 'diagnostics':
+                if self.actor.user_id not in PRIVILEGED_USER_IDS:
+                    return await self.show('settings')
+                state = {}
+            elif screen == 'roleplay':
+                from materials.runtime import enabled
+                if not enabled():
+                    buttons = [line for line in buttons if not any(a.get('nav')=='learning' for _,a in line)]
+                if not private:
+                    buttons = [line for line in buttons if not any(a.get('command')=='/rp' for _,a in line)]
+                    text += '\n\nСцены открываются в личном чате. В группе можно играть в «Камень, ножницы, бумага».'
+                elif in_scene:
+                    text = '🎭 <b>Сцена уже открыта</b>\n\nПродолжим с того места, где остановились? Просто напиши в чат. Память сцены хранится отдельно от обычного разговора.'
+                    buttons = [line for line in buttons if not any(a.get('command')=='/rp' for _,a in line)]
+                    buttons.insert(0,[('Закончить сцену',dict(confirm=dict(special='rp_off'),title='Закончить сцену и вернуться к обычному разговору?'))])
+            elif screen == 'create' and in_scene:
+                text = '✨ <b>Идея для творчества</b>\n\nСейчас мы в сцене: генерация картинки, видео и музыки в ней недоступна. Идею можем обсудить здесь, а к генерации вернуться после сцены.'
+                buttons = [[views.nav('🎭 К текущей сцене','roleplay')], [views.nav('💬 Обсудим идею','talk')]]
+            elif screen == 'memory':
+                if in_scene:
+                    text += '\n\n<i>Сейчас открыта память этой сцены.</i>'
+                elif not private:
+                    text += '\n\n<i>Только доступные тебе записи этой темы. Личная переписка остаётся в личном чате.</i>'
+            elif screen == 'work':
                 from materials.runtime import enabled
                 from agents.runtime import enabled as agents_enabled
                 if not enabled():
-                    text += '\n\n<i>Сохранённая работа с файлами пока не включена. Картинки, видео, музыка и общение доступны по настройкам чата.</i>'
+                    text = '🧰 <b>Помоги с делом</b>\n\nСохранённая работа с файлами и задачами пока не включена. Обсудить вопрос со мной можно прямо в чате.'
+                    buttons = [[views.nav('💬 Обсудим вопрос','talk')], [views.nav('Что здесь можно делать','help_work')], [views.nav('🔌 Подключения','connections')]]
                 elif not agents_enabled():
-                    text += '\n\n<i>Проекты доступны. Исполнение агентских задач пока не включено.</i>'
+                    text += '\n\n<i>Новые многошаговые задачи и запуски по расписанию пока недоступны. Сохранённую работу можно посмотреть.</i>'
+                    buttons = [[(label,a) for label,a in line if a.get('form') not in ('agent','infographic') and a.get('nav')!='routines'] for line in buttons]
+                    buttons = [line for line in buttons if line]
+            if screen in views.CONVERSATION_SCREENS:
+                if not private:
+                    text += '\n\n<i>В группе ответь на это сообщение или обратись ко мне по имени.</i>'
+                # No pending state: the next real message takes the usual cognition route.
+                buttons += [[('Продолжить в чате',dict(close=True))]]
+            if screen != 'home':
+                buttons += self.panel.navigation(views.PARENTS.get(screen, 'home'))
+            else:
+                buttons += [[('Вернуться в разговор', dict(close=True))]]
+                if in_scene:
+                    text += '\n\n<i>Сейчас мы в ролевой сцене.</i>'
             return await self.render(text, buttons, screen=screen, state=state,allow_create=allow_create)
         if screen == 'group':
             return await self.group_screen()
@@ -169,7 +219,7 @@ class Controller:
         buttons = [[(p.title[:40]+' · '+LABELS.get(p.status, p.status), dict(project=p.id))]
                    for p in projects[page*6:page*6+6]]
         buttons.insert(0, [views.form('＋ Новый проект', 'project_new')])
-        buttons += self.pages('projects', page, len(projects)) + self.panel.navigation()
+        buttons += self.pages('projects', page, len(projects)) + self.panel.navigation('work')
         return await self.render('🗂 <b>Проекты</b>\n\n'+('Выбери проект.' if projects else 'Пока пусто. Создадим первый?'), buttons,
                                 screen='projects', state={})
 
@@ -227,7 +277,7 @@ class Controller:
         if not current:
             return await self.render('Сначала выбери или создай проект.', [[views.nav('Выбрать проект', 'projects')]]+self.panel.navigation(), state={})
         titles = dict(tasks='⏳ Задачи', artifacts='📊 Результаты', decision='🗳 Решения', assignment='📌 Поручения',
-                      procedure='🧩 Процедуры', subscription='🕒 Подписки', learning='📚 Сценарии')
+                      procedure='🧩 Процедуры', subscription='🕒 Подписки', learning='📚 Истории и квесты')
         table = 'arti_tasks' if kind=='tasks' else 'arti_artifacts' if kind=='artifacts' else 'arti_workflow_objects'
         async with service.repository.pool.acquire() as conn:
             query = ("SELECT a.id FROM arti_artifacts a JOIN arti_projects p ON p.id=a.project_id WHERE p.realm=$1 AND a.project_id=$2"
@@ -448,7 +498,9 @@ class Controller:
             from agents.runtime import enabled
             if not enabled():
                 raise MaterialError('menu_agents_disabled')
-        draft = dict(kind=kind, data=data, fields=forms.fields(kind, data), values={}, index=0)
+        origin = self.panel.row['screen']
+        draft = dict(kind=kind, data=data, fields=forms.fields(kind, data), values={}, index=0,
+                     return_to=origin if origin in views.SECTIONS else views.form_parent(kind))
         if data.get('file'):
             draft['values']['file'] = data['file']
             draft['fields'] = [f for f in draft['fields'] if f['key'] != 'file']
@@ -460,7 +512,8 @@ class Controller:
         return await self.form_screen(draft)
 
     async def form_screen(self, draft, error=None, *, confirm_page=0):
-        state = dict(pending='form', draft=draft, input_until=(datetime.now(timezone.utc)+timedelta(minutes=20)).isoformat())
+        state = dict(pending='form', draft=draft, return_to=draft.get('return_to',views.form_parent(draft['kind'])),
+                     input_until=(datetime.now(timezone.utc)+timedelta(minutes=20)).isoformat())
         if draft['index'] >= len(draft['fields']):
             state['pending'] = 'confirm_form'
             pages = forms.summary_pages(draft)
@@ -475,14 +528,14 @@ class Controller:
                 buttons.append([('✓ Выполнить',dict(submit=True))])
             buttons.append([('Изменить',dict(restart_form=True))])
             text=pages[page]+(f'\n\nЧасть {page+1}/{len(pages)}' if len(pages)>1 else '')
-            return await self.render(text, buttons+self.panel.navigation(), screen='form_confirm', state=state)
+            return await self.render(text, buttons+self.panel.navigation(state['return_to']), screen='form_confirm', state=state)
         f = draft['fields'][draft['index']]
         buttons = [[(label, dict(value=str(value))) for label, value in f['choices'][i:i+2]] for i in range(0,len(f['choices']),2)]
         if f['optional'] and not any(value=='' for _,value in f['choices']):
             buttons.append([('Пропустить', dict(value=''))])
         if draft['index']:
             buttons.append([('‹ Предыдущий шаг', dict(form_back=True))])
-        buttons += [[('Отменить ввод', dict(nav='home'))]]
+        buttons += [[('Отменить ввод',dict(nav=state['return_to'])), ('⌂ Меню',dict(nav='home'))]]
         text = f"<b>{escape(f['label'])}</b> · {draft['index']+1}/{len(draft['fields'])}\n\n"+escape(f['prompt'])
         if self.actor.scope.chat_type != 'private':
             text += '\n\n<i>Ответь на это сообщение меню.</i>'
@@ -515,9 +568,13 @@ class Controller:
     async def execute_command(self, text, reply=None):
         self.clear_legacy()
         key = text.split()[0].lstrip('/')
+        origin = self.panel.row['screen']
+        return_to = origin if origin in views.SECTIONS else views.COMMAND_PARENTS.get(key,'home')
         pending = key in ('image', 'video', 'music', 'model', 'dub', 'vclone', 'voice_save', 'voice_delete', 'voices')
         await self.panel.store.save(self.panel.row, state=dict(pending='legacy', legacy_command=key,
-            input_until=(datetime.now(timezone.utc)+timedelta(minutes=20)).isoformat()) if pending else {})
+            return_to=return_to,
+            input_until=(datetime.now(timezone.utc)+timedelta(minutes=20)).isoformat()) if pending else
+            dict(return_to=return_to))
         self.panel.output = False
         await bridge.command(self, text, reply)
         if key=='project' and text.split()[1:2] in (['new'],['edit'],['attach'],['member']):
@@ -802,7 +859,11 @@ class Controller:
             self.clear_legacy()
             return await self.render(escape(action['title']),[[('Да, выполнить',action['confirm']),('Нет',dict(nav='home'))]],screen='confirm',state={})
         if action.get('close'):
-            await self.render('Меню свернуто. Откроешь, когда понадобится.',[[('Открыть меню',dict(nav='home'))]],screen='closed',state=dict(shared=True))
+            self.clear_legacy(force=True)
+            text = 'Я здесь. Продолжим в чате — просто напиши или пришли голосовое.'
+            if self.actor.scope.chat_type != 'private':
+                text += '\n\nВ группе ответь на это сообщение или обратись ко мне по имени.'
+            await self.render(text,[[('🧭 Открыть меню',dict(nav='home'))]],screen='closed',state=dict(shared=True))
             return
         if 'form' in action:
             return await self.begin(action['form'],{k:v for k,v in action.items() if k!='form'})

@@ -37,9 +37,31 @@ def context_for():
 class MenuPureTests(unittest.TestCase):
     def test_all_major_capabilities_have_named_entry_points(self):
         buttons=[label for _,rows in views.SECTIONS.values() for line in rows for label,_ in line]
-        for fragment in ('Картинку','Видео','Музыку','Инфографику','Задачи','Память','Учебный сценарий','Выбрать модель','Мои голоса','Посчитать'):
-            self.assertTrue(any(fragment in label for label in buttons),fragment)
+        for fragment in ('Картинку','Видео','Музыку','Инфографику','Задачи','память','Истории и квесты','Выбрать модель','Мои голоса','Посчитать'):
+            self.assertTrue(any(fragment.casefold() in label.casefold() for label in buttons),fragment)
         self.assertFalse(any('/' in label for label in buttons))
+
+    def test_conversation_is_primary_and_saved_work_remains_reachable(self):
+        root=[a['nav'] for line in views.SECTIONS['home'][1] for _,a in line]
+        self.assertEqual(['talk','create','roleplay','voices','memory','work','settings'],root)
+        reached=set()
+        def visit(screen):
+            if screen in reached:
+                return
+            reached.add(screen)
+            for line in views.SECTIONS.get(screen,('',[]))[1]:
+                for _,a in line:
+                    if 'nav' in a:
+                        visit(a['nav'])
+                    if 'command' in a:
+                        from bot.menu.bridge import HANDLERS
+                        self.assertIn(a['command'].split()[0][1:],HANDLERS)
+                    if 'form' in a:
+                        self.assertIn(a['form'],forms.FORMS)
+        visit('home')
+        self.assertTrue(set(views.SECTIONS)-{'diagnostics'} <= reached)
+        self.assertTrue({'projects','tasks','materials','collaboration','routines','learning'} <= reached)
+        self.assertFalse({'projects','tasks','materials','collaboration','routines'} & set(root))
 
     def test_typed_values_do_not_interpret_injected_commands(self):
         with self.assertRaises(ValueError): forms.parse(forms.field('cell','Ячейка',kind='cell'),'B2; /stop')
@@ -230,6 +252,139 @@ class MenuSQLTests(unittest.IsolatedAsyncioTestCase):
         for call in self.context.bot.edit_message_text.await_args_list:
             for line in call.kwargs['reply_markup'].inline_keyboard:
                 for b in line: self.assertLessEqual(len(b.callback_data.encode()),64)
+
+    async def test_conversation_opening_releases_input_without_fabricating_a_user_turn(self):
+        from bot.menu import is_menu_input, menu_input
+        import config
+        store,panel,actor=await self.setup_panel()
+        with patch('materials.runtime.actor_for_current',AsyncMock(return_value=actor)), \
+             patch('bot.menu.pool_for_menu',return_value=self.pool), \
+             patch.dict(config.waiting_for_image_prompt,{},clear=True), \
+             patch.dict(config.pending_photo_action,{},clear=True), \
+             patch('bot.menu.bridge.command',AsyncMock()) as execute, \
+             patch('bot.queue.enqueue_reply',AsyncMock()) as generate:
+            c=Controller(panel,self.update,self.context,actor)
+            await c.begin('archive',{})
+            await c.act(dict(nav='talk_day'))
+            config.waiting_for_image_prompt[55][7]=True
+            config.waiting_for_image_prompt[55][8]=True
+            self.context.user_data['image_flow']=dict(chat_id=55,waiting=True)
+            config.pending_photo_action[(55,7)]=dict(images=['own'],bot_message_id=81)
+            config.pending_photo_action[(55,8)]=dict(images=['other'],bot_message_id=82)
+            await c.act(dict(close=True))
+            restored=await store.get(55,-1,7)
+            self.assertNotIn('pending',restored['state'])
+            self.assertNotIn('image_flow',self.context.user_data)
+            self.assertNotIn(7,config.waiting_for_image_prompt[55])
+            self.assertTrue(config.waiting_for_image_prompt[55][8])
+            self.assertNotIn((55,7),config.pending_photo_action)
+            self.assertIn((55,8),config.pending_photo_action)
+            ordinary=update_for(text='Сегодня гулял и заметил забавную вывеску',message_id=9)
+            self.assertFalse(await is_menu_input(ordinary))
+            # Returning normally lets the application's usual conversation handler run.
+            await menu_input(ordinary,self.context)
+            execute.assert_not_awaited(); generate.assert_not_awaited()
+        self.context.bot.send_message.assert_awaited_once()
+
+    async def test_work_availability_is_explained_in_work_instead_of_home(self):
+        _,panel,actor=await self.setup_panel()
+        with patch('materials.runtime.actor_for_current',AsyncMock(return_value=actor)), \
+             patch('materials.runtime.enabled',return_value=False),patch('agents.runtime.enabled',return_value=False):
+            c=Controller(panel,self.update,self.context,actor)
+            await c.show('home')
+            self.assertNotIn('не включена',c.last_text)
+            await c.show('work')
+            self.assertIn('не включена',c.last_text)
+            self.assertFalse(any('form' in a for a in panel.row['actions'].values()))
+        with patch('materials.runtime.actor_for_current',AsyncMock(return_value=actor)), \
+             patch('agents.runtime.enabled',return_value=False):
+            await c.show('work')
+            actions=list(panel.row['actions'].values())
+            self.assertTrue(any(a.get('nav')=='projects' for a in actions))
+            self.assertFalse(any(a.get('form') in ('agent','infographic') for a in actions))
+        self.context.bot.send_message.assert_awaited_once()
+
+    async def test_settings_are_owned_and_hide_administration_and_emotion_diagnostics(self):
+        from bot.menu import menu_callback
+        store,panel,actor=await self.setup_panel(group=True)
+        with patch('materials.runtime.actor_for_current',AsyncMock(return_value=actor)), \
+             patch('utils.admin.is_admin',AsyncMock(return_value=False)),patch('config.PRIVILEGED_USER_IDS',[]):
+            c=Controller(panel,self.update,self.context,actor)
+            await c.show('settings')
+            actions=list(panel.row['actions'].values())
+            self.assertFalse(panel.row['state'].get('shared'))
+            self.assertTrue(any(a.get('nav')=='group' for a in actions))
+            self.assertFalse(any(a.get('nav') in ('diagnostics','chat_control') or a.get('command')=='/model' for a in actions))
+            await c.show('memory')
+            self.assertFalse(any(a.get('command')=='/charge' for a in panel.row['actions'].values()))
+            await c.show('diagnostics')
+            self.assertEqual('settings',panel.row['screen'])
+        with patch('materials.runtime.actor_for_current',AsyncMock(return_value=actor)), \
+             patch('utils.admin.is_admin',AsyncMock(return_value=True)),patch('config.PRIVILEGED_USER_IDS',[7]):
+            await c.show('settings')
+            token=next(t for t,a in panel.row['actions'].items() if a.get('nav')=='diagnostics')
+        other=update_for(user=8,chat=-55,topic=4,group=True)
+        other.effective_message=other.message=Message(80,datetime.now(timezone.utc),other.effective_chat,from_user=User(99,'Арти',True))
+        other.callback_query=NS(data='menu:'+panel.row['id']+':'+token,message=other.message,id='other-diagnostics',answer=AsyncMock(),from_user=other.effective_user)
+        CURRENT_SCOPE.set(TransportScope(-55,4,'supergroup',8))
+        with patch('bot.menu.pool_for_menu',return_value=self.pool), \
+             patch('materials.runtime.actor_for_current',AsyncMock(return_value=AccessContext(actor.scope,8,'user:8'))):
+            await menu_callback(other,self.context)
+        self.assertIsNone(await store.get(-55,4,8))
+        self.assertEqual(panel.row['revision'],(await store.get(-55,4,7))['revision'])
+        self.assertTrue(other.callback_query.answer.await_args.kwargs['show_alert'])
+
+    async def test_scene_screen_respects_current_scene_and_group_scope(self):
+        import config
+        store,panel,actor=await self.setup_panel()
+        with patch('materials.runtime.actor_for_current',AsyncMock(return_value=actor)),patch.dict(config.rp_mode_state,{},clear=True):
+            c=Controller(panel,self.update,self.context,actor)
+            await c.show('roleplay')
+            self.assertTrue(any(a.get('command')=='/rp' for a in panel.row['actions'].values()))
+            config.rp_mode_state[55]=True
+            await c.show('roleplay')
+            self.assertFalse(any(a.get('command')=='/rp' for a in panel.row['actions'].values()))
+            self.assertTrue(any(a.get('confirm',{}).get('special')=='rp_off' for a in panel.row['actions'].values()))
+            await c.show('create')
+            self.assertFalse(any('command' in a for a in panel.row['actions'].values()))
+            await c.show('memory')
+            self.assertIn('память этой сцены',c.last_text)
+            group=AccessContext(MaterialScope('arti',-55,4,'supergroup'),7,'user:7')
+            group_row=await store.open(-55,4,7,group.scope.key)
+            group_update=update_for(chat=-55,topic=4,group=True)
+            c=Controller(Panel(store,group_row,self.context.bot),group_update,self.context,group)
+            CURRENT_SCOPE.set(TransportScope(-55,4,'supergroup',7))
+            with patch('materials.runtime.actor_for_current',AsyncMock(return_value=group)):
+                await c.show('roleplay',allow_create=True)
+            self.assertTrue(any(a.get('command')=='/rps' for a in c.panel.row['actions'].values()))
+            self.assertFalse(any(a.get('command')=='/rp' or 'confirm' in a for a in c.panel.row['actions'].values()))
+        self.assertEqual(2,self.context.bot.send_message.await_count)
+
+    async def test_cancel_returns_to_origin_after_form_restore_and_legacy_capture(self):
+        store,panel,actor=await self.setup_panel()
+        with patch('materials.runtime.actor_for_current',AsyncMock(return_value=actor)):
+            c=Controller(panel,self.update,self.context,actor)
+            await c.show('memory'); await c.begin('archive',{})
+            c=Controller(Panel(store,await store.get(55,-1,7),self.context.bot),self.update,self.context,actor)
+            cancel=next(a for a in c.panel.row['actions'].values() if a.get('nav')=='memory')
+            await c.act(cancel)
+            self.assertEqual('memory',c.panel.row['screen']); self.assertNotIn('pending',c.panel.row['state'])
+            await c.show('create')
+            async def capture(*_):
+                await c.capture('Какую картинку нарисуем?')
+            with patch('bot.menu.bridge.command',side_effect=capture):
+                await c.execute_command('/image')
+            self.assertEqual('create',c.panel.row['state']['return_to'])
+            cancel=next(a for a in c.panel.row['actions'].values() if a.get('nav')=='create')
+            await c.act(cancel)
+            self.assertEqual('create',c.panel.row['screen']); self.assertNotIn('pending',c.panel.row['state'])
+            await c.show('styles')
+            with patch('bot.menu.bridge.command',side_effect=capture):
+                await c.execute_command('/artifact style ink')
+            # Commands reused by several screens return to the actual entry,
+            # not the generic artifact list inferred from their command name.
+            self.assertTrue(any(a.get('nav')=='styles' for a in c.panel.row['actions'].values()))
+        self.context.bot.send_message.assert_awaited_once()
 
     async def test_identical_screen_does_not_repeat_network_edit(self):
         store,panel,actor=await self.setup_panel()
