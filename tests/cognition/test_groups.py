@@ -432,18 +432,27 @@ class GroupDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(await conn.fetchval("SELECT count(*) FROM cognitive_events WHERE origin='user'"),0)
                 self.assertEqual(await conn.fetchval("SELECT count(*) FROM cognitive_events WHERE origin='system'"),1)
         finally: CURRENT_SCOPE.reset(token)
-    async def test_queue_keeps_authors_topics_and_merged_source_provenance(self):
+    async def test_durable_queue_keeps_authors_topics_and_source_provenance(self):
         import asyncio
         import bot.queue as queue_module
         context=NS(bot=self.bot); seen=[]
-        async def process(request,bot): seen.append(dict(request))
+        finished=asyncio.Event()
+        async def process(request,bot):
+            seen.append(dict(request))
+            if len(seen)==3: finished.set()
         with patch('cognition.runtime.get_runtime',return_value=self.runtime),patch.object(queue_module,'_DEBOUNCE_WINDOW_SEC',.5),patch.object(queue_module,'is_responses_enabled',AsyncMock(return_value=True)),patch.object(queue_module,'process_user_reply',process):
             for i,owner,topic,text in ((1,1,5,'Первое'),(2,1,5,'Уточнение'),(3,2,5,'Другой автор'),(4,1,6,'Другая тема')):
                 scope=TransportScope(-10,topic,'supergroup',owner,i,True)
                 token=CURRENT_SCOPE.set(scope)
                 try: await queue_module.enqueue_reply(-10,owner,'Участник',text,i,context,is_voice=False)
                 finally: CURRENT_SCOPE.reset(token)
-            await asyncio.wait_for(asyncio.gather(*list(queue_module._user_workers.values())),5)
+            from bot.request_runtime import worker
+            tasks=[asyncio.create_task(worker(self.bot,['text'])) for _ in range(2)]
+            try:
+                await asyncio.wait_for(finished.wait(),5)
+            finally:
+                for task in tasks: task.cancel()
+                await asyncio.gather(*tasks,return_exceptions=True)
         a=[r for r in seen if r['_telegram_scope'].topic_id==5]
         self.assertEqual([r['user_id'] for r in a],[1,2]); self.assertEqual(a[0]['user_message'],'Первое\nУточнение')
         self.assertEqual(len(a[0]['_cognitive_source_ids']),2)

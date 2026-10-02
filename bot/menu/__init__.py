@@ -16,7 +16,7 @@ MENU_WORDS = ('Меню', 'меню', '🧭 Меню')
 
 async def install(bot):
     await bot.set_my_commands([BotCommand('menu','Открыть меню Арти'), BotCommand('start','Начать общение'),
-                              BotCommand('cancel','Остановить медиа-запросы')])
+                              BotCommand('cancel','Остановить запросы'), BotCommand('request','Статус последнего запроса')])
     await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
 
 

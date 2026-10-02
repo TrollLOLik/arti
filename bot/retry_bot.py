@@ -43,6 +43,11 @@ class RetryBot(ExtBot):
         if scope and scope.chat_id==destination and scope.topic_id>0 and (name.startswith('send_') or name in ('copy_message','forward_message')):
             if kwargs.get('message_thread_id',scope.topic_id)!=scope.topic_id: raise ValueError('Queued destination topic changed')
             kwargs['message_thread_id']=scope.topic_id
+        from bot.request_runtime import CURRENT_REQUEST, send as send_request
+        if CURRENT_REQUEST.get() is not None and (name.startswith('send_') and name != 'send_chat_action' or name in ('copy_message', 'forward_message', 'set_message_reaction')):
+            result = await send_request(method, args, kwargs, 'reaction' if name == 'set_message_reaction' else name[5:] if name.startswith('send_') else name)
+            _maybe_record_sent(result)
+            return result
         if turn is not None and turn.tracks_delivery and (name.startswith('send_') and name!='send_chat_action' or name=='set_message_reaction'):
             from cognition.delivery import send_with_receipt
             result = await send_with_receipt(method,args,kwargs,'reaction' if name=='set_message_reaction' else name[5:])

@@ -46,6 +46,8 @@ async def forget_cognitive_sources(pool,cid,owner,sources):
             owned = await lock.fetchval('SELECT 1 FROM cognitive_events WHERE context_id=$1 AND owner_id=$2 AND source_id=ANY($3::text[])',cid,owner,list(set(sources)))
             if not owned:
                 return dict(events=0,artifacts=0)
+            from bot.request_store import RequestStore
+            request_sources = await lock.fetch('SELECT id FROM cognitive_events WHERE context_id=$1 AND owner_id=$2 AND source_id=ANY($3::text[])', cid, owner, list(set(sources)))
             # Persist recovery before raising the barrier or erasing any source.
             # A process crash therefore cannot strand a half-built context.
             await schedule_rebuild(pool,cid,owner)
@@ -54,6 +56,7 @@ async def forget_cognitive_sources(pool,cid,owner,sources):
                 if not current or not owned:
                     return dict(events=0,artifacts=0)
                 await lock.execute('UPDATE cognitive_contexts SET rebuilding=TRUE,suppression_epoch=suppression_epoch+1,worker_token=NULL,worker_lease_until=NULL WHERE id=$1',cid)
+                await RequestStore(None).erase_sources([row['id'] for row in request_sources], lock)
                 await lock.execute("UPDATE cognitive_jobs SET status='pending',lease_token=NULL,lease_until=NULL,available_at=NOW() WHERE context_id=$1 AND status='running'",cid)
             try:
                 total = dict(events=0,artifacts=0)
