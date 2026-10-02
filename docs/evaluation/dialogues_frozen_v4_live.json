@@ -1,0 +1,138 @@
+{
+  "model_version": "cognition-2026-09-30.4",
+  "corpus": "synthetic-four-dialogues-v1",
+  "criteria_frozen": true,
+  "interpreter_sha256": "8db690088846c2bb1167b434cc3ea0db1fa11392eb33da34205b697952cf70aa",
+  "checks": {
+    "forgetting": {
+      "deleted_not_archivable": true,
+      "deleted_not_in_projections": true,
+      "other_owner_preserved": true
+    },
+    "preferences": {
+      "preferences_persist": true,
+      "owner_isolation": true,
+      "preference_no_emotional_reward": true
+    },
+    "scenes": {
+      "default_separate_from_rp": true,
+      "new_scene_separate": true
+    },
+    "commitment": {
+      "own_action_has_actor": true,
+      "cancellation_closes_same_promise": true,
+      "own_failure_not_user_unreliability": true
+    }
+  },
+  "passed": 11,
+  "total": 11,
+  "calls": 12,
+  "attempts": 17,
+  "prompt_tokens": 34637,
+  "completion_tokens": 13141,
+  "reported_cost_usd": 0,
+  "cost_unknown_calls": 0,
+  "latency_p50": 14.90785100008361,
+  "latency_p95": 59.50403860001825,
+  "real_transport_calls": 0,
+  "private_history_exported": false,
+  "human_or_biological_validation": false,
+  "call_metrics": [
+    {
+      "event": "telegram:902:1:user",
+      "attempts": 1,
+      "latency_seconds": 7.4370034001767635,
+      "prompt_tokens": 1957,
+      "completion_tokens": 528,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "event": "telegram:901:1:user",
+      "attempts": 1,
+      "latency_seconds": 8.636858900077641,
+      "prompt_tokens": 1972,
+      "completion_tokens": 632,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "event": "telegram:903:1:user",
+      "attempts": 2,
+      "latency_seconds": 18.490356599912047,
+      "prompt_tokens": 3968,
+      "completion_tokens": 1177,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "event": "telegram:902:200:delivered_action",
+      "attempts": 1,
+      "latency_seconds": 10.12660300009884,
+      "prompt_tokens": 2174,
+      "completion_tokens": 597,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "event": "telegram:904:1:user",
+      "attempts": 2,
+      "latency_seconds": 12.41090889996849,
+      "prompt_tokens": 3956,
+      "completion_tokens": 743,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "event": "telegram:901:2:user",
+      "attempts": 1,
+      "latency_seconds": 8.012608699966222,
+      "prompt_tokens": 2010,
+      "completion_tokens": 455,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "event": "telegram:903:2:user",
+      "attempts": 2,
+      "latency_seconds": 18.40460929996334,
+      "prompt_tokens": 3956,
+      "completion_tokens": 997,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "event": "telegram:904:2:user",
+      "attempts": 1,
+      "latency_seconds": 15.434285100083798,
+      "prompt_tokens": 1956,
+      "completion_tokens": 874,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "event": "telegram:901:3:user",
+      "attempts": 1,
+      "latency_seconds": 14.381416900083423,
+      "prompt_tokens": 1958,
+      "completion_tokens": 390,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "event": "telegram:904:3:user",
+      "attempts": 2,
+      "latency_seconds": 24.67539279977791,
+      "prompt_tokens": 3952,
+      "completion_tokens": 888,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "event": "telegram:902:2:user",
+      "attempts": 2,
+      "latency_seconds": 59.50403860001825,
+      "prompt_tokens": 4554,
+      "completion_tokens": 3907,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "event": "telegram:902:3:user",
+      "attempts": 1,
+      "latency_seconds": 33.67227669991553,
+      "prompt_tokens": 2224,
+      "completion_tokens": 1953,
+      "reported_cost_usd": 0.0
+    }
+  ]
+}

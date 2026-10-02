@@ -1,0 +1,12 @@
+{
+  "date": "2026-09-30",
+  "command": "ARTI_TEST_DB=1 python -m unittest discover -s tests -t . -q",
+  "tests_run": 76,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "duration_seconds": 30.272,
+  "database": "disposable PostgreSQL 18.1 databases only",
+  "provider": "mocked HTTP and recorded synthetic perceptions; no live calls in this suite",
+  "behavioral_limits": "Passing these tests does not override the two failed held-out behavioral criteria in held_out_uncertainty_v2_live.json."
+}

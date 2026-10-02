@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 def _ip_is_public(ip_str: str) -> bool:
     try:
         ip = ipaddress.ip_address(ip_str)
+        if isinstance(ip,ipaddress.IPv6Address) and ip.ipv4_mapped: return _ip_is_public(str(ip.ipv4_mapped))
     except ValueError:
         return False
     return not (

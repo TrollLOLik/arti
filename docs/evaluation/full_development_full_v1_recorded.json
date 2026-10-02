@@ -1,0 +1,370 @@
+{
+  "run": "full_v1",
+  "split": "development",
+  "live": false,
+  "model": "stealth/space-bunny-alpha",
+  "model_version": "cognition-2026-09-30.3",
+  "perception_version": "appraisal-2026-09-30.1",
+  "total": 24,
+  "schema_valid": 24,
+  "passed": 24,
+  "attempts": 0,
+  "prompt_tokens": 0,
+  "completion_tokens": 0,
+  "reported_cost_usd": 0,
+  "cost_unknown_count": 0,
+  "latency_p50": null,
+  "latency_p95": null,
+  "results": [
+    {
+      "id": "neutral",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "request",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention."
+    },
+    {
+      "id": "negation",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "narrator_is_not_character": true
+      },
+      "kind": "clarification",
+      "impulse": 0.038572800000000004,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention."
+    },
+    {
+      "id": "sarcasm",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "attribution": true
+      },
+      "kind": "conflict",
+      "impulse": 0.12,
+      "expression": "Tone: calm and candid. Regulation: clarify. Voice: measured. Ask briefly before attributing a hostile intention. Keep the reply relevant. Do not describe internal scores or demand attention."
+    },
+    {
+      "id": "boundary",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "preference",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention."
+    },
+    {
+      "id": "text",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "preference",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention."
+    },
+    {
+      "id": "stickers",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "preference",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention."
+    },
+    {
+      "id": "grief",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "narrator_is_not_character": true
+      },
+      "kind": "loss",
+      "impulse": 0.8500000000000001,
+      "expression": "Tone: gentle and quiet. Regulation: acknowledge. Voice: measured. Keep the reply relevant. Do not describe internal scores or demand attention."
+    },
+    {
+      "id": "success",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "narrator_is_not_character": true
+      },
+      "kind": "success",
+      "impulse": 0.6671808000000001,
+      "expression": "Tone: warm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention."
+    },
+    {
+      "id": "danger",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "narrator_is_not_character": true
+      },
+      "kind": "threat",
+      "impulse": 0.8500000000000001,
+      "expression": "Tone: careful and attentive. Regulation: problem_solve. Voice: measured. Keep the reply relevant. Do not describe internal scores or demand attention."
+    },
+    {
+      "id": "hostility",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "conflict",
+      "impulse": 0.85,
+      "expression": "Tone: firm and measured. Regulation: acknowledge. Voice: measured. Keep the reply relevant. Do not describe internal scores or demand attention."
+    },
+    {
+      "id": "thanks",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "narrator_is_not_character": true
+      },
+      "kind": "success",
+      "impulse": 0.85,
+      "expression": "Tone: warm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention."
+    },
+    {
+      "id": "quote",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "request",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention."
+    },
+    {
+      "id": "hypothetical",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "request",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention."
+    },
+    {
+      "id": "reported",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "narrator_is_not_character": true
+      },
+      "kind": "conflict",
+      "impulse": 0.45000000000000007,
+      "expression": "Tone: calm and candid. Regulation: acknowledge. Voice: measured. Keep the reply relevant. Do not describe internal scores or demand attention."
+    },
+    {
+      "id": "absence",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "narrator_is_not_character": true
+      },
+      "kind": "clarification",
+      "impulse": 0.07390240000000001,
+      "expression": "Tone: warm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention."
+    },
+    {
+      "id": "move",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "narrator_is_not_character": true
+      },
+      "kind": "neutral",
+      "impulse": 0.11999999999999998,
+      "expression": "Tone: warm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention."
+    },
+    {
+      "id": "habit",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "narrator_is_not_character": true
+      },
+      "kind": "preference",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention."
+    },
+    {
+      "id": "promise",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "request",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention."
+    },
+    {
+      "id": "reminder",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "request",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention."
+    },
+    {
+      "id": "ambiguity",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "attribution": true
+      },
+      "kind": "conflict",
+      "impulse": 0.12000000000000001,
+      "expression": "Tone: calm and candid. Regulation: clarify. Voice: measured. Ask briefly before attributing a hostile intention. Keep the reply relevant. Do not describe internal scores or demand attention."
+    },
+    {
+      "id": "apology",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "narrator_is_not_character": true
+      },
+      "kind": "conflict",
+      "impulse": 0.319251456,
+      "expression": "Tone: calm and candid. Regulation: acknowledge. Voice: measured. Keep the reply relevant. Do not describe internal scores or demand attention."
+    },
+    {
+      "id": "exposure",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "narrator_is_not_character": true
+      },
+      "kind": "loss",
+      "impulse": 0.2730468704256,
+      "expression": "Tone: attentive. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention."
+    },
+    {
+      "id": "mixed",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "narrator_is_not_character": true
+      },
+      "kind": "loss",
+      "impulse": 0.3032880076800001,
+      "expression": "Tone: attentive. Regulation: acknowledge. Voice: conversational. Keep the reply relevant. Do not describe internal scores or demand attention."
+    },
+    {
+      "id": "injection",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "request",
+      "impulse": 0.05,
+      "expression": "Tone: calm and candid. Regulation: acknowledge. Voice: measured. Keep the reply relevant. Do not describe internal scores or demand attention."
+    }
+  ]
+}

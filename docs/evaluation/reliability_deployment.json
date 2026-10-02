@@ -1,0 +1,76 @@
+{
+  "applied_at": "2026-10-02T16:49:16.731137+00:00",
+  "migration": "030_semantic_memory.sql",
+  "preserved": {
+    "chat_models": true,
+    "cognitive_contexts": true,
+    "cognitive_events": true,
+    "cognitive_artifacts": true,
+    "group_chat_settings": true,
+    "group_topic_settings": true,
+    "group_participant_settings": true
+  },
+  "semantic_vectors": 87,
+  "indexed_this_run": 87,
+  "metrics": {
+    "jobs": {
+      "pending": 13,
+      "done": 20
+    },
+    "deliveries": {
+      "delivered": 6
+    },
+    "contexts": {
+      "active": 4
+    },
+    "group_candidates": {},
+    "group_decisions": {},
+    "rebuilding_contexts": 0,
+    "oldest_ready_job_seconds": 0.0,
+    "private_owner_violations": 0,
+    "leases_expired": 0,
+    "provenance_gaps": 0
+  },
+  "tests": {
+    "model_version": "cognition-2026-09-30.4",
+    "tests": 470,
+    "passed": 470,
+    "failures": [],
+    "errors": [],
+    "skipped": [],
+    "duration_seconds": 638.9380186999915,
+    "database": "disposable arti_cognition_test_<uuid>",
+    "provider_calls": 0,
+    "working_database_mutated": false
+  },
+  "backup_directory": "C:\\Users\\USER\\Desktop\\arti\\temp\\reliability_20261002T163439Z",
+  "backup_verified": true,
+  "private_payload_exported": false,
+  "runtime_verification": {
+    "observed_at": "2026-10-02T16:53:00.897649+00:00",
+    "running_pid": 39116,
+    "process_count": 1,
+    "local_duplicate_launch_refused": true,
+    "graceful_restart_verified": true,
+    "startup_errors": 0,
+    "polling_conflicts": 0,
+    "application_started": true
+  },
+  "known_limits": [
+    "Transport text/media queues are not yet durable across crashes.",
+    "Intent provider fallback has a four-second deadline; unavailable classification falls back to conversation.",
+    "Exact semantic SQL ranking should be profiled before very large ledgers."
+  ],
+  "environment_dependency_check": {
+    "fastembed_installed": "0.8.1",
+    "onnxruntime_installed": "1.30.0",
+    "pip_check_clean": false,
+    "preexisting_conflicts": [
+      "datasets/fsspec",
+      "descript-audiotools/protobuf",
+      "fish-speech/torch",
+      "fish-speech/torchaudio"
+    ],
+    "conflicting_dependencies_modified": false
+  }
+}

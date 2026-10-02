@@ -1,0 +1,38 @@
+{
+  "suite": "menu reopen and related acceptance",
+  "generated_at": "2026-10-02T10:13:46.028094+00:00",
+  "command": "ARTI_TEST_DB=1 python -m unittest tests.materials.test_menu tests.materials.test_agent_acceptance tests.cognition.test_groups.GroupIngressTests -q",
+  "tests": 65,
+  "passed": 65,
+  "failures": [],
+  "errors": [],
+  "skipped": [],
+  "duration_seconds": 133.166,
+  "subsets": {
+    "tests.materials.test_menu": 44,
+    "tests.materials.test_agent_acceptance": 18,
+    "tests.cognition.test_groups.GroupIngressTests": 3
+  },
+  "telegram_calls": 0,
+  "provider_calls": 0,
+  "working_database_mutated": false,
+  "database": "disposable arti_cognition_test_<uuid>",
+  "previous_full_regression": {
+    "commit": "ede4cde",
+    "tests": 431,
+    "passed": 431,
+    "report": "materials_full_tests.json",
+    "scope": "before this reopen fix"
+  },
+  "scenarios": [
+    "Explicit menu request sends a new bottom panel",
+    "Navigation edits that panel",
+    "Redelivery does not create duplicate panels",
+    "Previous buttons are revoked",
+    "Old-message cleanup failure cannot block a new menu",
+    "Another group member gets their own panel",
+    "Abandoned native image input is cleared only for its user",
+    "Cancel cannot restore an old durable snapshot",
+    "Expired-session renewal preserves consumed requests and suppresses redelivery"
+  ]
+}

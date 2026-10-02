@@ -1,0 +1,33 @@
+{
+  "contract": "artifact-render-evaluation-1",
+  "scope": "owned_synthetic_renderer_corpus_source_validation_tested_separately",
+  "cases": [
+    {
+      "case": "dense_graph",
+      "passed": true,
+      "pdf_pages": 8,
+      "all_labels_present": true,
+      "exact_numbers_present": true,
+      "physical_pngs_opened": true
+    },
+    {
+      "case": "comparison_missing",
+      "passed": true,
+      "pdf_pages": 5,
+      "all_labels_present": true,
+      "exact_numbers_present": true,
+      "physical_pngs_opened": true
+    },
+    {
+      "case": "exact_signed_values",
+      "passed": true,
+      "pdf_pages": 1,
+      "all_labels_present": true,
+      "exact_numbers_present": true,
+      "physical_pngs_opened": true
+    }
+  ],
+  "passed": 3,
+  "total": 3,
+  "visual_review": "Separate manual inspection of rasterized PDF previews; no claim of human study"
+}

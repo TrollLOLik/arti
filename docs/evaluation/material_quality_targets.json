@@ -1,0 +1,29 @@
+{
+  "version": "materials-1",
+  "status": "engineering_acceptance_targets_before_advanced_extractors",
+  "hard_gates": {
+    "cross_audience_leaks": 0,
+    "cross_topic_leaks": 0,
+    "resurrected_erased_sources": 0,
+    "invented_evidence_locators": 0,
+    "duplicate_external_effects_in_fault_scenarios": 0,
+    "unreported_partial_coverage": 0
+  },
+  "native_synthetic_corpus": {
+    "expected_fact_recall": 1.0,
+    "valid_locators": 1.0
+  },
+  "advanced_extraction_targets": {
+    "ocr_character_accuracy_clean_scan": 0.98,
+    "numeric_cell_accuracy": 0.99,
+    "table_structure_f1": 0.95,
+    "audio_word_error_rate_clean_speech_max": 0.1,
+    "timestamp_error_seconds_p95_max": 1.0
+  },
+  "later_targets": {
+    "agent_scenario_completion_rate": 0.9,
+    "human_infographic_readability_mean_1_to_5": 4.0
+  },
+  "calibration_policy": "Develop on a separate set; freeze advanced corpora before parameter tuning. Report corpus size and splits, sample uncertainty, failures and costs. Never infer human ratings or pilot results from a model judge.",
+  "latency_and_cost": "Record median/p95 latency and actual usage by modality/provider. Set scenario budgets after A04 probes and before implementing advanced extractors; no universal invented USD or latency budget."
+}

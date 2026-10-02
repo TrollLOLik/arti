@@ -1,0 +1,9 @@
+{
+  "tests": 195,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "seconds": 136.62,
+  "provider_calls": 0,
+  "working_database_mutated": false
+}

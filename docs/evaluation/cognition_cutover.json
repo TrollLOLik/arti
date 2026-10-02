@@ -1,0 +1,178 @@
+{
+  "applied_at": "2026-10-02T12:24:28.328128+00:00",
+  "production_mode": "active_only",
+  "legacy_mutators": "retired_no_llm_no_writes",
+  "model_selection": "Telegram menu or /model",
+  "separate_cognition_model": false,
+  "migrations": [
+    "028_active_cognition_default.sql",
+    "029_source_history_reset.sql"
+  ],
+  "migration": {
+    "snapshot_id": 206,
+    "cursor_id": 206,
+    "rows_this_run": 0,
+    "imported_this_run": 0,
+    "quarantined_this_run": 0,
+    "coverage": {
+      "imported": 70,
+      "quarantined": 404
+    },
+    "complete": true,
+    "seconds": 0.01933179999468848,
+    "model_version": "cognition-2026-09-30.4",
+    "historical_emotions_inferred": 0,
+    "timezone_policy": "legacy naive timestamps assumed UTC; original retained"
+  },
+  "preserved": {
+    "memory_facts": true,
+    "memory_user_profiles": true,
+    "chat_emotional_states": true,
+    "memory_messages": true,
+    "cognitive_state": true,
+    "chat_model_selection": true,
+    "group_chat_settings": true,
+    "group_topic_settings": true,
+    "group_participant_settings": true
+  },
+  "before_authority": {
+    "shadow": 4
+  },
+  "metrics": {
+    "jobs": {
+      "pending": 8,
+      "done": 9
+    },
+    "deliveries": {},
+    "contexts": {
+      "active": 4
+    },
+    "group_candidates": {},
+    "group_decisions": {},
+    "rebuilding_contexts": 0,
+    "oldest_ready_job_seconds": 0.0,
+    "private_owner_violations": 0,
+    "leases_expired": 0,
+    "provenance_gaps": 0
+  },
+  "tests": {
+    "model_version": "cognition-2026-09-30.4",
+    "tests": 450,
+    "passed": 450,
+    "failures": [],
+    "errors": [],
+    "skipped": [],
+    "duration_seconds": 503.29387230001157,
+    "database": "disposable arti_cognition_test_<uuid>",
+    "provider_calls": 0,
+    "working_database_mutated": false
+  },
+  "selected_models": {
+    "cases": [
+      {
+        "model": "capy/grok-4-1-fast",
+        "case": "neutral",
+        "schema_valid": false,
+        "semantic_ok": false,
+        "error": "provider_unavailable",
+        "attempts": 3
+      },
+      {
+        "model": "capy/grok-4-1-fast",
+        "case": "channels",
+        "schema_valid": false,
+        "semantic_ok": false,
+        "error": "provider_unavailable",
+        "attempts": 3
+      },
+      {
+        "model": "capy/grok-4-1-fast",
+        "case": "loss",
+        "schema_valid": false,
+        "semantic_ok": false,
+        "error": "provider_unavailable",
+        "attempts": 3
+      },
+      {
+        "model": "gemini-3.1-flash-lite-preview",
+        "case": "neutral",
+        "schema_valid": true,
+        "semantic_ok": true,
+        "attempts": 1,
+        "prompt_tokens": 1901,
+        "completion_tokens": 217,
+        "latency_seconds": 9.644
+      },
+      {
+        "model": "gemini-3.1-flash-lite-preview",
+        "case": "channels",
+        "schema_valid": true,
+        "semantic_ok": true,
+        "attempts": 1,
+        "prompt_tokens": 1906,
+        "completion_tokens": 247,
+        "latency_seconds": 1.546
+      },
+      {
+        "model": "gemini-3.1-flash-lite-preview",
+        "case": "loss",
+        "schema_valid": true,
+        "semantic_ok": true,
+        "attempts": 1,
+        "prompt_tokens": 1904,
+        "completion_tokens": 509,
+        "latency_seconds": 2.541
+      }
+    ],
+    "all_passed": false,
+    "working_database_access": "read-only model selection",
+    "private_payload_exported": false,
+    "telegram_messages_sent": 0,
+    "synthetic_only": true,
+    "limitation": "Smoke checks, not an independent assessment of human realism."
+  },
+  "backup": {
+    "directory": "C:\\Users\\USER\\Desktop\\arti\\temp\\cognition_cutover_20261002T120413Z",
+    "restored_to_disposable_database": true,
+    "sha256": "56fa5f05334d2dd710b2d15accd001a623cd5d565b6da5ea488d80c94bb7eaf8"
+  },
+  "private_payload_exported": false,
+  "bot_started": true,
+  "boot": {
+    "process_id": 33020,
+    "application_started": true,
+    "error_count": 0,
+    "warning_count": 0,
+    "polling_conflict": false,
+    "component_counts": {
+      "__main__": 9,
+      "httpx": 8,
+      "database.connection": 3,
+      "bot.queue": 6,
+      "apscheduler.scheduler": 1,
+      "telegram.ext.Application": 1
+    }
+  },
+  "post_start_metrics": {
+    "jobs": {
+      "pending": 8,
+      "done": 9
+    },
+    "deliveries": {},
+    "contexts": {
+      "active": 4
+    },
+    "group_candidates": {},
+    "group_decisions": {},
+    "rebuilding_contexts": 0,
+    "oldest_ready_job_seconds": 0.0,
+    "private_owner_violations": 0,
+    "leases_expired": 0,
+    "provenance_gaps": 0
+  },
+  "known_provider_issue": {
+    "model": "capy/grok-4-1-fast",
+    "reason": "local_omniroute_not_listening",
+    "port": 20128
+  }
+}

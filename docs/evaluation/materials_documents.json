@@ -1,0 +1,297 @@
+{
+  "batch": "A05",
+  "synthetic": true,
+  "fixture_split_is_independent_real_corpus": false,
+  "stack": {
+    "libraries": {
+      "pdfplumber": "0.11.10",
+      "pypdfium2": "5.13.0",
+      "python-docx": "1.2.0",
+      "opencv-python-headless": "4.14.0.94",
+      "Pillow": "12.3.0",
+      "psutil": "7.2.2"
+    },
+    "ocr_engine": "tesseract v5.5.3.20260724",
+    "models": {
+      "rus": {
+        "present": true,
+        "sha256": "e16e5e036cce1d9ec2b00063cf8b54472625b9e14d893a169e2b0dedeb4df225"
+      },
+      "eng": {
+        "present": true,
+        "sha256": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2"
+      },
+      "osd": {
+        "present": true,
+        "sha256": "9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff"
+      }
+    },
+    "ready": true
+  },
+  "rows": [
+    {
+      "case": "native-layout",
+      "split": "development",
+      "source_sha256": "f26753a065fde8df765c8f054ad9c1a12c68dac97b627af6a38dd4aef1f06206",
+      "expected_facts": 5,
+      "exact_facts": 5,
+      "native_baseline_facts": 4,
+      "coverage": {
+        "total_units": 2,
+        "processed_units": 2,
+        "coverage": "complete",
+        "limitations": [
+          "pdf_layout_heuristic_borderless_tables_unassessed",
+          "ocr_printed_text_only:1",
+          "ocr_printed_text_only:2"
+        ],
+        "unit_kind": "page"
+      },
+      "blocks": 37,
+      "tables": 2,
+      "uncertain_blocks": 0,
+      "metrics": {
+        "status": "ok",
+        "elapsed_seconds": 2.446,
+        "sampled_peak_rss_mb": 220.68,
+        "peak_temporary_disk_mb": 0.22
+      }
+    },
+    {
+      "case": "docx-merged-nested",
+      "split": "development",
+      "source_sha256": "e19515e33dbf291ccfaeceb59aa2b199a8794c7791cbbf5883b28da7a79b9fe2",
+      "expected_facts": 4,
+      "exact_facts": 4,
+      "native_baseline_facts": 2,
+      "coverage": {
+        "total_units": 5,
+        "processed_units": 5,
+        "coverage": "complete",
+        "limitations": [
+          "docx_pagination_unknown"
+        ],
+        "unit_kind": "body_node"
+      },
+      "blocks": 18,
+      "tables": 2,
+      "uncertain_blocks": 0,
+      "metrics": {
+        "status": "ok",
+        "elapsed_seconds": 0.239,
+        "sampled_peak_rss_mb": 34.39,
+        "peak_temporary_disk_mb": 0.04
+      }
+    },
+    {
+      "case": "scan-upright",
+      "split": "development",
+      "source_sha256": "4cd8ce48cc86e5a029dbf3ce33aea61063ab73a026993dd9604f5056d4ba8166",
+      "expected_facts": 4,
+      "exact_facts": 4,
+      "native_baseline_facts": 0,
+      "coverage": {
+        "total_units": 1,
+        "processed_units": 1,
+        "coverage": "complete",
+        "limitations": [
+          "pdf_layout_heuristic_borderless_tables_unassessed",
+          "ocr_printed_text_only:1"
+        ],
+        "unit_kind": "page"
+      },
+      "blocks": 11,
+      "tables": 0,
+      "uncertain_blocks": 0,
+      "metrics": {
+        "status": "ok",
+        "elapsed_seconds": 1.298,
+        "sampled_peak_rss_mb": 214.82,
+        "peak_temporary_disk_mb": 0.24
+      },
+      "character_error_rate": 0.0
+    },
+    {
+      "case": "scan-grid",
+      "split": "development",
+      "source_sha256": "bb3f123ab653d6c0436dcd995bffda33ccb79e1b076d6a7617c894dd046b3139",
+      "expected_facts": 3,
+      "exact_facts": 3,
+      "native_baseline_facts": 0,
+      "coverage": {
+        "total_units": 1,
+        "processed_units": 1,
+        "coverage": "complete",
+        "limitations": [
+          "pdf_layout_heuristic_borderless_tables_unassessed",
+          "ocr_printed_text_only:1"
+        ],
+        "unit_kind": "page"
+      },
+      "blocks": 18,
+      "tables": 1,
+      "uncertain_blocks": 1,
+      "metrics": {
+        "status": "ok",
+        "elapsed_seconds": 1.583,
+        "sampled_peak_rss_mb": 214.59,
+        "peak_temporary_disk_mb": 0.3
+      },
+      "character_error_rate": 0.0
+    },
+    {
+      "case": "scan-90",
+      "split": "development",
+      "source_sha256": "f06f91f483bf63a13777395f642463c31eef331e021c907bd1e990e21c3e89ea",
+      "expected_facts": 3,
+      "exact_facts": 3,
+      "native_baseline_facts": 0,
+      "coverage": {
+        "total_units": 1,
+        "processed_units": 1,
+        "coverage": "complete",
+        "limitations": [
+          "pdf_layout_heuristic_borderless_tables_unassessed",
+          "ocr_printed_text_only:1"
+        ],
+        "unit_kind": "page"
+      },
+      "blocks": 11,
+      "tables": 0,
+      "uncertain_blocks": 0,
+      "metrics": {
+        "status": "ok",
+        "elapsed_seconds": 1.356,
+        "sampled_peak_rss_mb": 214.39,
+        "peak_temporary_disk_mb": 0.3
+      },
+      "character_error_rate": 0.0
+    },
+    {
+      "case": "scan-180",
+      "split": "development",
+      "source_sha256": "bf58241c876dacee8940ec67a07c1f01a7f1232384768039d3431aad0458916a",
+      "expected_facts": 3,
+      "exact_facts": 3,
+      "native_baseline_facts": 0,
+      "coverage": {
+        "total_units": 1,
+        "processed_units": 1,
+        "coverage": "complete",
+        "limitations": [
+          "pdf_layout_heuristic_borderless_tables_unassessed",
+          "ocr_printed_text_only:1"
+        ],
+        "unit_kind": "page"
+      },
+      "blocks": 11,
+      "tables": 0,
+      "uncertain_blocks": 0,
+      "metrics": {
+        "status": "ok",
+        "elapsed_seconds": 1.319,
+        "sampled_peak_rss_mb": 218.65,
+        "peak_temporary_disk_mb": 0.24
+      },
+      "character_error_rate": 0.0
+    },
+    {
+      "case": "scan-skew",
+      "split": "development",
+      "source_sha256": "c77f4cfe68d315926f25fbaf7232d64b155652eba781a9f90de24e47c4134666",
+      "expected_facts": 3,
+      "exact_facts": 3,
+      "native_baseline_facts": 0,
+      "coverage": {
+        "total_units": 1,
+        "processed_units": 1,
+        "coverage": "complete",
+        "limitations": [
+          "pdf_layout_heuristic_borderless_tables_unassessed",
+          "ocr_printed_text_only:1"
+        ],
+        "unit_kind": "page"
+      },
+      "blocks": 11,
+      "tables": 0,
+      "uncertain_blocks": 0,
+      "metrics": {
+        "status": "ok",
+        "elapsed_seconds": 1.693,
+        "sampled_peak_rss_mb": 238.2,
+        "peak_temporary_disk_mb": 0.34
+      },
+      "character_error_rate": 0.0
+    },
+    {
+      "case": "heldout-scan",
+      "split": "synthetic_heldout",
+      "source_sha256": "595c67cc5cbd1621ab74bd564228a08c0d32a8c6b8f0a62f7108c9d5046fb6e9",
+      "expected_facts": 5,
+      "exact_facts": 5,
+      "native_baseline_facts": 0,
+      "coverage": {
+        "total_units": 1,
+        "processed_units": 1,
+        "coverage": "complete",
+        "limitations": [
+          "pdf_layout_heuristic_borderless_tables_unassessed",
+          "ocr_printed_text_only:1"
+        ],
+        "unit_kind": "page"
+      },
+      "blocks": 10,
+      "tables": 0,
+      "uncertain_blocks": 0,
+      "metrics": {
+        "status": "ok",
+        "elapsed_seconds": 1.282,
+        "sampled_peak_rss_mb": 214.95,
+        "peak_temporary_disk_mb": 0.22
+      }
+    },
+    {
+      "case": "damaged-page",
+      "split": "negative_coverage",
+      "source_sha256": "01feb0404fb932921a36073d5fa2e2140374d4b818e884f1dffb1914278cfd85",
+      "expected_facts": 2,
+      "exact_facts": 2,
+      "native_baseline_facts": 2,
+      "coverage": {
+        "total_units": 2,
+        "processed_units": 1,
+        "coverage": "partial",
+        "limitations": [
+          "pdf_layout_heuristic_borderless_tables_unassessed",
+          "page_visual_unread:1",
+          "ocr_printed_text_only:1",
+          "ocr_printed_text_only:2"
+        ],
+        "unit_kind": "page"
+      },
+      "blocks": 18,
+      "tables": 1,
+      "uncertain_blocks": 0,
+      "metrics": {
+        "status": "ok",
+        "elapsed_seconds": 2.583,
+        "sampled_peak_rss_mb": 222.41,
+        "peak_temporary_disk_mb": 0.22
+      }
+    }
+  ],
+  "exact_facts": 32,
+  "expected_facts": 32,
+  "native_baseline_facts": 8,
+  "numeric_region_reread_passed": true,
+  "provider_calls": 0,
+  "provider_cost_usd": 0,
+  "working_database_mutated": false,
+  "telegram_calls": 0,
+  "limitations": [
+    "Printed text, not handwriting",
+    "Layout/caption/continuation heuristics are not semantic proof",
+    "Synthetic checks do not estimate real corpus accuracy",
+    "RSS is sampled, not an OS high-water measurement"
+  ]
+}

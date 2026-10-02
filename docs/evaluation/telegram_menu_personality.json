@@ -1,0 +1,28 @@
+{
+  "suite": "all after conversation-first Telegram interface",
+  "generated_at": "2026-10-02T11:07:10.890900+00:00",
+  "tests": 442,
+  "passed": 442,
+  "failures": [],
+  "errors": [],
+  "skipped": [],
+  "duration_seconds": 478.75,
+  "provider_calls": 0,
+  "telegram_calls": 0,
+  "working_database_mutated": false,
+  "database": "disposable arti_cognition_test_<uuid>",
+  "full_suite_scope": "Before the final command-origin navigation refinement; the current menu code is covered by final_menu_verification.",
+  "final_menu_verification": {
+    "suite": "final Telegram menu after command-origin navigation refinement",
+    "generated_at": "2026-10-02T11:08:42.996832+00:00",
+    "tests": 50,
+    "passed": 50,
+    "failures": [],
+    "errors": [],
+    "skipped": [],
+    "duration_seconds": 64.51,
+    "provider_calls": 0,
+    "telegram_calls": 0,
+    "working_database_mutated": false
+  }
+}

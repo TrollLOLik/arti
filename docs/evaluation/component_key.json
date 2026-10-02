@@ -1,0 +1,26 @@
+{
+  "sarcasm": {
+    "A": "memory_only",
+    "B": "appraisal_only",
+    "C": "legacy_adapter",
+    "D": "full"
+  },
+  "boundary": {
+    "A": "full",
+    "B": "legacy_adapter",
+    "C": "memory_only",
+    "D": "appraisal_only"
+  },
+  "grief": {
+    "A": "appraisal_only",
+    "B": "full",
+    "C": "memory_only",
+    "D": "legacy_adapter"
+  },
+  "mixed": {
+    "A": "full",
+    "B": "legacy_adapter",
+    "C": "memory_only",
+    "D": "appraisal_only"
+  }
+}

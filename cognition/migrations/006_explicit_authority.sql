@@ -1,0 +1,1 @@
+ALTER TABLE cognitive_contexts ADD COLUMN IF NOT EXISTS authority_explicit BOOLEAN NOT NULL DEFAULT FALSE;

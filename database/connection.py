@@ -61,10 +61,11 @@ async def _init_db_locked():
             "Установите переменную окружения DB_PASSWORD для продакшен-среды."
         )
     
+    candidate_pool = None
     try:
         logger.info(f"Подключение к PostgreSQL: {db_host}:{db_port}/{db_name}")
         
-        _pool = await asyncpg.create_pool(
+        candidate_pool = await asyncpg.create_pool(
             host=db_host,
             port=db_port,
             database=db_name,
@@ -78,9 +79,15 @@ async def _init_db_locked():
         logger.info("Пул соединений PostgreSQL успешно создан")
         
         # Создаем схемы таблиц
-        await create_tables()
+        async with candidate_pool.acquire() as conn:
+            await create_tables(conn)
+        # Publish only a completely initialized pool. Concurrent get_db callers
+        # wait on the init lock while additive migrations are in progress.
+        _pool = candidate_pool
         
     except Exception as e:
+        if candidate_pool is not None:
+            await candidate_pool.close()
         logger.error(f"Ошибка при инициализации базы данных: {e}")
         raise
 
@@ -354,35 +361,30 @@ async def _create_tables_internal(conn):
         WHERE archived_at IS NULL
     """)
 
-    # MEM-07: уникальность активных фактов по (chat_id, mode, lower(fact_text)).
-    # Миграция один раз: архивируем дубли среди НЕархивных (кроме самого старого),
-    # затем строим partial-unique индекс. Гард по наличию индекса — чтобы дорогую
-    # дедупликацию не гонять на каждом старте.
-    facts_uniq_exists = await conn.fetchval(
-        "SELECT 1 FROM pg_indexes WHERE indexname = 'idx_memory_facts_unique_active'"
-    )
-    if not facts_uniq_exists:
-        archived_dups = await conn.execute("""
-            WITH ranked AS (
-                SELECT id, ROW_NUMBER() OVER (
-                    PARTITION BY chat_id, mode, lower(fact_text)
-                    ORDER BY id
-                ) AS rn
-                FROM memory_facts
+    # Owner-aware active uniqueness; null ownership has its own namespace.
+    # Build the replacement before dropping the legacy index, in one transaction.
+    async with conn.transaction():
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtext('arti_fact_owner_index')::bigint)")
+        exists = await conn.fetchval("""
+            SELECT 1 FROM pg_indexes WHERE schemaname=current_schema()
+            AND indexname='idx_memory_facts_unique_owner_active'
+        """)
+        if not exists:
+            await conn.execute("""
+                WITH ranked AS (
+                    SELECT id, ROW_NUMBER() OVER (
+                        PARTITION BY chat_id, mode, user_id, lower(fact_text) ORDER BY id
+                    ) AS rn FROM memory_facts WHERE archived_at IS NULL
+                )
+                UPDATE memory_facts f SET archived_at=NOW(), archive_reason='owner_dedup_migration'
+                FROM ranked r WHERE f.id=r.id AND r.rn>1
+            """)
+            await conn.execute("""
+                CREATE UNIQUE INDEX idx_memory_facts_unique_owner_active
+                ON memory_facts (chat_id, mode, (user_id IS NULL), (COALESCE(user_id, 0)), lower(fact_text))
                 WHERE archived_at IS NULL
-            )
-            UPDATE memory_facts f
-            SET archived_at = NOW(), archive_reason = 'dedup_migration'
-            FROM ranked r
-            WHERE f.id = r.id AND r.rn > 1
-        """)
-        logger.info("MEM-07: дедуп фактов перед UNIQUE-индексом: %s", archived_dups)
-        await conn.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_facts_unique_active
-            ON memory_facts (chat_id, mode, lower(fact_text))
-            WHERE archived_at IS NULL
-        """)
-        logger.info("MEM-07: partial-unique индекс активных фактов создан")
+            """)
+        await conn.execute("DROP INDEX IF EXISTS idx_memory_facts_unique_active")
 
     await conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_memory_facts_text_ru
@@ -602,6 +604,9 @@ async def _create_tables_internal(conn):
                 ON memory_chunks (message_ids)
             """)
             logger.info("MEM-07: UNIQUE-индекс чанков по message_ids создан")
+    if vector_available:
+        await conn.execute('ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS embedding_attempts INTEGER NOT NULL DEFAULT 0')
+        await conn.execute('ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS embedding_error_code TEXT')
     # Таблица эмоциональных состояний чата
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS chat_emotional_states (
@@ -736,6 +741,17 @@ async def _create_tables_internal(conn):
                 ADD COLUMN is_maintenance BOOLEAN NOT NULL DEFAULT FALSE;
             END IF;
         END $$;
+    """)
+
+    # Compatibility path: each transport input and its sentiment have separate effects.
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS legacy_emotional_effects (
+            chat_id BIGINT NOT NULL, source_key TEXT NOT NULL,
+            phase TEXT NOT NULL CHECK (phase IN ('input','sentiment')),
+            result JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY(chat_id,source_key,phase)
+        )
     """)
 
     # Сидирование начальных моделей ИИ

@@ -1,0 +1,58 @@
+{
+  "model": "stealth/space-bunny-alpha",
+  "endpoint": "https://openrouter.ai/api/v1",
+  "observed_at": "2026-09-30T14:32:24.785654+00:00",
+  "metadata_found": true,
+  "input_modalities": [
+    "text",
+    "image",
+    "video"
+  ],
+  "supported_parameters": [
+    "include_reasoning",
+    "max_tokens",
+    "reasoning",
+    "reasoning_effort",
+    "response_format",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_p"
+  ],
+  "probes": [
+    {
+      "name": "text",
+      "passed": true,
+      "seconds": 5.83,
+      "prompt_tokens": 161,
+      "completion_tokens": 16,
+      "reported_cost": 0
+    },
+    {
+      "name": "native_tools_forced",
+      "passed": false,
+      "error_code": "http_404",
+      "seconds": 0.09
+    },
+    {
+      "name": "native_tools_auto",
+      "passed": true,
+      "seconds": 1.0,
+      "prompt_tokens": 412,
+      "completion_tokens": 37,
+      "reported_cost": 0
+    },
+    {
+      "name": "vision_png",
+      "passed": true,
+      "seconds": 3.56,
+      "prompt_tokens": 298,
+      "completion_tokens": 3,
+      "reported_cost": 0
+    }
+  ],
+  "provider_calls": 4,
+  "synthetic_data_only": true,
+  "Telegram_calls": 0,
+  "automatic_proxy_manifest_update": false
+}

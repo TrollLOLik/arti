@@ -46,7 +46,10 @@ def text_contains_entity(text: str, entity_normalized: str) -> bool:
     Предотвращает ложные привязки вида «ян» ⊂ «январь»."""
     if not entity_normalized:
         return False
-    normalized_text = normalize_entity_name(text)
+    # Name length is bounded for indexing; evidence text must be scanned in full.
+    normalized_text = _SPACES_RE.sub(" ", _ENTITY_CLEAN_RE.sub(
+        " ", (text or "").strip().lower().replace("ё", "е")
+    )).strip()
     if not normalized_text:
         return False
     return f" {entity_normalized} " in f" {normalized_text} "

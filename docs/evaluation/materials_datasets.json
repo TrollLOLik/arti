@@ -1,0 +1,234 @@
+{
+  "contract": "dataset-evaluation-1",
+  "seed": 20260930,
+  "scope": "synthetic_development_and_seeded_holdout; not real-world accuracy",
+  "cases": [
+    {
+      "case": "development:sum:0",
+      "passed": true,
+      "expected": "5420.16",
+      "actual": "5420.16"
+    },
+    {
+      "case": "development:repeat_evidence:0",
+      "passed": true
+    },
+    {
+      "case": "development:sum:1",
+      "passed": true,
+      "expected": "20268.08",
+      "actual": "20268.08"
+    },
+    {
+      "case": "development:repeat_evidence:1",
+      "passed": true
+    },
+    {
+      "case": "development:sum:2",
+      "passed": true,
+      "expected": "16592.54",
+      "actual": "16592.54"
+    },
+    {
+      "case": "development:repeat_evidence:2",
+      "passed": true
+    },
+    {
+      "case": "development:sum:3",
+      "passed": true,
+      "expected": "4180.57",
+      "actual": "4180.57"
+    },
+    {
+      "case": "development:repeat_evidence:3",
+      "passed": true
+    },
+    {
+      "case": "development:sum:4",
+      "passed": true,
+      "expected": "-14279.45",
+      "actual": "-14279.45"
+    },
+    {
+      "case": "development:repeat_evidence:4",
+      "passed": true
+    },
+    {
+      "case": "development:sum:5",
+      "passed": true,
+      "expected": "31005.43",
+      "actual": "31005.43"
+    },
+    {
+      "case": "development:repeat_evidence:5",
+      "passed": true
+    },
+    {
+      "case": "development:sum:6",
+      "passed": true,
+      "expected": "-10693.35",
+      "actual": "-10693.35"
+    },
+    {
+      "case": "development:repeat_evidence:6",
+      "passed": true
+    },
+    {
+      "case": "development:sum:7",
+      "passed": true,
+      "expected": "8354.12",
+      "actual": "8354.12"
+    },
+    {
+      "case": "development:repeat_evidence:7",
+      "passed": true
+    },
+    {
+      "case": "held_out_synthetic:sum:0",
+      "passed": true,
+      "expected": "19509.05",
+      "actual": "19509.05"
+    },
+    {
+      "case": "held_out_synthetic:repeat_evidence:0",
+      "passed": true
+    },
+    {
+      "case": "held_out_synthetic:sum:1",
+      "passed": true,
+      "expected": "-579.4",
+      "actual": "-579.4"
+    },
+    {
+      "case": "held_out_synthetic:repeat_evidence:1",
+      "passed": true
+    },
+    {
+      "case": "held_out_synthetic:sum:2",
+      "passed": true,
+      "expected": "-4719.66",
+      "actual": "-4719.66"
+    },
+    {
+      "case": "held_out_synthetic:repeat_evidence:2",
+      "passed": true
+    },
+    {
+      "case": "held_out_synthetic:sum:3",
+      "passed": true,
+      "expected": "-6078.2",
+      "actual": "-6078.2"
+    },
+    {
+      "case": "held_out_synthetic:repeat_evidence:3",
+      "passed": true
+    },
+    {
+      "case": "held_out_synthetic:sum:4",
+      "passed": true,
+      "expected": "-1817.65",
+      "actual": "-1817.65"
+    },
+    {
+      "case": "held_out_synthetic:repeat_evidence:4",
+      "passed": true
+    },
+    {
+      "case": "held_out_synthetic:sum:5",
+      "passed": true,
+      "expected": "-8150.24",
+      "actual": "-8150.24"
+    },
+    {
+      "case": "held_out_synthetic:repeat_evidence:5",
+      "passed": true
+    },
+    {
+      "case": "held_out_synthetic:sum:6",
+      "passed": true,
+      "expected": "9325.26",
+      "actual": "9325.26"
+    },
+    {
+      "case": "held_out_synthetic:repeat_evidence:6",
+      "passed": true
+    },
+    {
+      "case": "held_out_synthetic:sum:7",
+      "passed": true,
+      "expected": "14514.22",
+      "actual": "14514.22"
+    },
+    {
+      "case": "held_out_synthetic:repeat_evidence:7",
+      "passed": true
+    },
+    {
+      "case": "stale_cache_recomputed",
+      "passed": true
+    },
+    {
+      "case": "leaf_sources",
+      "passed": true
+    },
+    {
+      "case": "cross_sheet_exact",
+      "passed": true
+    },
+    {
+      "case": "percent_chain",
+      "passed": true
+    },
+    {
+      "case": "refusal:cycle",
+      "passed": true
+    },
+    {
+      "case": "refusal:zero_denominator",
+      "passed": true
+    },
+    {
+      "case": "refusal:header",
+      "passed": true
+    },
+    {
+      "case": "refusal:blank",
+      "passed": true
+    },
+    {
+      "case": "refusal:unextracted",
+      "passed": true
+    },
+    {
+      "case": "refusal:foreign_sheet_missing",
+      "passed": true
+    },
+    {
+      "case": "refusal:merged",
+      "passed": true
+    },
+    {
+      "case": "ambiguity:1,234",
+      "passed": true
+    },
+    {
+      "case": "ambiguity:1.234",
+      "passed": true
+    },
+    {
+      "case": "ambiguity:03/04/2026",
+      "passed": true
+    },
+    {
+      "case": "ambiguity:$12.50",
+      "passed": true
+    },
+    {
+      "case": "locale_ru_exact",
+      "passed": true
+    }
+  ],
+  "total": 48,
+  "passed": 48,
+  "provider_calls": 0
+}

@@ -4,8 +4,9 @@
 import json
 import logging
 import re
+import math
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Optional, List, Tuple, Dict, Any, NamedTuple
 import asyncpg
 
 from .connection import get_db
@@ -500,20 +501,24 @@ class MemoryMessage:
             return [dict(row) for row in rows]
 
     @staticmethod
-    async def fetch_for_chunking(limit: int = 5000, after_id: int = 0) -> List[dict]:
+    async def fetch_for_chunking(limit: int = 5000, after_id: int = 0, snapshot_id: int = None) -> List[dict]:
         async with get_db() as conn:
             rows = await conn.fetch("""
                 SELECT id, chat_id, user_id, user_name, role, mode, message_text, created_at
                 FROM memory_messages
                 WHERE id > $1
+                AND ($3::bigint IS NULL OR id <= $3)
                 AND role IN ('user', 'assistant', 'memory')
-                ORDER BY chat_id, mode, created_at, id
+                ORDER BY id
                 LIMIT $2
-            """, after_id, limit)
+            """, after_id, limit, snapshot_id)
             return [dict(row) for row in rows]
 
 
 def _vector_to_pg(value: List[float]) -> str:
+    import math
+    if not value or any(type(item) not in (int,float) or not math.isfinite(item) for item in value):
+        raise ValueError('Embedding must contain finite numeric values')
     return "[" + ",".join(f"{float(item):.8f}" for item in value) + "]"
 
 
@@ -590,9 +595,14 @@ class MemoryChunk:
         query_vector: List[float],
         limit: int = 5,
         min_similarity: float = 0.0,
+        embedding_model: str = None,
+        user_id: int = None,
     ) -> List[dict]:
         if not query_vector:
             return []
+        if embedding_model is None:
+            from memory.embeddings import EMBEDDING_MODEL
+            embedding_model = EMBEDDING_MODEL
 
         # min_similarity отсекает заведомо нерелевантные чанки: без порога ORDER BY
         # всегда вернёт top-k ближайших, даже если ближайший фрагмент не имеет
@@ -605,10 +615,12 @@ class MemoryChunk:
                 WHERE chat_id = $1
                 AND mode = $2
                 AND embedding IS NOT NULL
+                AND embedding_model = $6
+                AND ($7::bigint IS NULL OR user_id IS NULL OR user_id=$7)
                 AND (1 - (embedding <=> $3::vector)) >= $5
                 ORDER BY embedding <=> $3::vector
                 LIMIT $4
-            """, chat_id, mode, _vector_to_pg(query_vector), limit, float(min_similarity))
+            """, chat_id, mode, _vector_to_pg(query_vector), limit, float(min_similarity),embedding_model,user_id)
             return [dict(row) for row in rows]
 
     @staticmethod
@@ -644,10 +656,16 @@ class MemoryChunk:
                 SELECT *
                 FROM memory_chunks
                 WHERE embedding IS NULL
+                AND embedding_attempts < 3
                 ORDER BY created_at ASC, id ASC
                 LIMIT $1
             """, limit)
             return [dict(row) for row in rows]
+
+    @staticmethod
+    async def record_embedding_failure(chunk_id: int):
+        async with get_db() as conn:
+            await conn.execute("UPDATE memory_chunks SET embedding_attempts=embedding_attempts+1,embedding_error_code='provider_unavailable' WHERE id=$1 AND embedding IS NULL",chunk_id)
 
     @staticmethod
     async def latest_message_id() -> int:
@@ -816,9 +834,19 @@ class MemoryEntity:
             return [dict(row) for row in rows]
 
 
+class FactWriteResult(NamedTuple):
+    id: Optional[int]
+    created: bool
+
+
 class MemoryFact:
     @staticmethod
-    async def create(
+    async def create(*args, **kwargs) -> Optional[int]:
+        """Compatibility API; callers counting insertions use create_with_status."""
+        return (await MemoryFact.create_with_status(*args, **kwargs)).id
+
+    @staticmethod
+    async def create_with_status(
         chat_id: int,
         fact_text: str,
         user_id: int = None,
@@ -829,8 +857,8 @@ class MemoryFact:
         metadata: Dict[str, Any] = None,
         entity_ids: List[int] = None,
         conn=None,
-    ) -> Optional[int]:
-        """Создаёт факт (с дедупом по lower(fact_text)).
+    ) -> FactWriteResult:
+        """Создаёт активный факт с дедупом в контексте владельца.
 
         conn: если передано соединение — работаем в нём (для атомарной консолидации
         в одной транзакции, MEM-01). Внутренний conn.transaction() в этом случае
@@ -838,10 +866,13 @@ class MemoryFact:
         """
         fact_text = (fact_text or "").strip()
         if not fact_text:
-            return None
+            return FactWriteResult(None, False)
 
         metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
-        importance_value = max(0.0, min(float(importance or 0.5), 1.0))
+        importance_value = float(importance if importance is not None else 0.5)
+        if not math.isfinite(importance_value):
+            raise ValueError("Fact importance must be finite")
+        importance_value = max(0.0, min(importance_value, 1.0))
 
         async def _do(c):
             async with c.transaction():
@@ -851,35 +882,46 @@ class MemoryFact:
                     WHERE chat_id = $1
                     AND mode = $2
                     AND lower(fact_text) = lower($3)
+                    AND user_id IS NOT DISTINCT FROM $4
+                    AND archived_at IS NULL
                     LIMIT 1
-                """, chat_id, mode, fact_text)
+                """, chat_id, mode, fact_text, user_id)
 
                 if existing_id:
-                    return existing_id
+                    fact_id = existing_id
+                    created = False
+                else:
+                    fact_id = None
+                    created = True
 
                 # MEM-07: ON CONFLICT по partial-unique индексу активных фактов —
                 # закрывает гонку двух параллельных вставок одинакового факта.
-                row = await c.fetchrow("""
+                row = None if fact_id else await c.fetchrow("""
                     INSERT INTO memory_facts (
                         chat_id, user_id, mode, summary, fact_text, importance,
                         source_message_id, metadata, created_at
                     )
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, NOW())
-                    ON CONFLICT (chat_id, mode, lower(fact_text)) WHERE archived_at IS NULL
+                    ON CONFLICT (chat_id, mode, (user_id IS NULL), (COALESCE(user_id, 0)), lower(fact_text)) WHERE archived_at IS NULL
                     DO NOTHING
                     RETURNING id
                 """, chat_id, user_id, mode, summary, fact_text, importance_value, source_message_id, metadata_json)
 
-                if not row:
+                if not row and not fact_id:
                     # Проиграли гонку — возвращаем id уже вставленного активного факта.
-                    return await c.fetchval("""
+                    fact_id = await c.fetchval("""
                         SELECT id FROM memory_facts
                         WHERE chat_id = $1 AND mode = $2
                         AND lower(fact_text) = lower($3) AND archived_at IS NULL
+                        AND user_id IS NOT DISTINCT FROM $4
                         ORDER BY id LIMIT 1
-                    """, chat_id, mode, fact_text)
+                    """, chat_id, mode, fact_text, user_id)
+                    created = False
 
-                fact_id = row["id"]
+                if row:
+                    fact_id = row["id"]
+                if fact_id is None:
+                    return FactWriteResult(None, False)
                 for entity_id in entity_ids or []:
                     if not entity_id:
                         continue
@@ -889,7 +931,7 @@ class MemoryFact:
                         ON CONFLICT DO NOTHING
                     """, fact_id, entity_id)
 
-                return fact_id
+                return FactWriteResult(fact_id, created)
 
         if conn is not None:
             return await _do(conn)
@@ -897,129 +939,23 @@ class MemoryFact:
             return await _do(db_conn)
 
     @staticmethod
-    async def search(chat_id: int, query: str, mode: str = "default", limit: int = 5) -> List[dict]:
+    async def search(chat_id: int, query: str, mode: str = "default", limit: int = 5,
+                     user_id: Optional[int] = None) -> List[dict]:
+        """Explicit retrieval ignores expression cooldown; unscoped graph is quarantined."""
         query = (query or "").strip()
-        if not query:
-            async with get_db() as conn:
-                rows = await conn.fetch("""
-                    SELECT *
-                    FROM memory_facts
-                    WHERE chat_id = $1
-                    AND mode = $2
-                    AND archived_at IS NULL
-                    AND (cooldown_until IS NULL OR cooldown_until < NOW())
-                    ORDER BY importance DESC, created_at DESC
-                    LIMIT $3
-                """, chat_id, mode, limit)
-                return [dict(row) for row in rows]
-
         async with get_db() as conn:
             rows = await conn.fetch("""
-                WITH q AS (
-                    SELECT plainto_tsquery('russian', $2) AS query
-                ),
-                -- 1. Находим непосредственно упомянутые сущности
-                hop1 AS (
-                    SELECT DISTINCT e.id, 10.0 AS score
-                    FROM memory_entities e
-                    LEFT JOIN memory_entity_aliases a ON a.entity_id = e.id
-                    WHERE e.chat_id = $1
-                    AND (
-                        $4 ILIKE '%' || e.normalized_name || '%'
-                        OR e.normalized_name ILIKE '%' || $4 || '%'
-                        OR $4 ILIKE '%' || a.normalized_alias || '%'
-                        OR a.normalized_alias ILIKE '%' || $4 || '%'
-                    )
-                ),
-                -- 2. Находим 1-hop связи
-                hop1_relations AS (
-                    SELECT 
-                        CASE 
-                            WHEN source_entity_id IN (SELECT id FROM hop1) THEN target_entity_id
-                            ELSE source_entity_id
-                        END AS entity_id,
-                        weight
-                    FROM memory_relations 
-                    WHERE (source_entity_id IN (SELECT id FROM hop1) OR target_entity_id IN (SELECT id FROM hop1))
-                    AND chat_id = $1
-                ),
-                hop1_neighbors AS (
-                    SELECT entity_id AS id, MAX(weight) AS weight
-                    FROM hop1_relations
-                    WHERE entity_id NOT IN (SELECT id FROM hop1)
-                    GROUP BY entity_id
-                ),
-                -- 3. Находим 2-hop связи
-                hop2_relations AS (
-                    SELECT 
-                        CASE 
-                            WHEN source_entity_id IN (SELECT id FROM hop1_neighbors) THEN target_entity_id
-                            ELSE source_entity_id
-                        END AS entity_id,
-                        r.weight * hn.weight AS weight
-                    FROM memory_relations r
-                    JOIN hop1_neighbors hn ON (hn.id = r.source_entity_id OR hn.id = r.target_entity_id)
-                    WHERE r.chat_id = $1
-                ),
-                hop2_neighbors AS (
-                    SELECT entity_id AS id, MAX(weight) AS weight
-                    FROM hop2_relations
-                    WHERE entity_id NOT IN (SELECT id FROM hop1)
-                    AND entity_id NOT IN (SELECT id FROM hop1_neighbors)
-                    GROUP BY entity_id
-                ),
-                all_entities AS (
-                    SELECT id, 10.0 AS score FROM hop1
-                    UNION ALL
-                    SELECT id, weight AS score FROM hop1_neighbors
-                    UNION ALL
-                    SELECT id, weight * 0.5 AS score FROM hop2_neighbors
-                ),
-                ranked_facts AS (
-                    SELECT f.*,
-                        ts_rank(
-                            to_tsvector('russian', coalesce(f.summary, '') || ' ' || coalesce(f.fact_text, '')),
-                            q.query
-                        ) AS rank,
-                        (
-                            f.fact_text ILIKE '%' || $2 || '%'
-                            OR f.summary ILIKE '%' || $2 || '%'
-                        ) AS is_direct_match,
-                        COALESCE((
-                            SELECT SUM(ae.score)
-                            FROM memory_fact_entities fe
-                            JOIN all_entities ae ON ae.id = fe.entity_id
-                            WHERE fe.fact_id = f.id
-                        ), 0.0) AS entity_boost
-                    FROM memory_facts f
-                    CROSS JOIN q
-                    WHERE f.chat_id = $1
-                    AND f.mode = $3
-                    AND f.archived_at IS NULL
-                    AND (
-                        to_tsvector('russian', coalesce(f.summary, '') || ' ' || coalesce(f.fact_text, '')) @@ q.query
-                        OR f.fact_text ILIKE '%' || $2 || '%'
-                        OR f.summary ILIKE '%' || $2 || '%'
-                        OR EXISTS (
-                            SELECT 1 FROM memory_fact_entities fe
-                            WHERE fe.fact_id = f.id
-                            AND fe.entity_id IN (SELECT id FROM all_entities)
-                        )
-                    )
-                )
-                SELECT *
-                FROM ranked_facts
-                WHERE (
-                    cooldown_until IS NULL
-                    OR cooldown_until < NOW()
-                    -- L-22: bypass cooldown по rank убран — даже релевантный факт «остывает»
-                    -- после использования. Релевантность всё равно учтена в ORDER BY
-                    -- (rank*2.0), а recency-штраф (- used_count*0.05) мягко понижает
-                    -- надоевшие факты.
-                )
-                ORDER BY (rank * 2.0 + importance + (entity_boost * 0.15) - (used_count * 0.05)) DESC, created_at DESC
-                LIMIT $5
-            """, chat_id, query, mode, query.lower().replace("ё", "е"), limit)
+                WITH q AS (SELECT plainto_tsquery('russian', $2) AS query)
+                SELECT f.*, ts_rank(to_tsvector('russian', coalesce(f.summary, '') || ' ' || f.fact_text), q.query) AS rank
+                FROM memory_facts f CROSS JOIN q
+                WHERE f.chat_id = $1 AND f.mode = $3 AND f.archived_at IS NULL
+                  AND ($5::bigint IS NULL OR f.user_id = $5 OR f.user_id IS NULL)
+                  AND ($2 = '' OR to_tsvector('russian', coalesce(f.summary, '') || ' ' || f.fact_text) @@ q.query
+                       OR f.fact_text ILIKE '%' || $2 || '%' OR f.summary ILIKE '%' || $2 || '%')
+                ORDER BY ts_rank(to_tsvector('russian', coalesce(f.summary, '') || ' ' || f.fact_text), q.query) * 2.0 + f.importance DESC,
+                         created_at DESC, id DESC
+                LIMIT $4
+            """, chat_id, query, mode, max(1, min(int(limit), 100)), user_id)
             return [dict(row) for row in rows]
 
     @staticmethod
@@ -1031,7 +967,6 @@ class MemoryFact:
                 WHERE chat_id = $1
                 AND mode = $2
                 AND archived_at IS NULL
-                AND importance < 0.8
                 ORDER BY created_at ASC, id ASC
                 LIMIT $3
             """, chat_id, mode, limit)
@@ -1173,54 +1108,8 @@ class MemoryUserProfile:
         source_fact_ids: List[int] = None,
         source_entity_ids: List[int] = None,
     ) -> Optional[int]:
-        if not chat_id or not user_id or not profile_text:
-            return None
-
-        source_fact_ids = [int(item) for item in source_fact_ids or [] if item]
-        source_entity_ids = [int(item) for item in source_entity_ids or [] if item]
-        incoming = dict(profile_json or {})
-
-        async with get_db() as conn:
-            async with conn.transaction():
-                # MEM-02: аффективный блок (closeness/receptivity) ведут grow_closeness /
-                # apply_reinforcement под FOR UPDATE. Этот upsert (смысловой профиль из LLM)
-                # перезаписывает profile_json целиком, и без блокировки затёр бы параллельное
-                # обновление близости устаревшим значением (lost update). Берём СВЕЖИЙ
-                # affective из БД под тем же FOR UPDATE-локом и сохраняем его.
-                existing = await conn.fetchrow("""
-                    SELECT profile_json
-                    FROM memory_user_profiles
-                    WHERE chat_id = $1 AND user_id = $2 AND mode = $3
-                    FOR UPDATE
-                """, chat_id, user_id, mode)
-                if existing:
-                    ex_json = existing["profile_json"]
-                    if isinstance(ex_json, str):
-                        try:
-                            ex_json = json.loads(ex_json)
-                        except Exception:
-                            ex_json = {}
-                    if isinstance(ex_json, dict) and isinstance(ex_json.get("affective"), dict):
-                        incoming["affective"] = ex_json["affective"]
-
-                profile_json_text = json.dumps(incoming, ensure_ascii=False)
-                row = await conn.fetchrow("""
-                    INSERT INTO memory_user_profiles (
-                        chat_id, user_id, mode, profile_json, profile_text,
-                        source_fact_ids, source_entity_ids, facts_version, updated_at
-                    )
-                    VALUES ($1, $2, $3, $4::jsonb, $5, $6::bigint[], $7::bigint[], 1, NOW())
-                    ON CONFLICT (chat_id, user_id, mode)
-                    DO UPDATE SET
-                        profile_json = EXCLUDED.profile_json,
-                        profile_text = EXCLUDED.profile_text,
-                        source_fact_ids = EXCLUDED.source_fact_ids,
-                        source_entity_ids = EXCLUDED.source_entity_ids,
-                        facts_version = memory_user_profiles.facts_version + 1,
-                        updated_at = NOW()
-                    RETURNING id
-                """, chat_id, user_id, mode, profile_json_text, profile_text, source_fact_ids, source_entity_ids)
-                return row["id"] if row else None
+        """Retired legacy profile mutation; no writes or provider calls."""
+        return None
 
     @staticmethod
     async def fetch_source_material(
@@ -1267,168 +1156,13 @@ class MemoryUserProfile:
 
     @staticmethod
     async def apply_reinforcement(chat_id: int, user_id: int, mode: str, feedback_type: str):
-        """
-        Применяет положительное или отрицательное подкрепление к аффективному профилю пользователя.
-        Увеличивает или уменьшает близость (closeness) и восприимчивость к стикерам (sticker_receptivity).
-        """
-        async with get_db() as conn:
-            async with conn.transaction():
-                row = await conn.fetchrow("""
-                    SELECT * FROM memory_user_profiles
-                    WHERE chat_id = $1 AND user_id = $2 AND mode = $3
-                    FOR UPDATE
-                """, chat_id, user_id, mode)
-                
-                profile_json = {}
-                profile_text = ""
-                if row:
-                    profile_json = json.loads(row["profile_json"]) if isinstance(row["profile_json"], str) else row["profile_json"]
-                    profile_text = row["profile_text"]
-                else:
-                    profile_text = "Новый субъект общения."
-                
-                if "affective" not in profile_json:
-                    profile_json["affective"] = {
-                        "closeness": 0.1,
-                        "sticker_receptivity": 0.5,
-                        "dominant_sentiment": "neutral",
-                        "emotional_triggers": {},
-                        "last_reinforcement_time": None
-                    }
-                
-                aff = profile_json["affective"]
-                
-                # Проверяем кулдаун (5 минут = 300 секунд)
-                last_time_str = aff.get("last_reinforcement_time")
-                if last_time_str:
-                    try:
-                        from datetime import datetime as _dt
-                        last_time = _dt.fromisoformat(last_time_str)
-                        elapsed = (_dt.now() - last_time).total_seconds()
-                        if elapsed < 300:
-                            log_entry = (
-                                f"[REINFORCEMENT_IGNORED] chat_id={chat_id} user_id={user_id} | "
-                                f"Feedback={feedback_type} | CooldownActive={300 - elapsed:.1f}s remaining"
-                            )
-                            logger.info(f"🔮 [ЭМОЦИОНАЛЬНАЯ МАШИНА] {log_entry}")
-                            emotional_logger.info(log_entry)
-                            return
-                    except Exception as e:
-                        logger.warning(f"Ошибка при парсинге времени последнего подкрепления: {e}")
-
-                # Начисляем сбалансированные шаги
-                if feedback_type == "positive":
-                    aff["closeness"] = min(aff.get("closeness", 0.1) + 0.01, 1.0)
-                    aff["sticker_receptivity"] = min(aff.get("sticker_receptivity", 0.5) + 0.02, 1.0)
-                else:
-                    aff["closeness"] = max(aff.get("closeness", 0.1) - 0.01, 0.0)
-                    aff["sticker_receptivity"] = max(aff.get("sticker_receptivity", 0.5) - 0.03, 0.0)
-                
-                from datetime import datetime as _dt
-                aff["last_reinforcement_time"] = _dt.now().isoformat()
-                profile_json["affective"] = aff
-                
-                # Логируем положительное/отрицательное подкрепление
-                log_entry = (
-                    f"[REINFORCEMENT] chat_id={chat_id} user_id={user_id} | "
-                    f"Feedback={feedback_type} | "
-                    f"New Closeness={aff['closeness']:.3f} | "
-                    f"New Receptivity={aff['sticker_receptivity']:.3f}"
-                )
-                logger.info(f"🔮 [ЭМОЦИОНАЛЬНАЯ МАШИНА] {log_entry}")
-                emotional_logger.info(log_entry)
-                
-                await conn.execute("""
-                    INSERT INTO memory_user_profiles (
-                        chat_id, user_id, mode, profile_json, profile_text, updated_at
-                    )
-                    VALUES ($1, $2, $3, $4::jsonb, $5, NOW())
-                    ON CONFLICT (chat_id, user_id, mode)
-                    DO UPDATE SET
-                        profile_json = EXCLUDED.profile_json,
-                        updated_at = NOW()
-                """, chat_id, user_id, mode, json.dumps(profile_json, ensure_ascii=False), profile_text)
+        """Retired legacy profile mutation; no writes or provider calls."""
+        return None
 
     @staticmethod
     async def grow_closeness(chat_id: int, user_id: int, mode: str, proactive_reply: bool = False):
-        """
-        Растит близость (closeness) и восприимчивость к стикерам от ОБЫЧНОГО общения,
-        а не только от эмодзи-реакций. Пассивный рост троттлится (не чаще 1 раза в 90 секунд),
-        чтобы серия быстрых сообщений не накручивала близость. Бонус за ответ на проактивный
-        пуш начисляется без троттлинга как сильный позитивный сигнал.
-        """
-        if not chat_id or not user_id:
-            return
-        async with get_db() as conn:
-            async with conn.transaction():
-                row = await conn.fetchrow("""
-                    SELECT * FROM memory_user_profiles
-                    WHERE chat_id = $1 AND user_id = $2 AND mode = $3
-                    FOR UPDATE
-                """, chat_id, user_id, mode)
-
-                profile_json = {}
-                profile_text = "Новый субъект общения."
-                if row:
-                    profile_json = json.loads(row["profile_json"]) if isinstance(row["profile_json"], str) else (row["profile_json"] or {})
-                    profile_text = row["profile_text"] or profile_text
-
-                if "affective" not in profile_json:
-                    profile_json["affective"] = {
-                        "closeness": 0.1,
-                        "sticker_receptivity": 0.5,
-                        "dominant_sentiment": "neutral",
-                        "emotional_triggers": {},
-                        "last_reinforcement_time": None,
-                    }
-                aff = profile_json["affective"]
-
-                from datetime import datetime as _dt
-                now = _dt.now()
-                changed = False
-
-                # Пассивный рост от обычного общения (троттлинг 90 сек)
-                throttle_ok = True
-                last_passive_str = aff.get("last_passive_growth_time")
-                if last_passive_str:
-                    try:
-                        throttle_ok = (now - _dt.fromisoformat(last_passive_str)).total_seconds() >= 90
-                    except Exception:
-                        throttle_ok = True
-                if throttle_ok:
-                    aff["closeness"] = min(aff.get("closeness", 0.1) + 0.01, 1.0)
-                    aff["sticker_receptivity"] = min(aff.get("sticker_receptivity", 0.5) + 0.01, 1.0)
-                    aff["last_passive_growth_time"] = now.isoformat()
-                    changed = True
-
-                # Бонус за ответ на проактивный пуш (без троттлинга)
-                if proactive_reply:
-                    aff["closeness"] = min(aff.get("closeness", 0.1) + 0.05, 1.0)
-                    aff["sticker_receptivity"] = min(aff.get("sticker_receptivity", 0.5) + 0.03, 1.0)
-                    changed = True
-
-                if not changed:
-                    return
-
-                profile_json["affective"] = aff
-                log_entry = (
-                    f"[CLOSENESS_GROWTH] chat_id={chat_id} user_id={user_id} | "
-                    f"ProactiveReply={proactive_reply} | "
-                    f"Closeness={aff['closeness']:.3f} | Receptivity={aff['sticker_receptivity']:.3f}"
-                )
-                logger.info(f"🔮 [ЭМОЦИОНАЛЬНАЯ МАШИНА] {log_entry}")
-                emotional_logger.info(log_entry)
-
-                await conn.execute("""
-                    INSERT INTO memory_user_profiles (
-                        chat_id, user_id, mode, profile_json, profile_text, updated_at
-                    )
-                    VALUES ($1, $2, $3, $4::jsonb, $5, NOW())
-                    ON CONFLICT (chat_id, user_id, mode)
-                    DO UPDATE SET
-                        profile_json = EXCLUDED.profile_json,
-                        updated_at = NOW()
-                """, chat_id, user_id, mode, json.dumps(profile_json, ensure_ascii=False), profile_text)
+        """Retired legacy profile mutation; no writes or provider calls."""
+        return None
 
 
 class MemoryTimeline:
@@ -1600,7 +1334,7 @@ class MemoryWikiPage:
             return await _do(db_conn)
 
     @staticmethod
-    async def get_by_key(chat_id: Optional[int], mode: str, page_key: str, conn=None) -> Optional[dict]:
+    async def get_by_key(chat_id: Optional[int], mode: str, page_key: str, conn=None, verified_only: bool = False) -> Optional[dict]:
         async def _do(c):
             row = await c.fetchrow("""
                 SELECT *
@@ -1608,7 +1342,8 @@ class MemoryWikiPage:
                 WHERE (chat_id = $1 OR (chat_id IS NULL AND $1 IS NULL))
                 AND mode = $2
                 AND page_key = $3
-            """, chat_id, mode, page_key)
+                AND (NOT $4::boolean OR is_verified IS TRUE)
+            """, chat_id, mode, page_key, verified_only)
             return dict(row) if row else None
 
         if conn is not None:
@@ -1626,6 +1361,7 @@ class MemoryWikiPage:
                     FROM memory_wiki_pages
                     WHERE (chat_id = $1 OR chat_id IS NULL)
                     AND mode = $2
+                    AND is_verified IS TRUE
                     ORDER BY importance DESC, created_at DESC
                     LIMIT $3
                 """, chat_id, mode, limit)
@@ -1642,6 +1378,7 @@ class MemoryWikiPage:
                 CROSS JOIN q
                 WHERE (w.chat_id = $1 OR w.chat_id IS NULL)
                 AND w.mode = $2
+                AND w.is_verified IS TRUE
                 AND (
                     to_tsvector('russian', coalesce(w.title, '') || ' ' || coalesce(w.content, '')) @@ q.query
                     OR w.title ILIKE '%' || $3 || '%'
@@ -1668,16 +1405,8 @@ class MemoryWikiPage:
 class UserEvent:
     @staticmethod
     async def add(chat_id: int, event_date: Any, event_type: str, note: str):
-        """Добавить структурированное событие для пользователя (с UNIQUE дедупликацией)"""
-        # Сначала убедимся, что chat_emotional_states существует
-        await ChatEmotionalState.get_or_create(chat_id)
-        async with get_db() as conn:
-            await conn.execute("""
-                INSERT INTO user_events (chat_id, event_date, event_type, note, notified, created_at)
-                VALUES ($1, $2, $3, $4, FALSE, NOW())
-                ON CONFLICT (chat_id, event_date, event_type)
-                DO UPDATE SET note = EXCLUDED.note, notified = FALSE
-            """, chat_id, event_date, event_type, note)
+        """Retired event extractor; new intentions carry source provenance."""
+        return None
 
     @staticmethod
     async def get_upcoming_for_chat(chat_id: int, start_date: Any, end_date: Any) -> List[dict]:
@@ -1782,372 +1511,30 @@ from memory.emotion import (  # noqa: E402
 
 
 class ChatEmotionalState:
+    """Retired compatibility API. It cannot create or mutate emotional state."""
     @staticmethod
     async def get_or_create(chat_id: int) -> dict:
         async with get_db() as conn:
-            row = await conn.fetchrow("""
-                INSERT INTO chat_emotional_states (
-                    chat_id, charge, mood_state, last_sticker_time, last_activity_time, sticker_history, last_sent_sticker_mood, conversation_stage, user_tz
-                )
-                VALUES (
-                    $1, 0.0, 
-                    '{"happy": 0.0, "sad": 0.0, "angry": 0.0, "love": 0.0, "teasing": 0.0, "shock": 0.0, "blush": 0.0, "bored": 0.0, "thinking": 0.0}'::jsonb,
-                    NULL, NOW(), '[]'::jsonb, NULL, 'active', NULL
-                )
-                ON CONFLICT (chat_id) DO UPDATE SET
-                    chat_id = EXCLUDED.chat_id
-                RETURNING *, EXTRACT(EPOCH FROM (NOW() - last_sticker_time))::float8 AS seconds_since_sticker
-            """, chat_id)
-            return dict(row)
+            row = await conn.fetchrow('SELECT * FROM chat_emotional_states WHERE chat_id=$1',chat_id)
+            return dict(row) if row else {}
 
     @staticmethod
-    async def update_state(chat_id: int, user_message: str, closeness: float = 0.0, user_id: Optional[int] = None, defer_sentiment: bool = False) -> dict:
-        import math
-        user_message = user_message or ""
-        async with get_db() as conn:
-            async with conn.transaction():
-                # 1. Загружаем текущее состояние
-                # Дельту времени считаем на стороне БД (NOW()), чтобы не смешивать
-                # наивный datetime.now() приложения с временем БД (разные TZ -> неверный распад).
-                state = await conn.fetchrow("""
-                    SELECT *, EXTRACT(EPOCH FROM (NOW() - last_activity_time))::float8 AS delta_t_seconds
-                    FROM chat_emotional_states WHERE chat_id = $1 FOR UPDATE
-                """, chat_id)
-                
-                if not state:
-                    # DB-02: ON CONFLICT — два первых сообщения в новый чат одновременно
-                    # иначе дают UniqueViolation. delta считаем из last_activity_time
-                    # (для свежей строки ≈ 0; на конфликте — реальная дельта).
-                    state = await conn.fetchrow("""
-                        INSERT INTO chat_emotional_states (chat_id, charge, mood_state, last_sticker_time, last_activity_time, sticker_history, last_sent_sticker_mood, conversation_stage, user_tz)
-                        VALUES ($1, 0.0, '{"happy": 0.0, "sad": 0.0, "angry": 0.0, "love": 0.0, "teasing": 0.0, "shock": 0.0, "blush": 0.0, "bored": 0.0, "thinking": 0.0}'::jsonb, NULL, NOW(), '[]'::jsonb, NULL, 'active', NULL)
-                        ON CONFLICT (chat_id) DO UPDATE SET chat_id = EXCLUDED.chat_id
-                        RETURNING *, EXTRACT(EPOCH FROM (NOW() - last_activity_time))::float8 AS delta_t_seconds
-                    """, chat_id)
-                
-                # Запоминаем, был ли это первый ответ юзера на проактивный пуш
-                # (для бонуса близости — сильный позитивный сигнал)
-                was_proactive_reply = (state["conversation_stage"] == 'proactive_sent')
-                
-                # Ленивое определение таймзоны.
-                # Передаём текущее соединение (conn) внутрь — иначе infer_user_timezone
-                # захватил бы второе соединение пула изнутри этой транзакции с FOR UPDATE,
-                # и под нагрузкой пул мог бы самозаблокироваться (RACE-01).
-                user_tz = state["user_tz"]
-                if user_tz is None and user_id is not None:
-                    user_tz = await infer_user_timezone(chat_id, user_id, conn=conn)
-                
-                # 2. Вычисляем распад (Time Decay) — дельта посчитана БД (UTC-консистентно)
-                delta_t = max(0.0, state["delta_t_seconds"] or 0.0)
-                
-                # Затухание заряда (half-life ~60 мин) — заряд почти не «испаряется за чашку чая»
-                lambda_c = 0.00019
-                charge = state["charge"] * math.exp(-lambda_c * delta_t)
-                
-                # Затухание вектора настроения (half-life ~77 мин) — эмоциональный шлейф живёт до ~2 ч
-                lambda_m = 0.00015
-                mood_dict = json.loads(state["mood_state"]) if isinstance(state["mood_state"], str) else state["mood_state"]
-                for emotion in mood_dict:
-                    decayed = mood_dict[emotion] * math.exp(-lambda_m * delta_t)
-                    # Обнуляем денормализованные «хвосты», иначе в логах/выводе мусор вида 3e-175
-                    mood_dict[emotion] = decayed if decayed >= 0.0005 else 0.0
-                
-                # 3. Анализируем интенсивность реплики пользователя
-                clean_msg = user_message.strip()
-                delta_charge = min(len(clean_msg) * 0.002, 0.18)
-                
-                # Капс
-                if clean_msg.isupper() and len(clean_msg) > 4:
-                    delta_charge += 0.15
-                
-                # Восклицательные знаки
-                excls = clean_msg.count("!")
-                delta_charge += min(excls * 0.05, 0.15)
-                
-                # Эмодзи
-                import re as _re
-                emojis = _re.findall(r'[^\x00-\x7F\u0400-\u04FF\s]', clean_msg)
-                delta_charge += min(len(emojis) * 0.02, 0.1)
-                
-                # Ключевые слова и сантимент с учетом отрицания
-                msg_lower = clean_msg.lower()
-                
-                love_words = ["люблю", "мило", "прелесть", "обожаю", "лучшая", "красивая", "классная"]
-                happy_words = ["ура", "круто", "отлично", "хаха", "радость", "смешно", "привет", "приветик"]
-                sad_words = ["грус", "плачу", "плохо", "беда", "печаль", "устал", "одинок",
-                             "больно", "болит", "теря", "потер", "утрат", "скуча", "скорб",
-                             "тоск", "жаль", "слез", "слёз", "всплак", "плак", "расстро",
-                             "невыносим", "смерт", "прощай", "разлук"]
-                angry_words = ["дурак", "бесишь", "заткнись", "плохой", "урод", "удали", "хватит", "хер", "обид", "злост"]
-                
-                # Функция определения отрицания перед ключевым словом
-                def check_negation(word: str) -> bool:
-                    pos = msg_lower.find(word)
-                    if pos > 0:
-                        prev_segment = msg_lower[max(0, pos-15):pos].strip()
-                        # Частица отрицания должна быть отдельным словом, а не хвостом другого
-                        # (иначе "мне" → "не" даёт ложное отрицание для "мне больно"/"мне жаль").
-                        if _re.search(r"(?:^|\s)(?:не|нет|без)$", prev_segment):
-                            return True
-                    return False
-
-                # Сопоставление по границе начала слова (\bслово), а не по подстроке,
-                # иначе ловятся ложные совпадения (например, "ура" внутри "дурак" -> happy).
-                # Префиксная граница сохраняет склонения ("привет" ловит "приветик").
-                def _kw_match(words):
-                    return [w for w in words if _re.search(r"\b" + _re.escape(w), msg_lower)]
-
-                matched_love = _kw_match(love_words)
-                matched_happy = _kw_match(happy_words)
-                matched_sad = _kw_match(sad_words)
-                matched_angry = _kw_match(angry_words)
-
-                closeness_mult = 1.5 if closeness > 0.6 else 1.0
-
-                # Словарный сентимент копим в keyword_mood_delta (ОТДЕЛЬНО от mood_dict).
-                # При defer_sentiment=True его НЕ применяем здесь, а отдаём наружу как ФОЛБЭК:
-                # приоритетный источник сдвига настроения теперь интроспекция самой LLM
-                # (тег <!-- emotional_introspection -->), применяемая пост-генерации.
-                keyword_mood_delta: dict = {}
-                def _kd(emotion: str, d: float):
-                    keyword_mood_delta[emotion] = keyword_mood_delta.get(emotion, 0.0) + d
-
-                if matched_love:
-                    word = matched_love[0]
-                    if check_negation(word):
-                        # Не люблю -> bored/sad
-                        delta_charge += 0.05
-                        _kd("bored", 0.08)
-                        _kd("sad", 0.08)
-                    else:
-                        delta_charge += 0.1 * closeness_mult
-                        _kd("love", 0.15)
-                        _kd("blush", 0.1)
-                        
-                elif matched_happy:
-                    word = matched_happy[0]
-                    if check_negation(word):
-                        # Не рад -> sad/bored
-                        delta_charge += 0.05
-                        _kd("sad", 0.08)
-                        _kd("bored", 0.08)
-                    else:
-                        delta_charge += 0.08
-                        _kd("happy", 0.12)
-                        _kd("teasing", 0.05)
-                        
-                elif matched_sad:
-                    word = matched_sad[0]
-                    if check_negation(word):
-                        # Не грусти / не плачь -> happy/love
-                        delta_charge += 0.08
-                        _kd("happy", 0.06)
-                        _kd("love", 0.04)
-                    else:
-                        delta_charge += 0.06
-                        _kd("sad", 0.15)
-                        _kd("love", 0.10)
-                        # Сопереживание: гасим игривость/радость, чтобы не «веселиться» в ответ на боль
-                        _kd("happy", -0.10)
-                        _kd("teasing", -0.10)
-                        
-                elif matched_angry:
-                    word = matched_angry[0]
-                    if check_negation(word):
-                        # Без обид / не злись -> happy/love
-                        delta_charge += 0.08
-                        _kd("happy", 0.06)
-                        _kd("love", 0.04)
-                    else:
-                        delta_charge += 0.12
-                        # Предохранитель агрессии
-                        if closeness >= 0.4:
-                            _kd("angry", 0.2)
-                        else:
-                            _kd("bored", 0.15)
-                            _kd("thinking", 0.05)
-
-                # Применяем словарный сдвиг сразу ТОЛЬКО в legacy-режиме (defer_sentiment=False).
-                # В гибридном пути (defer_sentiment=True) дельту применяет apply_turn_sentiment
-                # пост-генерации — либо из интроспекции LLM, либо этим же keyword_mood_delta (фолбэк).
-                if not defer_sentiment:
-                    for _em, _d in keyword_mood_delta.items():
-                        if _em in mood_dict:
-                            mood_dict[_em] = min(max(mood_dict[_em] + _d, 0.0), 1.0)
-
-                # Применяем циркадный сдвиг к вектору (DB-03: now(timezone.utc) вместо
-                # устаревшего utcnow(); локальный час пользователя считается так же).
-                if user_tz is not None:
-                    hour = (datetime.now(timezone.utc) + timedelta(hours=user_tz)).hour
-                else:
-                    hour = datetime.now().hour
-
-                if 0 <= hour < 5:
-                    mood_dict["thinking"] = min(mood_dict["thinking"] + 0.12, 1.0)
-                    mood_dict["bored"] = min(mood_dict["bored"] + 0.08, 1.0)
-                    if closeness > 0.7:
-                        mood_dict["love"] = min(mood_dict["love"] + 0.1, 1.0)
-                elif 5 <= hour < 12:
-                    mood_dict["happy"] = min(mood_dict["happy"] + 0.1, 1.0)
-                    mood_dict["bored"] = max(mood_dict["bored"] - 0.08, 0.0)
-                
-                # Итоговый заряд
-                charge = max(0.0, min(charge + delta_charge, 1.0))
-                
-                # 4. Записываем обратно
-                mood_json = json.dumps(mood_dict, ensure_ascii=False)
-                
-                # Логируем изменение заряда для отладки и прозрачности
-                old_charge = state["charge"]
-                decayed_charge = state["charge"] * math.exp(-lambda_c * delta_t)
-                
-                log_entry_msg = (
-                    f"🔮 [ЭМОЦИОНАЛЬНАЯ МАШИНА] Обновление для chat_id={chat_id}:\n"
-                    f"  - Прошло времени с активности: {delta_t:.1f} сек.\n"
-                    f"  - Исходный заряд: {old_charge:.3f} -> После распада (Decay): {decayed_charge:.3f}\n"
-                    f"  - Прибавка за реплику (user_message): +{delta_charge:.3f}\n"
-                    f"  - Итоговый заряд чата (Charge): {charge:.3f}/1.000\n"
-                    f"  - Текущий вектор настроений Арти: {mood_json}"
-                )
-                logger.info(log_entry_msg)
-                
-                # Записываем плоский структурированный лог в logs/emotional.log
-                flat_log_entry = (
-                    f"[UPDATE_STATE] chat_id={chat_id} | "
-                    f"TimePassed={delta_t:.1f}s | "
-                    f"OldCharge={old_charge:.3f} -> Decayed={decayed_charge:.3f} | "
-                    f"Delta={delta_charge:.3f} | "
-                    f"FinalCharge={charge:.3f} | "
-                    f"Moods={mood_json}"
-                )
-                emotional_logger.info(flat_log_entry)
-
-                row = await conn.fetchrow("""
-                    UPDATE chat_emotional_states
-                    SET charge = $2,
-                        mood_state = $3::jsonb,
-                        last_activity_time = NOW(),
-                        conversation_stage = 'active',
-                        user_tz = $4
-                    WHERE chat_id = $1
-                    RETURNING *
-                """, chat_id, charge, mood_json, user_tz)
-                result = dict(row)
-                result["was_proactive_reply"] = was_proactive_reply
-                # Словарный сдвиг отдаём наружу как fail-closed фолбэк для apply_turn_sentiment.
-                result["keyword_mood_delta"] = keyword_mood_delta
-                return result
+    async def update_state(*args, **kwargs) -> dict:
+        return {}
 
     @staticmethod
-    async def apply_mood_delta(chat_id: int, mood_delta: dict, source: str = "llm") -> None:
-        """Применяет ограниченные дельты к вектору настроения (БЕЗ распада/заряда/времени).
-
-        Используется пост-генерации: приоритетный источник — интроспекция LLM (source="llm"),
-        иначе fail-closed фолбэк на словарь (source="keyword"). Каждая дельта клампится в
-        [-0.25, 0.25], итоговое значение — в [0, 1]; ключи вне whitelist из 9 эмоций игнорируются.
-        """
-        if not mood_delta:
-            return
-        applied: dict = {}
-        async with get_db() as conn:
-            async with conn.transaction():
-                state = await conn.fetchrow(
-                    "SELECT mood_state FROM chat_emotional_states WHERE chat_id = $1 FOR UPDATE",
-                    chat_id,
-                )
-                if not state:
-                    return
-                mood_dict = json.loads(state["mood_state"]) if isinstance(state["mood_state"], str) else state["mood_state"]
-                for emotion, d in mood_delta.items():
-                    if emotion not in SUPPORTED_MOODS or emotion not in mood_dict:
-                        continue
-                    if not isinstance(d, (int, float)) or isinstance(d, bool):
-                        continue
-                    d = max(-0.25, min(0.25, float(d)))
-                    new_val = min(max(mood_dict[emotion] + d, 0.0), 1.0)
-                    # Обнуляем денормализованные «хвосты», чтобы /charge не пестрел мусором 3e-175
-                    new_val = new_val if new_val >= 0.0005 else 0.0
-                    applied[emotion] = round(new_val - mood_dict[emotion], 4)
-                    mood_dict[emotion] = new_val
-                if not applied:
-                    return
-                mood_json = json.dumps(mood_dict, ensure_ascii=False)
-                await conn.execute(
-                    "UPDATE chat_emotional_states SET mood_state = $2::jsonb WHERE chat_id = $1",
-                    chat_id, mood_json,
-                )
-        logger.info(f"🔮 [MOOD_DELTA:{source}] chat_id={chat_id} | applied={applied}")
-        emotional_logger.info(f"[MOOD_DELTA] chat_id={chat_id} | source={source} | applied={applied}")
-
-    @staticmethod
-    async def apply_turn_sentiment(chat_id: int, arti_response_text: str, keyword_mood_delta: Optional[dict] = None) -> Optional[str]:
-        """Гибридный сентимент пост-генерации.
-
-        Приоритет — интроспекция самой LLM (тег <!-- emotional_introspection --> из ответа Арти).
-        Если тег отсутствует/битый/вне диапазона — fail-closed фолбэк на словарный
-        keyword_mood_delta (посчитанный в update_state). Возвращает предложенный моод стикера
-        (sticker_mood_suggest) или None.
-        """
-        parsed = parse_emotional_introspection(arti_response_text)
-        if parsed is not None:
-            if parsed["mood_delta"]:
-                await ChatEmotionalState.apply_mood_delta(chat_id, parsed["mood_delta"], source="llm")
-            else:
-                emotional_logger.info(
-                    f"[INTROSPECTION] chat_id={chat_id} | mood_delta пуст, sticker_suggest={parsed['sticker_mood_suggest']}"
-                )
-            return parsed["sticker_mood_suggest"]
-        # Тег отсутствует/битый -> словарный фолбэк (fail-closed)
-        if keyword_mood_delta:
-            await ChatEmotionalState.apply_mood_delta(chat_id, keyword_mood_delta, source="keyword")
+    async def apply_mood_delta(*args, **kwargs):
         return None
 
     @staticmethod
-    async def record_sticker_sent(chat_id: int, file_id: str, mood: str):
-        async with get_db() as conn:
-            async with conn.transaction():
-                state = await conn.fetchrow("""
-                    SELECT * FROM chat_emotional_states WHERE chat_id = $1 FOR UPDATE
-                """, chat_id)
-                
-                if not state:
-                    return
-                
-                history = json.loads(state["sticker_history"]) if isinstance(state["sticker_history"], str) else state["sticker_history"]
-                if not isinstance(history, list):
-                    history = []
-                
-                # Анти-повтор: пишем последние 3 стикера
-                history.append(file_id)
-                history = history[-3:]
-                
-                mood_dict = json.loads(state["mood_state"]) if isinstance(state["mood_state"], str) else state["mood_state"]
-                # Бустим вес отправленного настроения
-                if mood in mood_dict:
-                    mood_dict[mood] = min(mood_dict[mood] + 0.4, 1.0)
-                
-                # Сброс заряда (эмоциональный катарсис)
-                charge = 0.05
-                
-                # Логируем отправленный стикер и сброс заряда
-                log_entry = (
-                    f"[STICKER_SENT] chat_id={chat_id} | "
-                    f"Sticker={file_id} | "
-                    f"Mood={mood} | "
-                    f"Charge Reset to 0.05"
-                )
-                logger.info(f"🔮 [ЭМОЦИОНАЛЬНАЯ МАШИНА] {log_entry}")
-                emotional_logger.info(log_entry)
-                
-                await conn.execute("""
-                    UPDATE chat_emotional_states
-                    SET charge = $2,
-                        mood_state = $3::jsonb,
-                        last_sticker_time = NOW(),
-                        sticker_history = $4::jsonb,
-                        last_sent_sticker_mood = $5
-                    WHERE chat_id = $1
-                """, chat_id, charge, json.dumps(mood_dict, ensure_ascii=False), json.dumps(history, ensure_ascii=False), mood)
+    async def apply_turn_sentiment(*args, **kwargs):
+        return None
+
+    @staticmethod
+    async def record_sticker_sent(*args, **kwargs):
+        return None
+
+
 
 
 class AIModel:

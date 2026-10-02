@@ -51,7 +51,7 @@ from bot.commands import (
 from bot.queue import (
     image_worker, video_worker, music_worker,
     dubbing_worker, vclone_worker,
-    vclone_fsm_timeout_watchdog, proactive_scheduler_worker,
+    vclone_fsm_timeout_watchdog,
     run_supervised
 )
 from bot.retry_bot import RetryBot
@@ -60,6 +60,7 @@ from config import TELEGRAM_TOKEN
 
 # Глобальные переменные для работы бота
 application: Optional[telegram.ext.Application] = None
+_instance_lock = None
 
 
 def setup_signal_handlers():
@@ -81,6 +82,10 @@ def run_with_restart():
     max_restarts = 10
     restart_count = 0
     restart_delay = 5
+    # Keep one event loop across retries: module-owned queues/SDK clients bind
+    # to it and cannot safely be reused in a new loop after a network failure.
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     
     while restart_count < max_restarts:
         try:
@@ -92,28 +97,90 @@ def run_with_restart():
                 try:
                     from database.connection import init_db
                     await init_db()
+                    from database import connection
+                    from utils.instance_lock import PollerLease
+                    app.bot_data['poller_lease'] = await PollerLease(connection._pool, TELEGRAM_TOKEN).acquire()
+                    from cognition.runtime import start_runtime
+                    runtime=await start_runtime(connection._pool)
+                    runtime.bot_id=app.bot.id
+                    runtime.bot_username=app.bot.username
+                    from bot.menu import install
+                    try:
+                        await install(app.bot)
+                    except telegram.error.TelegramError:
+                        logger.warning('Не удалось настроить кнопку Telegram; /menu остаётся доступна.')
                     logger.info("База данных инициализирована")
                 except Exception as e:
                     logger.error(f"Ошибка при инициализации БД: {e}", exc_info=True)
-                    logger.warning("Продолжаем работу без БД")
+                    raise
+
+                def spawn_worker(coro):
+                    task = asyncio.create_task(coro)
+                    app.bot_data.setdefault('owned_workers',[]).append(task)
+                    return task
+
+                async def watch_instance():
+                    while True:
+                        await asyncio.sleep(1)
+                        stop = _instance_lock is not None and _instance_lock.stop_requested()
+                        try:
+                            healthy = await asyncio.wait_for(app.bot_data['poller_lease'].healthy(), 3)
+                        except Exception:
+                            healthy = False
+                        if stop or not healthy:
+                            logger.info('Остановка Арти: %s', 'команда перезапуска/остановки' if stop else 'потеря блокировки poller')
+                            app.stop_running()
+                            return
+                spawn_worker(watch_instance())
 
                 # L-03: воркеры под супервизором — упавший автоматически перезапустится.
                 # REL-01: раздельные воркеры по типам медиа (image/video/music).
-                app.create_task(run_supervised(image_worker, "image_worker"))
-                app.create_task(run_supervised(video_worker, "video_worker"))
-                app.create_task(run_supervised(music_worker, "music_worker"))
+                spawn_worker(run_supervised(image_worker, "image_worker"))
+                spawn_worker(run_supervised(video_worker, "video_worker"))
+                spawn_worker(run_supervised(music_worker, "music_worker"))
                 logger.info("Медиа-воркеры (image/video/music) запущены (supervised).")
-                app.create_task(run_supervised(dubbing_worker, "dubbing_worker"))
+                spawn_worker(run_supervised(dubbing_worker, "dubbing_worker"))
                 logger.info("Воркер дубляжа видео запущен (supervised).")
-                app.create_task(run_supervised(vclone_worker, "vclone_worker"))
+                spawn_worker(run_supervised(vclone_worker, "vclone_worker"))
                 logger.info("Воркер vclone запущен (supervised).")
-                app.create_task(run_supervised(vclone_fsm_timeout_watchdog, "vclone_fsm_watchdog", app.bot))
+                spawn_worker(run_supervised(vclone_fsm_timeout_watchdog, "vclone_fsm_watchdog", app.bot))
                 logger.info("Watchdog vclone FSM запущен (supervised).")
-                app.create_task(run_supervised(proactive_scheduler_worker, "proactive_scheduler", app.bot))
+                from cognition.runtime import get_runtime
+                from cognition.intentions import intention_scheduler
+                spawn_worker(run_supervised(intention_scheduler,'cognitive_intentions',get_runtime(),app.bot))
+                from cognition.proactivity import group_scheduler
+                spawn_worker(run_supervised(group_scheduler,'group_proactivity',get_runtime(),app.bot))
+                from materials.runtime import maintenance_worker
+                spawn_worker(run_supervised(maintenance_worker,'materials_maintenance'))
+                from agents.runtime import agent_worker,processing_card_worker
+                spawn_worker(run_supervised(agent_worker,'agent_tasks',app.bot))
+                spawn_worker(run_supervised(processing_card_worker,'agent_cards',app.bot))
                 logger.info("Проактивный воркер шедулера запущен (supervised).")
-                logger.info("Глобальные ретраи для отправки сообщений (3 попытки) активированы.")
+                logger.info("Транспорт готов; active-контексты сохраняют квитанции и не повторяют неоднозначные отправки.")
 
             # Создаём приложение с кастомными таймаутами и RetryBot
+            async def post_stop(app):
+                tasks = app.bot_data.pop('owned_workers',[])
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks,return_exceptions=True)
+                from bot.queue import drain_background_tasks
+                await drain_background_tasks()
+                from cognition.runtime import stop_runtime
+                await stop_runtime()
+
+            async def post_shutdown(app):
+                from database.connection import close_db
+                lease = app.bot_data.pop('poller_lease', None)
+                try:
+                    # post_init can fail before PTB invokes post_stop.
+                    await post_stop(app)
+                finally:
+                    try:
+                        if lease:
+                            await lease.close()
+                    finally:
+                        await close_db()
             # Таймауты подняты для нестабильной сети (особенно при VPN/прокси).
             request_config = HTTPXRequest(
                 connect_timeout=30,
@@ -122,17 +189,52 @@ def run_with_restart():
                 pool_timeout=10,
             )
             my_bot = RetryBot(token=TELEGRAM_TOKEN, request=request_config)
+            from cognition.telegram_scope import CognitiveUpdateProcessor
 
             application = (
                 ApplicationBuilder()
                 .bot(my_bot)
+                .concurrent_updates(CognitiveUpdateProcessor(32))
                 .post_init(post_init)
+                .post_stop(post_stop)
+                .post_shutdown(post_shutdown)
                 .build()
             )
 
             # Регистрируем хендлеры команд
+            from bot.menu import menu_command,menu_callback,menu_input
+            application.add_handler(CommandHandler(['menu','arti_commands'],menu_command))
+            application.add_handler(CallbackQueryHandler(menu_callback,pattern='^menu:'))
+            application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND,menu_input),group=-20)
             application.add_handler(CommandHandler("clear_context", clear_context))
-            application.add_handler(CommandHandler("arti_commands", arti_commands))
+            from bot.group_commands import proactivity_command,quiet_command
+            application.add_handler(CommandHandler('proactivity',proactivity_command))
+            application.add_handler(CommandHandler('quiet',quiet_command))
+            from bot.table_commands import dataset_command,calc_command,datafix_command
+            application.add_handler(CommandHandler('dataset',dataset_command))
+            application.add_handler(CommandHandler('calc',calc_command))
+            application.add_handler(CommandHandler('datafix',datafix_command))
+            from bot.audio_commands import transcript_command,transcript_fix_command,listen_command
+            application.add_handler(CommandHandler('transcript',transcript_command))
+            from bot.video_commands import moment_command,storyboard_command
+            application.add_handler(CommandHandler('moment',moment_command))
+            application.add_handler(CommandHandler('storyboard',storyboard_command))
+            from bot.material_search import material_search_command,material_review_command
+            application.add_handler(CommandHandler('materials_find',material_search_command))
+            application.add_handler(CommandHandler('material_review',material_review_command))
+            from bot.project_commands import project_command
+            application.add_handler(CommandHandler('project',project_command))
+            from bot.artifact_commands import artifact_command,task_command
+            from bot.workflow_commands import workflow_command
+            from bot.work_cards import work_callback
+            application.add_handler(CommandHandler('artifact',artifact_command))
+            application.add_handler(CommandHandler('task',task_command))
+            application.add_handler(CommandHandler(['decision','assignment','procedure','subscription','scenario'],workflow_command))
+            application.add_handler(CallbackQueryHandler(work_callback,pattern='^work:'))
+            application.add_handler(CommandHandler('transcript_fix',transcript_fix_command))
+            application.add_handler(CommandHandler('listen',listen_command))
+            from bot.commands import handle_memory_archive_command
+            application.add_handler(CommandHandler("memory_archive",handle_memory_archive_command))
             application.add_handler(CommandHandler("cancel", handle_cancel_command))
             application.add_handler(CommandHandler("start", start))
             application.add_handler(CommandHandler("stop", stop))
@@ -163,7 +265,7 @@ def run_with_restart():
             application.add_handler(CallbackQueryHandler(vclone_clean_callback, pattern="^vclone_clean:"))
             application.add_handler(CallbackQueryHandler(vclone_save_callback, pattern="^vsave:"))
             application.add_handler(CallbackQueryHandler(saved_voice_callback, pattern="^(vsel|vdel):"))
-            application.add_handler(CallbackQueryHandler(forget_callback, pattern="^forget_fact:"))
+            application.add_handler(CallbackQueryHandler(forget_callback, pattern="^forget_(fact|source|set|asset):"))
             application.add_handler(CallbackQueryHandler(profile_callback, pattern="^prof_"))
 
             # Обработчики сообщений
@@ -179,10 +281,15 @@ def run_with_restart():
 
             # Обработчик ошибок
             application.add_error_handler(error_handler)
+            from cognition.scope import wrap_callback
+            for handlers in application.handlers.values():
+                for handler in handlers:
+                    handler.callback=wrap_callback(handler.callback)
 
             logger.info("Бот запускается в режиме polling...")
             application.run_polling(
-                drop_pending_updates=True,
+                drop_pending_updates=False,
+                close_loop=False,
                 allowed_updates=telegram.Update.ALL_TYPES
             )
             
@@ -193,6 +300,10 @@ def run_with_restart():
             logger.info("Получен сигнал прерывания (Ctrl+C)")
             break
         except Exception as e:
+            from utils.instance_lock import AlreadyRunning
+            if isinstance(e, AlreadyRunning):
+                logger.error('Другой экземпляр Арти уже использует этот токен и базу. Второй poller не запущен.')
+                break
             restart_count += 1
             logger.error(f"Критическая ошибка при работе бота (попытка {restart_count}/{max_restarts}): {e}", exc_info=True)
             
@@ -216,6 +327,8 @@ def run_with_restart():
 
 def main():
     """Главная функция для запуска бота"""
+    from cognition.logging import install_private_log_filter
+    install_private_log_filter()
     # Fail-fast: без токена бот всё равно не сможет работать — лучше упасть сразу
     # с понятной ошибкой, чем стартовать и циклически перезапускаться.
     if not (TELEGRAM_TOKEN or "").strip():
@@ -223,6 +336,37 @@ def main():
             "TELEGRAM_TOKEN не задан. Укажите его в .env (см. .env.example). Запуск прерван."
         )
         sys.exit(1)
+    import argparse
+    import time
+    from utils.instance_lock import InstanceLock, AlreadyRunning
+    parser = argparse.ArgumentParser(description='Арти: один экземпляр, управляемый перезапуск')
+    operation = parser.add_mutually_exclusive_group()
+    operation.add_argument('--status', action='store_true', help='показать состояние запущенной Арти')
+    operation.add_argument('--stop', action='store_true', help='штатно остановить запущенную Арти')
+    operation.add_argument('--restart', action='store_true', help='дождаться остановки и запустить Арти заново')
+    args = parser.parse_args()
+    global _instance_lock
+    _instance_lock = InstanceLock(TELEGRAM_TOKEN)
+    if args.status:
+        info = _instance_lock.status()
+        print('Арти запущена, PID '+str(info.get('pid')) if info else 'Арти не запущена.')
+        return
+    if args.stop or args.restart:
+        if _instance_lock.request_stop():
+            until = time.monotonic()+45
+            while _instance_lock.status() is not None and time.monotonic()<until:
+                time.sleep(.25)
+            if _instance_lock.status() is not None:
+                print('Арти ещё завершает работу. Повтори команду после завершения; второй процесс не запущен.')
+                return
+        if args.stop:
+            print('Арти остановлена.')
+            return
+    try:
+        _instance_lock.acquire()
+    except AlreadyRunning as exc:
+        print('Арти уже запущена (PID '+str(exc.info.get('pid', 'на другом хосте'))+'). Для перезапуска: python main.py --restart')
+        return
     try:
         setup_signal_handlers()
         run_with_restart()
@@ -235,13 +379,16 @@ def main():
         try:
             import asyncio
             from database.connection import close_db
-            loop = asyncio.new_event_loop()
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                loop = asyncio.new_event_loop()
             loop.run_until_complete(close_db())
             loop.close()
             logger.info("Соединение с БД окончательно закрыто")
         except Exception:
             pass
         logger.info("Бот завершил работу")
+        _instance_lock.close()
 
 
 if __name__ == "__main__":

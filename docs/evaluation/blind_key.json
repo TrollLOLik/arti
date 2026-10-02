@@ -1,0 +1,34 @@
+{
+  "neutral": {
+    "full_variant": "A",
+    "baseline": "sentiment_only_ablation"
+  },
+  "negation": {
+    "full_variant": "B",
+    "baseline": "sentiment_only_ablation"
+  },
+  "sarcasm": {
+    "full_variant": "A",
+    "baseline": "sentiment_only_ablation"
+  },
+  "boundary": {
+    "full_variant": "B",
+    "baseline": "sentiment_only_ablation"
+  },
+  "grief": {
+    "full_variant": "A",
+    "baseline": "sentiment_only_ablation"
+  },
+  "thanks": {
+    "full_variant": "A",
+    "baseline": "sentiment_only_ablation"
+  },
+  "apology": {
+    "full_variant": "B",
+    "baseline": "sentiment_only_ablation"
+  },
+  "mixed": {
+    "full_variant": "B",
+    "baseline": "sentiment_only_ablation"
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "version": "materials-1",
+  "synthetic": true,
+  "provider_calls": 0,
+  "rows": [
+    {
+      "case": "budget.docx",
+      "split": "development",
+      "expected_facts": 2,
+      "legacy_facts": 0,
+      "native_facts": 2,
+      "locators": [
+        "paragraph",
+        "paragraph",
+        "paragraph",
+        "paragraph"
+      ],
+      "blocks": 4,
+      "coverage": "partial",
+      "limitations": [
+        "embedded_images_not_extracted",
+        "docx_headers_footers_and_layout_unassessed"
+      ],
+      "seconds": 0.00548
+    },
+    {
+      "case": "budget.pdf",
+      "split": "development",
+      "expected_facts": 2,
+      "legacy_facts": 2,
+      "native_facts": 2,
+      "locators": [
+        "page",
+        "page"
+      ],
+      "blocks": 2,
+      "coverage": "complete",
+      "limitations": [
+        "native_pdf_layout_unassessed"
+      ],
+      "seconds": 0.00051
+    },
+    {
+      "case": "budget.txt",
+      "split": "development",
+      "expected_facts": 2,
+      "legacy_facts": 2,
+      "native_facts": 2,
+      "locators": [
+        "paragraph",
+        "paragraph",
+        "paragraph"
+      ],
+      "blocks": 3,
+      "coverage": "complete",
+      "limitations": [],
+      "seconds": 0.00011
+    },
+    {
+      "case": "heldout-russian-lines",
+      "split": "held_out",
+      "expected_facts": 3,
+      "native_facts": 3,
+      "locators": [
+        "paragraph",
+        "paragraph",
+        "paragraph"
+      ],
+      "blocks": 3,
+      "coverage": "complete"
+    }
+  ],
+  "unevaluated": [
+    "OCR",
+    "audio_speech",
+    "video_semantics",
+    "infographic_visual_quality",
+    "agent_completion",
+    "human_ratings",
+    "Telegram_pilot"
+  ]
+}

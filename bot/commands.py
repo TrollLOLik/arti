@@ -29,7 +29,7 @@ from utils.text_processing import extract_urls_and_make_keyboard
 from utils.model_selection import get_chat_model, set_chat_model
 from ai.generation import generate_response_stream
 from bot.queue import enqueue_generation, _extract_photo_urls, enqueue_dubbing
-from database.models import ChatHistory, SpamProtection as SpamProtectionModel, SavedVoice, MemoryUserProfile, MemoryFact, AIModel
+from database.models import ChatHistory, SpamProtection as SpamProtectionModel, SavedVoice, MemoryFact, AIModel
 
 
 logger = logging.getLogger(__name__)
@@ -374,7 +374,11 @@ async def start(update, context):
 
     await set_responses_enabled(chat_id, True)
     logger.info(f"Бот включен в чате {chat_id}.")
-    await update.message.reply_text(random.choice(START_RESPONSES), parse_mode='HTML')
+    if getattr(context.bot,'_menu_panel',None) is not None:
+        await update.message.reply_text('Ответы включены. Я на связи.')
+    else:
+        from bot.menu import menu_command
+        await menu_command(update,context)
 
 
 # ============================================================================
@@ -419,6 +423,13 @@ async def clear_context(update, context):
 
     # Очищаем историю в БД
     await ChatHistory.clear(chat_id)
+    from cognition.runtime import get_runtime
+    runtime = get_runtime()
+    if runtime:
+        if rp_mode_state.get(chat_id):
+            await runtime.new_scene(chat_id)
+        else:
+            await runtime.reset_history(chat_id)
     logger.info(f"Контекст чата {chat_id} успешно очищен.")
     
     if await is_responses_enabled(chat_id):
@@ -430,52 +441,8 @@ async def clear_context(update, context):
 # ============================================================================
 
 async def arti_commands(update, context):
-    chat_id = update.effective_chat.id
-
-    if not await is_responses_enabled(chat_id):
-        return
-
-    if not await handle_spam_protection(update, context, "arti_commands"):
-        return
-
-    commands_list = (
-        "<i>Касается пальцами банта на шее, выводя голографическую панель управления на экран терминала. Свечение в её звёздчатых радужках становится ярче.</i>\n\n"
-        "<blockquote>«Подключаю терминал... Доступ к ядру Арти санкционирован. Вот полный список моих системных команд и модулей, субъект:»</blockquote>\n\n"
-        "📡 <b>ЦЕНТР УПРАВЛЕНИЯ АРТИ</b>\n"
-        "──────────────────────────────\n"
-        "🧠 <b>Основные и Ментальные команды:</b>\n"
-        "• /start — Инициализировать сознание Арти\n"
-        "• /stop — Перевести системы в спящий режим\n"
-        "• /clear_context — Полностью очистить оперативную память текущего чата\n"
-        "• /my_profile — Вывести твоё секретное досье / RPG Character Sheet\n"
-        "• /forget [тема] — Интерактивно стереть воспоминание из долгосрочной памяти\n"
-        "• /model — Переключить модель мышления (⚡Быстрая / 🧠Умная)\n"
-        "• /cancel — Экстренно свернуть активные медиа-потоки\n"
-        "• /rp — Активировать режим глубокого ролевого погружения (только в ЛС)\n\n"
-        "🎨 <b>Модули генерации медиа:</b>\n"
-        "• /image — Синтезировать изображение по текстовому описанию\n"
-        "• /video — Сгенерировать кинематографичный видеоряд\n"
-        "• /music — Сочинить музыкальную композицию (пошаговый конструктор)\n"
-    )
-
-    # CONF-01: голосовые/дубляжные команды показываем только когда TTS включён —
-    # иначе они отвечали бы «отключено» после прохождения всего диалога.
-    if TTS_ENABLED:
-        commands_list += (
-            "• /dub — Дублировать видео или аудио на русский язык (с субтитрами)\n"
-            "• /vclone (или /steal) — Скопировать голос из аудио-файла и озвучить им текст\n"
-            "• /voices — Показать реестр твоих сохранённых слепков голосов\n"
-            "• /voice_save — Извлечь и сохранить слепок голоса без озвучивания\n"
-            "• /voice_delete — Стереть сохранённый слепок голоса из базы\n"
-        )
-
-    commands_list += (
-        "\n🎲 <b>Развлекательные протоколы:</b>\n"
-        "• /rps — Сыграть с Арти в классическую «цу-е-фа» (Камень, Ножницы, Бумага)\n\n"
-        "──────────────────────────────\n"
-        "🛠 <b>Системный архитектор:</b> @DeallSign"
-    )
-    await update.message.reply_text(commands_list, parse_mode="HTML")
+    from bot.menu import menu_command
+    return await menu_command(update, context)
 
 
 # ============================================================================
@@ -486,6 +453,11 @@ async def handle_cancel_command(update: Update, context: ContextTypes.DEFAULT_TY
     """Отменяет текущие пошаговые запросы (музыка, фото, видео)."""
     chat_id = update.effective_chat.id
     user_id = update.message.from_user.id
+    if update.effective_chat.type!='private' and not await is_admin(update.effective_user,chat_id,context):
+        await update.message.reply_text('Остановить запросы всего чата может только администратор. Свою задачу останови в её карточке.')
+        return
+    from bot.menu import cancel_menu_input
+    await cancel_menu_input(update,context)
     
     # Сбрасываем все состояния ожидания
     waiting_for_image_prompt[chat_id][user_id] = False
@@ -495,6 +467,7 @@ async def handle_cancel_command(update: Update, context: ContextTypes.DEFAULT_TY
     pending_video_inputs[chat_id][user_id] = []
     context.user_data.pop("video_flow", None)
     context.user_data.pop("pending_base64_for_gen", None)
+    context.user_data.pop("pending_material_uses_for_gen", None)
     waiting_for_model_search[chat_id].pop(user_id, None)
     if chat_id in music_flow_state and user_id in music_flow_state[chat_id]:
         del music_flow_state[chat_id][user_id]
@@ -547,6 +520,10 @@ async def handle_cancel_command(update: Update, context: ContextTypes.DEFAULT_TY
 
     # Выходим из RP-режима, если активен
     if chat_id in rp_mode_state:
+        from cognition.runtime import get_runtime
+        runtime = get_runtime()
+        if runtime:
+            await runtime.new_scene(chat_id)
         del rp_mode_state[chat_id]
         logger.info(f"RP-режим отключен для чата {chat_id} пользователем {user_id}")
 
@@ -585,12 +562,16 @@ async def handle_rp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     rp_mode_state[chat_id] = True
+    from cognition.runtime import get_runtime
+    if get_runtime():
+        await get_runtime().new_scene(chat_id)
     logger.info(f"RP-режим включен для чата {chat_id}")
     await update.message.reply_text(
         "<i>включает режим погружения...</i>\n\n"
         "<blockquote>«Сессия открыта. Правила просты: я говорю, ты слушаешь. Или наоборот — зависит от того, кто первый моргнет.»</blockquote>\n\n"
-        "<i>Доступные команды в RP:</i> /model /start /stop /cancel\n"
-        "<i>Медиа: принимаю фото, видео, голосовые, документы.</i>",
+        "<i>Напиши, где начинается сцена и кем ты будешь. "
+        "Чтобы вернуться к обычному разговору, открой «Истории и игры» в меню "
+        "и выбери «Закончить сцену».</i>",
         parse_mode='HTML'
     )
 
@@ -1234,23 +1215,12 @@ async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("❌ Только админы могут менять модель.", show_alert=True)
         return
 
+    flow = context.user_data.get("model_flow")
+    if not flow or flow.get('menu_message_id')!=query.message.message_id:
+        await query.answer('Это чужой или устаревший выбор модели. Открой своё меню.',show_alert=True)
+        return
     await query.answer()
     data = query.data
-
-    if "model_flow" not in context.user_data:
-        context.user_data["model_flow"] = {
-            "page": 0,
-            "query": None,
-            "provider": None,
-            "speed": None,
-            "intelligence": None,
-            "menu_message_id": query.message.message_id,
-            "menu_mode": "list",
-            "pings": {}
-        }
-        
-    flow = context.user_data["model_flow"]
-    flow["menu_message_id"] = query.message.message_id
 
     if data == "model_noop":
         return
@@ -2708,7 +2678,7 @@ async def vclone_clean_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     # Requirement 6.3: проверяем что юзер совпадает с инициатором (state-owner)
     # и что мы действительно ждём решение по чистке.
-    if not state or state.get("step") != "cleanup_choice":
+    if not state or state.get("step") != "cleanup_choice" or not query.message or state.get('bot_message_id')!=query.message.message_id:
         try:
             await query.answer("Эта кнопка уже неактуальна.", show_alert=False)
         except Exception:
@@ -2923,7 +2893,7 @@ async def vclone_save_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     state = vclone_save_flow_state.get(chat_id, {}).get(user_id)
-    if not isinstance(state, dict):
+    if not isinstance(state, dict) or not query.message or state.get('bot_message_id')!=query.message.message_id:
         await query.answer("Уже неактуально.", show_alert=False)
         return
 
@@ -3320,303 +3290,16 @@ async def saved_voice_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
 
-def get_profile_keyboard(user_id: int, current_tab: str, mode: str) -> InlineKeyboardMarkup:
-    def btn(text: str, tab: str) -> InlineKeyboardButton:
-        active_text = f"• {text} •" if tab == current_tab else text
-        return InlineKeyboardButton(active_text, callback_data=f"prof_{tab}:{user_id}")
-
-    if mode == "rp":
-        keyboard = [
-            [btn("📜 Сюжет", "main"), btn("📊 Синхро", "affect")],
-            [btn("📌 Вехи", "facts"), btn("🎭 Склонности", "pref")],
-            [btn("🗣️ Поведение", "style"), btn("⚔️ Связи", "rel")]
-        ]
-    else:
-        keyboard = [
-            [btn("📜 Анализ", "main"), btn("📊 Показатели", "affect")],
-            [btn("📌 Факты", "facts"), btn("🎭 Интересы", "pref")],
-            [btn("🗣️ Стиль", "style"), btn("🤝 Связь", "rel")]
-        ]
-    return InlineKeyboardMarkup(keyboard)
 
 
-def format_profile_caption(profile: dict, tab: str, user_id: int, user_name: str, mode: str) -> str:
-    import html as _html
-    import json
-    from config import PRIVILEGED_USER_IDS
-    is_privileged = user_id in PRIVILEGED_USER_IDS
-    
-    prof_json = profile.get("profile_json") or {}
-    if isinstance(prof_json, str):
-        try:
-            prof_json = json.loads(prof_json)
-        except Exception:
-            prof_json = {}
-            
-    affective = prof_json.get("affective", {})
-    closeness = affective.get("closeness", 0.1)
-    receptivity = affective.get("sticker_receptivity", 0.5)
-    
-    if mode == "rp":
-        status_rp = "Создатель (Волков)" if is_privileged else "Выживший / Пленник комплекса"
-        header = (
-            f"🔮 <b>TELEMA NUTRISCU: CHARACTER SHEET</b>\n"
-            f"──────────────────────────────\n"
-            f"👤 <b>Имя:</b> {_html.escape(user_name)}\n"
-            f"🎭 <b>Роль:</b> {status_rp}\n"
-            f"⚔️ <b>Связь:</b> Напряжённая (Пленник)\n"
-            f"──────────────────────────────\n"
-        )
-    else:
-        status = "Создатель / Приоритетный субъект 👑" if is_privileged else "Собеседник / Внешний наблюдатель 👤"
-        header = (
-            f"📁 <b>СЕКРЕТНОЕ ДОСЬЕ АНДРОИДА АРТИ</b>\n"
-            f"──────────────────────────────\n"
-            f"👤 <b>Субъект:</b> {_html.escape(user_name)}\n"
-            f"🆔 <b>ID в сети:</b> <code>{user_id}</code>\n"
-            f"🧬 <b>Статус:</b> {status}\n"
-            f"──────────────────────────────\n"
-        )
-        
-    body = ""
-    if tab == "main":
-        profile_text = profile.get("profile_text", "").strip()
-        limit = 700
-        if len(profile_text) > limit:
-            truncated_text = profile_text[:limit].strip() + "..."
-            note = f"\n\n<i>[Досье имеет большой объём. Используйте вкладки ниже для просмотра деталей]</i>"
-        else:
-            truncated_text = profile_text
-            note = ""
-            
-        if mode == "rp":
-            body = f"📜 <b>Характеристики и сюжетный выбор:</b>\n<i>{_html.escape(truncated_text)}</i>{note}"
-        else:
-            body = f"🧠 <b>Данные анализа:</b>\n<i>{_html.escape(truncated_text)}</i>{note}"
-            
-    elif tab == "facts":
-        facts = prof_json.get("important_facts", [])
-        if not facts:
-            body_text = "<i>Нет сохраненных фактов.</i>"
-        else:
-            body_text = "\n".join(f"• {_html.escape(str(f))}" for f in facts)
-            
-        if mode == "rp":
-            body = f"📌 <b>Ключевые сюжетные вехи:</b>\n{body_text}"
-        else:
-            body = f"📌 <b>Важные факты о субъекте:</b>\n{body_text}"
-            
-    elif tab == "pref":
-        prefs = prof_json.get("stable_preferences", [])
-        if not prefs:
-            body_text = "<i>Нет выявленных интересов.</i>"
-        else:
-            body_text = "\n".join(f"• {_html.escape(str(p))}" for p in prefs)
-            
-        if mode == "rp":
-            body = f"🎭 <b>Склонности и предпочтения:</b>\n{body_text}"
-        else:
-            body = f"🎭 <b>Стабильные предпочтения:</b>\n{body_text}"
-            
-    elif tab == "style":
-        styles = prof_json.get("communication_style", [])
-        if not styles:
-            body_text = "<i>Стиль общения анализируется.</i>"
-        else:
-            body_text = "\n".join(f"• {_html.escape(str(s))}" for s in styles)
-            
-        if mode == "rp":
-            body = f"🗣️ <b>Модель поведения субъекта:</b>\n{body_text}"
-        else:
-            body = f"🗣️ <b>Особенности коммуникации:</b>\n{body_text}"
-            
-    elif tab == "rel":
-        relations = prof_json.get("relationship_to_arti", [])
-        if not relations:
-            body_text = "<i>Нет зафиксированных связей.</i>"
-        else:
-            body_text = "\n".join(f"• {_html.escape(str(r))}" for r in relations)
-            
-        if mode == "rp":
-            body = f"⚔️ <b>Отношения с комплексом:</b>\n{body_text}"
-        else:
-            body = f"🤝 <b>Связь с Арти:</b>\n{body_text}"
-            
-    elif tab == "affect":
-        def make_bar(v: float) -> str:
-            bars = int(v * 10)
-            return "█" * bars + "·" * (10 - bars)
-            
-        closeness_bar = make_bar(closeness)
-        receptivity_bar = make_bar(receptivity)
-        
-        if mode == "rp":
-            body = (
-                f"📊 <b>Аффективная синхронизация:</b>\n\n"
-                f"❤️ <b>Синхронизация с ИИ:</b> {closeness:.2f}\n"
-                f"<code>[{closeness_bar}]</code>\n\n"
-                f"✨ <b>Реакция на стимулы:</b> {receptivity:.2f}\n"
-                f"<code>[{receptivity_bar}]</code>"
-            )
-        else:
-            body = (
-                f"📊 <b>Показатели взаимодействия:</b>\n\n"
-                f"❤️ <b>Близость:</b> {closeness:.2f}\n"
-                f"<code>[{closeness_bar}]</code>\n\n"
-                f"✨ <b>Восприимчивость к стикерам:</b> {receptivity:.2f}\n"
-                f"<code>[{receptivity_bar}]</code>"
-            )
-            
-    return header + body
 
 
-async def _maybe_send_profile_document(bot, chat_id, user_id, user_name, mode, profile, message_id, context):
-    """Отправляет полное досье в формате Markdown, если оно длинное (не спамит на одно сообщение)."""
-    import io
-    profile_text = profile.get("profile_text", "").strip()
-    if len(profile_text) <= 700:
-        return
-        
-    if "profile_sent_files" not in context.user_data:
-        context.user_data["profile_sent_files"] = set()
-    sent_files = context.user_data["profile_sent_files"]
-    
-    if message_id in sent_files:
-        return
-        
-    md_content = generate_profile_markdown(profile, user_id, user_name, mode)
-    bio = io.BytesIO(md_content.encode('utf-8'))
-    
-    if mode == "rp":
-        filename = f"character_sheet_{user_id}.md"
-        caption = "🔮 Полный Character Sheet в формате Markdown"
-    else:
-        filename = f"dossier_{user_id}.md"
-        caption = "📂 Полное секретное досье в формате Markdown"
-        
-    bio.name = filename
-    
-    try:
-        await bot.send_document(
-            chat_id=chat_id,
-            document=bio,
-            filename=filename,
-            caption=caption,
-            reply_to_message_id=message_id
-        )
-        sent_files.add(message_id)
-    except Exception as e:
-        logger.error(f"Не удалось отправить файл досье: {e}")
 
 
-def generate_profile_markdown(profile: dict, user_id: int, user_name: str, mode: str) -> str:
-    """Форматирует все разделы досье/характеристик пользователя в единый Markdown-файл."""
-    import json
-    from config import PRIVILEGED_USER_IDS
-    is_privileged = user_id in PRIVILEGED_USER_IDS
-    
-    prof_json = profile.get("profile_json") or {}
-    if isinstance(prof_json, str):
-        try:
-            prof_json = json.loads(prof_json)
-        except Exception:
-            prof_json = {}
-            
-    affective = prof_json.get("affective", {})
-    closeness = affective.get("closeness", 0.1)
-    receptivity = affective.get("sticker_receptivity", 0.5)
-    
-    profile_text = profile.get("profile_text", "").strip()
-    
-    def format_list(items):
-        if not items:
-            return "_Нет данных_"
-        return "\n".join(f"- {i}" for i in items)
-        
-    facts = format_list(prof_json.get("important_facts", []))
-    prefs = format_list(prof_json.get("stable_preferences", []))
-    styles = format_list(prof_json.get("communication_style", []))
-    relations = format_list(prof_json.get("relationship_to_arti", []))
-    
-    if mode == "rp":
-        status_rp = "Создатель (Волков)" if is_privileged else "Выживший / Пленник комплекса"
-        md = f"""# 🔮 TELEMA NUTRISCU: CHARACTER SHEET
-## Выживший: {user_name}
-
-| Характеристика | Значение |
-| :--- | :--- |
-| **Роль** | {status_rp} |
-| **Связь** | Напряжённая (Пленник) |
-| **Синхронизация с ИИ** | {closeness:.3f} / 1.000 |
-| **Реакция на стимулы** | {receptivity:.3f} / 1.000 |
-
----
-
-## 📜 Характеристики и сюжетный выбор
-{profile_text}
-
----
-
-## 📌 Ключевые сюжетные вехи
-{facts}
-
----
-
-## 🎭 Склонности и предпочтения
-{prefs}
-
----
-
-## 🗣️ Модель поведения субъекта
-{styles}
-
----
-
-## ⚔️ Отношения с комплексом
-{relations}
-"""
-    else:
-        status = "Создатель / Приоритетный субъект 👑" if is_privileged else "Собеседник / Внешний наблюдатель 👤"
-        md = f"""# 📂 СЕКРЕТНОЕ ДОСЬЕ АНДРОИДА АРТИ
-## Субъект: {user_name}
-
-| Параметр | Значение |
-| :--- | :--- |
-| **ID в сети** | `{user_id}` |
-| **Статус** | {status} |
-| **Близость (Closeness)** | {closeness:.3f} / 1.000 |
-| **Восприимчивость к стикерам** | {receptivity:.3f} / 1.000 |
-
----
-
-## 🧠 Данные анализа
-{profile_text}
-
----
-
-## 📌 Важные факты о субъекте
-{facts}
-
----
-
-## 🎭 Стабильные предпочтения
-{prefs}
-
----
-
-## 🗣️ Особенности коммуникации
-{styles}
-
----
-
-## 🤝 Связь с Арти
-{relations}
-"""
-    return md.strip()
 
 
 async def handle_my_profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/my_profile — отправляет карточку досье или лист персонажа с аватаром"""
+    """Show source-backed personal knowledge from the current cognitive context."""
     chat_id = update.effective_chat.id
     user_id = update.message.from_user.id
     user_name = update.message.from_user.first_name or update.message.from_user.username or "Пользователь"
@@ -3627,80 +3310,15 @@ async def handle_my_profile_command(update: Update, context: ContextTypes.DEFAUL
         return
         
     mode = "rp" if rp_mode_state.get(chat_id) else "default"
-    
-    # 1. Загрузка профиля
-    profile = await MemoryUserProfile.get(chat_id, user_id, mode)
-    if not profile or not profile.get("profile_text"):
-        if mode == "default":
-            msg = (
-                "<i>Наклоняет голову, ровно глядя на тебя. Свечение в звёздчатых зрачках едва заметно дрожит.</i>\n\n"
-                "<blockquote>«У меня ещё нет твоего досье. [Uhm] Нам нужно больше общаться, "
-                "чтобы моя нейросетевая архитектура проанализировала твой профиль. Приходи позже.»</blockquote>"
-            )
-        else:
-            msg = (
-                "<i>Касается пальцами банта, устремляя взгляд в глубь герметичного комплекса.</i>\n\n"
-                "<blockquote>«Твой лист персонажа пуст, выживший. Нам нужно пройти больше сюжетных вех, "
-                "чтобы Телема Нутриску смогла сформировать твой портрет...»</blockquote>"
-            )
-        await update.message.reply_text(msg, parse_mode='HTML')
+    from cognition.runtime import get_runtime
+    from cognition.diagnostics import active_context,profile_text
+    runtime = get_runtime()
+    cid = await active_context(runtime,chat_id,mode) if runtime else None
+    if cid is not None:
+        await update.message.reply_text(await profile_text(runtime,cid,user_id),parse_mode='HTML')
         return
-
-    # 2. Получение аватарки пользователя
-    photo_file = None
-    try:
-        photos = await context.bot.get_user_profile_photos(user_id, limit=1)
-        if photos and photos.photos:
-            photo_file = photos.photos[0][-1].file_id
-    except Exception as e:
-        logger.warning(f"Не удалось получить аватарку пользователя в TG: {e}")
-        
-    if not photo_file:
-        # L-16: не ходим в сеть за заглушкой. Если рядом лежит локальный ассет —
-        # используем его, иначе профиль отправится текстом без картинки.
-        import os as _sys_os
-        fallback_path = _sys_os.path.join(_sys_os.path.dirname(__file__), "..", "outputs", "profile_fallback.jpg")
-        if _sys_os.path.exists(fallback_path):
-            try:
-                with open(fallback_path, "rb") as f:
-                    photo_file = f.read()
-            except Exception as e:
-                logger.warning(f"Не удалось прочитать локальную заглушку аватара: {e}")
-
-    # 3. Форматирование описания и клавиатуры
-    caption = format_profile_caption(profile, "main", user_id, user_name, mode)
-    reply_markup = get_profile_keyboard(user_id, "main", mode)
     
-    sent_msg = None
-    if photo_file:
-        try:
-            sent_msg = await context.bot.send_photo(
-                chat_id=chat_id,
-                photo=photo_file,
-                caption=caption,
-                reply_markup=reply_markup,
-                parse_mode='HTML',
-                reply_to_message_id=update.message.message_id
-            )
-        except Exception as e:
-            logger.error(f"Не удалось отправить фото профиля: {e}")
-            
-    if not sent_msg:
-        # Запасной вариант — отправка просто текстом, если фото не ушло
-        sent_msg = await update.message.reply_text(caption, reply_markup=reply_markup, parse_mode='HTML')
-
-    # Отправляем файл, если досье длинное
-    if sent_msg:
-        await _maybe_send_profile_document(
-            bot=context.bot,
-            chat_id=chat_id,
-            user_id=user_id,
-            user_name=user_name,
-            mode=mode,
-            profile=profile,
-            message_id=sent_msg.message_id,
-            context=context
-        )
+    await update.message.reply_text('Пока здесь нет сохранённых сведений о тебе.')
 
 
 async def profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3726,50 +3344,19 @@ async def profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     mode = "rp" if rp_mode_state.get(chat_id) else "default"
-    
-    profile = await MemoryUserProfile.get(chat_id, target_user_id, mode)
-    if not profile:
-        await query.edit_message_caption("❌ Ошибка: профиль не найден.", reply_markup=None)
+    from cognition.runtime import get_runtime
+    from cognition.diagnostics import active_context,profile_text
+    runtime = get_runtime()
+    cid = await active_context(runtime,chat_id,mode) if runtime else None
+    if cid is not None:
+        text = await profile_text(runtime,cid,target_user_id)
+        if query.message.photo:
+            await query.edit_message_caption(caption=text[:950],parse_mode='HTML',reply_markup=None)
+        else:
+            await query.edit_message_text(text=text,parse_mode='HTML',reply_markup=None)
         return
-        
-    user_name = query.from_user.first_name or query.from_user.username or "Пользователь"
     
-    caption = format_profile_caption(profile, tab, target_user_id, user_name, mode)
-    reply_markup = get_profile_keyboard(target_user_id, tab, mode)
-    
-    is_media = bool(query.message.photo)
-    try:
-        if is_media:
-            await query.edit_message_caption(
-                caption=caption,
-                reply_markup=reply_markup,
-                parse_mode='HTML'
-            )
-        else:
-            await query.edit_message_text(
-                text=caption,
-                reply_markup=reply_markup,
-                parse_mode='HTML'
-            )
-    except Exception as e:
-        err_msg = str(e).lower()
-        if "message is not modified" in err_msg or "exactly the same" in err_msg:
-            logger.info("Profile menu update ignored: content is identical.")
-        else:
-            logger.error(f"Ошибка при обновлении профиля в callback: {e}")
-            
-    # Если переключились на вкладку "main" (Анализ), отправляем файл, если он длинный и еще не отправлялся
-    if tab == "main":
-        await _maybe_send_profile_document(
-            bot=context.bot,
-            chat_id=chat_id,
-            user_id=target_user_id,
-            user_name=user_name,
-            mode=mode,
-            profile=profile,
-            message_id=query.message.message_id,
-            context=context
-        )
+    await query.edit_message_text('Пока здесь нет сохранённых сведений о тебе.',reply_markup=None)
 
 
 async def handle_forget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3793,46 +3380,73 @@ async def handle_forget_command(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     mode = "rp" if rp_mode_state.get(chat_id) else "default"
+    from materials.runtime import enabled as materials_enabled
+    if materials_enabled():
+        from materials.runtime import actor_for_current, service_for_bot
+        from materials.types import MaterialError
+        try:
+            actor = await actor_for_current()
+            service = await service_for_bot()
+            assets = await service.repository.own_search(actor, topic)
+            if assets:
+                keyboard = [[InlineKeyboardButton('Стереть материал ' + str(i),callback_data='forget_asset:' + row['id'])] for i,row in enumerate(assets,1)]
+                lines = [str(i) + '. ' + _html.escape(row['filename']) for i,row in enumerate(assets,1)]
+                await update.message.reply_text('\n'.join(lines),reply_markup=InlineKeyboardMarkup(keyboard),parse_mode='HTML')
+                return
+        except MaterialError:
+            pass
+    from cognition.runtime import get_runtime
+    runtime = get_runtime()
+    from cognition.diagnostics import active_context
+    active_cid = await active_context(runtime,chat_id,mode) if runtime else None
+    if runtime and active_cid is not None:
+        ctx = await runtime.context(chat_id,mode)
+        async with runtime.pool.acquire() as conn:
+            rows = await conn.fetch('''SELECT e.id,e.context_id,e.payload FROM cognitive_events e JOIN cognitive_contexts c ON c.id=e.context_id
+                WHERE c.persona_id=$1 AND c.chat_id=$2 AND c.mode=$3 AND c.scene_id=$4 AND c.topic_id=$5
+                AND e.owner_id=$6 AND e.origin='user' AND e.suppressed_at IS NULL
+                AND (e.payload->>'text' ILIKE '%' || $7 || '%'
+                    OR to_tsvector('russian',e.payload->>'text') @@ websearch_to_tsquery('russian',$7))
+                ORDER BY e.id DESC LIMIT 2000''',*ctx.identity(),user_id,topic)
+        if rows:
+            keyboard,lines = [],[]
+            for i,row in enumerate(rows[:5],1):
+                from cognition.serialization import object_value
+                text = object_value(row['payload'])['text']
+                lines.append(f'{i}. {_html.escape(text[:160])}')
+                keyboard.append([InlineKeyboardButton(f'Стереть {i}',callback_data=f"forget_source:{row['context_id']}:{row['id']}:{user_id}")])
+            if len(rows)>1:
+                import secrets,time
+                nonce = secrets.token_hex(8)
+                selections = context.user_data.setdefault('forget_selections',{})
+                selections.clear()
+                selections[nonce] = dict(cid=rows[0]['context_id'],chat_id=chat_id,owner=user_id,ids=[r['id'] for r in rows],expires=time.time()+600)
+                keyboard.append([InlineKeyboardButton(f'Стереть все найденные источники ({len(rows)})',callback_data=f'forget_set:{nonce}:{user_id}')])
+                lines.append(f'Найдено источников: {len(rows)}. Показаны первые {min(5,len(rows))}.')
+            await update.message.reply_text('\n'.join(lines),reply_markup=InlineKeyboardMarkup(keyboard),parse_mode='HTML')
+            return
     
-    # Ищем подходящие воспоминания (лимит 5). Показываем только факты этого
-    # пользователя или общие факты чата (user_id IS NULL) — чтобы участник группы
-    # не видел и не мог стереть личные факты других (S-07: privacy/IDOR).
-    found = await MemoryFact.search(chat_id=chat_id, query=topic, mode=mode, limit=20)
-    facts = [f for f in found if f.get("user_id") in (user_id, None)][:5]
-    if not facts:
-        await update.message.reply_text(
-            f"<i>Касается банта, ровно и молча глядя на тебя. Свечение в радужках холодное.</i>\n\n"
-            f"<blockquote>«Я обыскала свои базы данных, но не нашла воспоминаний о „{_html.escape(topic)}“. "
-            f"Можешь спать спокойно — я этого не помню.»</blockquote>",
-            parse_mode='HTML',
-        )
-        return
+    await update.message.reply_text('По этой теме доступных воспоминаний нет.')
 
-    # Строим клавиатуру
-    keyboard = []
-    lines = [
-        f"<i>Пальцы правой руки замирают над терминалом. На экране загорается список секторов моей памяти...</i>\n\n"
-        f"<blockquote>«Я нашла несколько записей, связанных с „{_html.escape(topic)}“. Выбери, какую из них мне следует стереть:»</blockquote>\n"
-    ]
-             
-    for idx, fact in enumerate(facts, 1):
-        fact_text = fact.get("fact_text") or fact.get("summary") or ""
-        short_text = fact_text[:100] + "..." if len(fact_text) > 100 else fact_text
-        lines.append(f"{idx}️⃣ <i>{_html.escape(short_text)}</i>")
-        
-        # Кнопка Стереть: forget_fact:fact_id:user_id
-        button = InlineKeyboardButton(
-            text=f"❌ Стереть {idx}️⃣",
-            callback_data=f"forget_fact:{fact['id']}:{user_id}"
-        )
-        keyboard.append([button])
-        
-    await update.message.reply_text(
-        "\n".join(lines),
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='HTML',
-        reply_to_message_id=update.message.message_id
-    )
+
+async def handle_memory_archive_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from cognition.runtime import get_runtime
+    from cognition.diagnostics import active_context
+    if not await is_responses_enabled(update.effective_chat.id):
+        return
+    runtime = get_runtime()
+    mode = 'rp' if rp_mode_state.get(update.effective_chat.id) else 'default'
+    cid = await active_context(runtime,update.effective_chat.id,mode) if runtime else None
+    query = ' '.join(context.args or []).strip()
+    if cid is None or not query:
+        await update.message.reply_text('Для проверки исходных записей укажи тему: /memory_archive тема')
+        return
+    rows = await runtime.memory.retrieve(cid,update.effective_user.id,query,runtime.clock(),'archive:'+str(update.message.message_id),archive=True,limit=3)
+    if not rows:
+        await update.message.reply_text('Доступных исходных записей по этой теме нет.')
+        return
+    text = '\n\n'.join(r['source_id']+'\n'+r['details'][0]['text'] for r in rows)
+    await update.message.reply_text(text[:3900])
 
 
 async def forget_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3842,7 +3456,7 @@ async def forget_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     data = query.data or ""
-    if not data.startswith("forget_fact:"):
+    if not data.startswith(("forget_fact:","forget_source:","forget_set:","forget_asset:")):
         await query.answer()
         return
 
@@ -3850,6 +3464,73 @@ async def forget_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id if query.from_user else None
     if chat_id is None or user_id is None:
         await query.answer()
+        return
+
+    if data.startswith('forget_asset:'):
+        from materials.runtime import actor_for_current, service_for_bot, enabled
+        from materials.lifecycle import MaterialLifecycle
+        from materials.types import MaterialError
+        if not enabled():
+            await query.answer('Работа с материалами отключена.',show_alert=True)
+            return
+        try:
+            actor = await actor_for_current()
+            service = await service_for_bot()
+            await MaterialLifecycle(service.repository,service.store).forget(data.split(':',1)[1],actor)
+            await query.answer('Материал удалён.')
+            await query.edit_message_text('Материал и его извлечения удалены; зависимые результаты отозваны.')
+        except MaterialError:
+            await query.answer('Материал недоступен или уже удалён.',show_alert=True)
+        return
+
+    if data.startswith('forget_set:'):
+        import time
+        from cognition.runtime import get_runtime
+        try:
+            _,nonce,owner = data.split(':')
+            owner = int(owner)
+        except (ValueError,TypeError):
+            await query.answer('Некорректный выбор.',show_alert=True)
+            return
+        selected = context.user_data.get('forget_selections',{}).get(nonce)
+        runtime = get_runtime()
+        if not runtime or not selected or owner!=user_id or selected['owner']!=user_id or selected['chat_id']!=chat_id or selected['expires']<time.time():
+            await query.answer('Выбор недоступен. Повтори поиск.',show_alert=True)
+            return
+        async with runtime.pool.acquire() as conn:
+            sources = await conn.fetchval('''SELECT ARRAY_AGG(e.source_id) FROM cognitive_events e JOIN cognitive_contexts c ON c.id=e.context_id
+                WHERE e.context_id=$1 AND e.id=ANY($2::bigint[]) AND e.owner_id=$3 AND c.chat_id=$4 AND e.suppressed_at IS NULL''',
+                selected['cid'],selected['ids'],user_id,chat_id) or []
+        from cognition.forgetting import forget_cognitive_sources
+        result = await forget_cognitive_sources(runtime.pool,selected['cid'],user_id,sources)
+        context.user_data['forget_selections'].pop(nonce,None)
+        await query.answer('Источники удалены.')
+        await query.edit_message_text(f"Удалено источников и зависимых действий: {result['events']}. Память пересобрана.")
+        return
+
+    if data.startswith('forget_source:'):
+        try:
+            _,cid,eid,owner = data.split(':')
+            cid,eid,owner = int(cid),int(eid),int(owner)
+        except (ValueError,TypeError):
+            await query.answer('Некорректный источник.',show_alert=True)
+            return
+        from cognition.runtime import get_runtime
+        runtime = get_runtime()
+        if not runtime or owner!=user_id:
+            await query.answer('Это не твой источник.',show_alert=True)
+            return
+        async with runtime.pool.acquire() as conn:
+            row = await conn.fetchrow('''SELECT e.source_id FROM cognitive_events e JOIN cognitive_contexts c ON c.id=e.context_id
+                WHERE e.id=$1 AND e.context_id=$2 AND c.chat_id=$3 AND e.owner_id=$4 AND e.suppressed_at IS NULL''',eid,cid,chat_id,user_id)
+        if not row:
+            await query.answer('Источник уже удалён или недоступен.',show_alert=True)
+            return
+        from cognition.forgetting import forget_cognitive_sources,invalidate_chat_caches
+        await forget_cognitive_sources(runtime.pool,cid,user_id,[row['source_id']])
+        invalidate_chat_caches(chat_id)
+        await query.answer('Источник и зависимые воспоминания удалены.')
+        await query.edit_message_text('Источник удалён; связанные состояния пересчитаны.')
         return
 
     parts = data.split(":")
@@ -3875,12 +3556,9 @@ async def forget_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Серверная проверка владения: архивируем факт, только если он принадлежит
     # этому чату и этому пользователю (или это общий факт чата). Закрывает IDOR —
     # подделанный callback_data с чужим fact_id не сработает.
-    archived = await MemoryFact.archive_for_user(
-        fact_id=fact_id,
-        chat_id=chat_id,
-        user_id=user_id,
-        reason="user_request_interactive",
-    )
+    from database import connection
+    from cognition.forgetting import forget_legacy_fact
+    archived = await forget_legacy_fact(connection._pool,chat_id,user_id,fact_id)
     if not archived:
         await query.answer("⚠️ Это воспоминание тебе не принадлежит или уже стёрто.", show_alert=True)
         return
@@ -3903,7 +3581,6 @@ async def handle_charge_command(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = user.id
     
     from config import PRIVILEGED_USER_IDS, rp_mode_state
-    from database.models import ChatEmotionalState, MemoryUserProfile
     import json
 
     # L-14: сначала проверяем выключатель — иначе в выключенном (/stop) чате бот
@@ -3921,77 +3598,12 @@ async def handle_charge_command(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     mode = "rp" if rp_mode_state.get(chat_id) else "default"
+    from cognition.runtime import get_runtime
+    from cognition.diagnostics import active_context,state_text
+    runtime = get_runtime()
+    cid = await active_context(runtime,chat_id,mode) if runtime else None
+    if cid is not None:
+        await update.message.reply_text(await state_text(runtime,cid,user_id),parse_mode='HTML')
+        return
     
-    # Получаем или создаем эмоциональное состояние чата
-    state = await ChatEmotionalState.get_or_create(chat_id)
-    charge = state.get("charge", 0.0)
-    
-    # Получаем аффективный профиль пользователя
-    closeness = 0.1
-    sticker_receptivity = 0.5
-    user_profile = await MemoryUserProfile.get(chat_id, user_id, mode)
-    if user_profile and user_profile.get("profile_json"):
-        prof_json = json.loads(user_profile["profile_json"]) if isinstance(user_profile["profile_json"], str) else user_profile["profile_json"]
-        aff = prof_json.get("affective", {})
-        closeness = aff.get("closeness", 0.1)
-        sticker_receptivity = aff.get("sticker_receptivity", 0.5)
-
-    # Строим прогресс-бары для вектора настроения
-    mood_dict = json.loads(state["mood_state"]) if isinstance(state["mood_state"], str) else state["mood_state"]
-    
-    # Эмодзи вынесены ИЗ <code>, чтобы их переменная ширина не ломала моноширинную сетку.
-    # Текст метки внутри <code> выравнивается ljust по самой длинной ("Игривость" = 9).
-    mood_names_ru = {
-        "happy": ("😊", "Радость"),
-        "sad": ("😢", "Грусть"),
-        "angry": ("😡", "Злость"),
-        "love": ("❤️", "Любовь"),
-        "teasing": ("😏", "Игривость"),
-        "shock": ("😱", "Шок"),
-        "blush": ("😳", "Смущение"),
-        "bored": ("🥱", "Скука"),
-        "thinking": ("🤔", "Думы"),
-    }
-    
-    mood_lines = []
-    for emotion, (emoji, label) in mood_names_ru.items():
-        val = mood_dict.get(emotion, 0.0)
-        bars = int(val * 10)
-        # «·» (U+00B7) вместо нестабильного «░»: одинаковая ширина с «█» во всех шрифтах.
-        progress = "█" * bars + "·" * (10 - bars)
-        mood_lines.append(f"{emoji} <code>{label.ljust(9)} [{progress}] {val:.3f}</code>")
-        
-    mood_vector_str = "\n".join(mood_lines)
-    
-    # Отрисовка заряда с прогресс-баром
-    charge_bars = int(charge * 20)
-    charge_progress = "█" * charge_bars + "·" * (20 - charge_bars)
-    
-    last_sticker = state.get("last_sticker_time")
-    last_sticker_str = last_sticker.strftime("%Y-%m-%d %H:%M:%S") if last_sticker else "Никогда"
-    
-    # Кэш последних 3 стикеров
-    history = json.loads(state["sticker_history"]) if isinstance(state["sticker_history"], str) else state["sticker_history"]
-    history_str = ", ".join(history) if history else "Нет"
-    
-    msg = (
-        f"🔮 <b>[ЯДРО АРТИ: МОНИТОРИНГ ЭМОЦИЙ]</b>\n"
-        f"──────────────────────────────\n"
-        f"⚡ <b>Заряд (Charge):</b>\n"
-        f"<code>[{charge_progress}] {charge:.3f}/1.000</code>\n\n"
-        f"🤝 <b>Близость (Closeness):</b> <code>{closeness:.3f}/1.000</code>\n"
-        f"🎭 <b>Восприимчивость:</b> <code>{sticker_receptivity:.3f}/1.000</code>\n"
-        f"👤 <b>Режим:</b> <code>{mode.upper()}</code>\n"
-        f"──────────────────────────────\n"
-        f"📊 <b>Вектор настроений:</b>\n"
-        f"{mood_vector_str}\n"
-        f"──────────────────────────────\n"
-        f"🕒 <b>Последний стикер:</b> <code>{last_sticker_str}</code>\n"
-        f"🔄 <b>Анти-повтор:</b> <code>{history_str}</code>"
-    )
-    
-    await update.message.reply_text(
-        msg,
-        parse_mode="HTML",
-        reply_to_message_id=update.message.message_id
-    )
+    await update.message.reply_text('Сейчас не могу открыть состояние памяти. Попробуй позже.')

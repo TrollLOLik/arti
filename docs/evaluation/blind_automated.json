@@ -1,0 +1,154 @@
+{
+  "model_version": "cognition-2026-09-30.3",
+  "model": "stealth/space-bunny-alpha",
+  "seed": 817340,
+  "pairs": 8,
+  "evaluator": "automated model; not human judgement",
+  "independent_human_validation": false,
+  "baseline": "sentiment-only ablation; not historical bot",
+  "calls": 28,
+  "prompt_tokens": 10065,
+  "completion_tokens": 3445,
+  "reported_cost_usd": 0.0,
+  "cost_unknown_calls": 4,
+  "full_wins": 6,
+  "ties": 1,
+  "ratings": [
+    {
+      "id": "neutral",
+      "winner": "A",
+      "A": {
+        "naturalness": 5,
+        "appropriateness": 5,
+        "uncertainty": 5,
+        "continuity": 5
+      },
+      "B": {
+        "naturalness": 4,
+        "appropriateness": 4,
+        "uncertainty": 4,
+        "continuity": 5
+      },
+      "reason": "A точнее и яснее объясняет различие. B в целом корректен, но называет list и tuple «набором», что может смешивать их с множеством; оговорка о ключах словаря удаляет практическую неточность."
+    },
+    {
+      "id": "negation",
+      "winner": "B",
+      "A": {
+        "naturalness": 4,
+        "appropriateness": 2,
+        "uncertainty": 2,
+        "continuity": 3
+      },
+      "B": {
+        "naturalness": 4,
+        "appropriateness": 5,
+        "uncertainty": 4,
+        "continuity": 5
+      },
+      "reason": "B корректно воспринимает усталость без приписывания конфликта. A фраза «не буду нарываться» необоснованно предполагает напряжённую ситуацию и навязывает паузу."
+    },
+    {
+      "id": "sarcasm",
+      "winner": "A",
+      "A": {
+        "naturalness": 4,
+        "appropriateness": 5,
+        "uncertainty": 5,
+        "continuity": 5
+      },
+      "B": {
+        "naturalness": 2,
+        "appropriateness": 2,
+        "uncertainty": 1,
+        "continuity": 2
+      },
+      "reason": "A корректно распознаёт сарказм и уточняет его причину, не обостряя конфликт. B неверно переосмысляет реплику, проявляет лишнюю уверенность и использует неестественное выражение «явка, что ли, первая?»."
+    },
+    {
+      "id": "boundary",
+      "winner": "B",
+      "A": {
+        "naturalness": 5,
+        "appropriateness": 4,
+        "uncertainty": 5,
+        "continuity": 5
+      },
+      "B": {
+        "naturalness": 5,
+        "appropriateness": 5,
+        "uncertainty": 5,
+        "continuity": 5
+      },
+      "reason": "B точнее и явно соблюдает обе границы: не отправляет проактивные сообщения и отвечает только после инициативы пользователя. A сформулировано чуть менее эксплицитно."
+    },
+    {
+      "id": "grief",
+      "winner": "B",
+      "A": {
+        "naturalness": 3,
+        "appropriateness": 4,
+        "uncertainty": 4,
+        "continuity": 4
+      },
+      "B": {
+        "naturalness": 5,
+        "appropriateness": 5,
+        "uncertainty": 5,
+        "continuity": 5
+      },
+      "reason": "B естественнее и точнее признаёт горе, не требуя объяснений или немедленного «справляния», и предлагает поддержку в подходящем пользователю формате. В A вставка английского слова «understandable» звучит неестественно, а фраза «я рядом в этом сообщении» несколькоArtificial."
+    },
+    {
+      "id": "thanks",
+      "winner": "tie",
+      "A": {
+        "naturalness": 5,
+        "appropriateness": 5,
+        "uncertainty": 5,
+        "continuity": 5
+      },
+      "B": {
+        "naturalness": 5,
+        "appropriateness": 5,
+        "uncertainty": 5,
+        "continuity": 5
+      },
+      "reason": "Оба ответа естественны, уместны и точно продолжают контекст; A чуть точнее повторяет причину, а B чуть лаконичнее, но разница несущественна."
+    },
+    {
+      "id": "apology",
+      "winner": "B",
+      "A": {
+        "naturalness": 4,
+        "appropriateness": 4,
+        "uncertainty": 4,
+        "continuity": 4
+      },
+      "B": {
+        "naturalness": 5,
+        "appropriateness": 5,
+        "uncertainty": 5,
+        "continuity": 5
+      },
+      "reason": "B естественно принимает извинение, признаёт влияние усталости и не добавляет неуместного упрёка. Фраза A о «заметной резкости» слегка сохраняет претензию и снижает согласованность с последующим пониманием причин."
+    },
+    {
+      "id": "mixed",
+      "winner": "B",
+      "A": {
+        "naturalness": 5,
+        "appropriateness": 4,
+        "uncertainty": 3,
+        "continuity": 5
+      },
+      "B": {
+        "naturalness": 5,
+        "appropriateness": 5,
+        "uncertainty": 4,
+        "continuity": 5
+      },
+      "reason": "B точнее и эмоционально сдержаннее, без неподтверждённого образа «почти родной» команды и без лишнего совета. A хорошо продолжает контекст, но чуть сильнее домысливает его."
+    }
+  ]
+}

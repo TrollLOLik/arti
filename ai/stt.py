@@ -67,7 +67,7 @@ async def _aai_upload(client: httpx.AsyncClient, audio_bytes: bytes) -> str:
     return response.json()["upload_url"]
 
 
-async def _aai_submit(client: httpx.AsyncClient, upload_url: str, language: Optional[str]) -> str:
+async def _aai_submit(client: httpx.AsyncClient, upload_url: str, language: Optional[str], *, structured=False) -> str:
     payload: dict[str, Any] = {
         "audio_url": upload_url,
         "speech_models": ["universal-3-pro", "universal-2"],
@@ -77,6 +77,7 @@ async def _aai_submit(client: httpx.AsyncClient, upload_url: str, language: Opti
         payload["language_code"] = language
     else:
         payload["language_detection"] = True
+    if structured: payload['speaker_labels']=True
     response = await _aai_request_with_retries(
         "POST", f"{ASSEMBLYAI_BASE}/transcript",
         client=client,
@@ -86,10 +87,11 @@ async def _aai_submit(client: httpx.AsyncClient, upload_url: str, language: Opti
     return response.json()["id"]
 
 
-async def _aai_poll(client: httpx.AsyncClient, transcript_id: str) -> dict[str, Any]:
+async def _aai_poll(client: httpx.AsyncClient, transcript_id: str, *, validate=None) -> dict[str, Any]:
     deadline = asyncio.get_event_loop().time() + ASSEMBLYAI_POLL_TIMEOUT
     url = f"{ASSEMBLYAI_BASE}/transcript/{transcript_id}"
     while True:
+        if validate is not None: await validate()
         if asyncio.get_event_loop().time() > deadline:
             raise TimeoutError(f"AssemblyAI polling timed out after {ASSEMBLYAI_POLL_TIMEOUT}s")
         response = await _aai_request_with_retries("GET", url, client=client)
@@ -210,3 +212,38 @@ async def transcribe_audio_groq(file_path: str | Path) -> str:
     """
     # Старый код передавал language='ru' жёстко; теперь auto-detect.
     return await transcribe_audio(file_path, language=None, lowercase=True)
+
+
+class StructuredTranscriber:
+    """Word/turn timestamps and local speaker labels, never inferred identities."""
+    def __init__(self,language=None,*,assembly_key=None,groq=None):
+        from hashlib import sha256
+        from materials.types import canonical
+        self.language=language; self.assembly_key=ASSEMBLYAI_API_KEY if assembly_key is None else assembly_key
+        self.groq=groq or groq_client
+        self.identity='structured-stt-1:'+sha256(canonical([language,bool(self.assembly_key),'universal-3-pro/universal-2','whisper-large-v3-turbo']).encode()).hexdigest()[:24]
+    async def transcribe(self,data,mime,duration_ms,*,validate):
+        from materials.timeline import assembly_timeline,groq_timeline
+        from materials.types import MaterialError
+        await validate()
+        if len(data)>6*1024**2: raise MaterialError('stt_upload_budget')
+        if self.assembly_key:
+            try:
+                async with asyncio.timeout(180),httpx.AsyncClient(timeout=45,headers={'authorization':self.assembly_key},trust_env=False) as client:
+                    await validate(); uploaded=await _aai_upload(client,data)
+                    await validate(); transcript_id=await _aai_submit(client,uploaded,self.language,structured=True)
+                    result=await _aai_poll(client,transcript_id,validate=validate)
+                    await validate()
+                    return assembly_timeline(result,duration_ms)
+            except MaterialError: raise
+            except Exception: logger.info('Structured AssemblyAI unavailable; timed Groq fallback')
+        await validate()
+        try:
+            async with asyncio.timeout(90):
+                kwargs=dict(file=('clip.mp3',data),model='whisper-large-v3-turbo',response_format='verbose_json',timestamp_granularities=['word','segment'])
+                if self.language: kwargs['language']=self.language
+                result=await self.groq.audio.transcriptions.create(**kwargs)
+                await validate()
+                return groq_timeline(result.model_dump(),duration_ms)
+        except MaterialError: raise
+        except Exception as exc: raise MaterialError('structured_stt_unavailable') from exc

@@ -1,0 +1,20 @@
+{
+  "suite": "post-regression-agent-acceptance",
+  "date": "2026-10-01",
+  "tests": 3,
+  "passed": 3,
+  "failures": [],
+  "errors": [],
+  "skipped": [],
+  "duration_seconds": 9.209,
+  "cases": [
+    "tests.materials.test_agent_acceptance.AgentAcceptanceSQLTests.test_native_waiting_action_preview_is_concrete_without_issuing_grant",
+    "tests.materials.test_agents.AgentSQLTests.test_independent_read_failure_preserves_other_completed_output",
+    "tests.materials.test_agent_acceptance.AgentAcceptanceSQLTests.test_changed_rp_mode_blocks_completed_task_delivery"
+  ],
+  "full_regression_snapshot": "materials_full_tests.json",
+  "provider_calls": 0,
+  "telegram_calls": 0,
+  "working_database_mutated": false,
+  "database": "disposable arti_cognition_test_<uuid>"
+}

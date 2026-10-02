@@ -36,6 +36,9 @@ async def _embed(text: str, task_type: str) -> List[float]:
 
     values = response.embeddings[0].values
     vector = [float(value) for value in values]
+    import math
+    if any(not math.isfinite(value) for value in vector):
+        return []
 
     # Размерность зашита и в коде, и в схеме БД (vector(1536)). Если модель/версия
     # вернёт вектор другой длины — вставка в pgvector упадёт. Отбрасываем заранее,

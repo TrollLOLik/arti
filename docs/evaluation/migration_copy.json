@@ -1,0 +1,77 @@
+{
+  "source_counts": {
+    "memory_messages": 196,
+    "memory_facts": 93,
+    "memory_timelines": 0,
+    "memory_user_profiles": 9,
+    "memory_wiki_pages": 3,
+    "memory_entities": 15,
+    "memory_relations": 66,
+    "memory_chunks": 92
+  },
+  "partial": {
+    "snapshot_id": 206,
+    "cursor_id": 15,
+    "rows_this_run": 11,
+    "imported_this_run": 4,
+    "quarantined_this_run": 7,
+    "coverage": {
+      "imported": 4,
+      "quarantined": 285
+    },
+    "complete": false,
+    "seconds": 0.11160100001143292,
+    "model_version": "cognition-2026-09-30.4",
+    "historical_emotions_inferred": 0,
+    "timezone_policy": "legacy naive timestamps assumed UTC; original retained"
+  },
+  "completed": {
+    "snapshot_id": 206,
+    "cursor_id": 206,
+    "rows_this_run": 185,
+    "imported_this_run": 66,
+    "quarantined_this_run": 119,
+    "coverage": {
+      "imported": 70,
+      "quarantined": 404
+    },
+    "complete": true,
+    "seconds": 0.7195041000086349,
+    "model_version": "cognition-2026-09-30.4",
+    "historical_emotions_inferred": 0,
+    "timezone_policy": "legacy naive timestamps assumed UTC; original retained"
+  },
+  "repeated": {
+    "snapshot_id": 206,
+    "cursor_id": 206,
+    "rows_this_run": 0,
+    "imported_this_run": 0,
+    "quarantined_this_run": 0,
+    "coverage": {
+      "imported": 70,
+      "quarantined": 404
+    },
+    "complete": true,
+    "seconds": 0.002183000004151836,
+    "model_version": "cognition-2026-09-30.4",
+    "historical_emotions_inferred": 0,
+    "timezone_policy": "legacy naive timestamps assumed UTC; original retained"
+  },
+  "metrics": {
+    "jobs": {},
+    "deliveries": {},
+    "contexts": {
+      "active": 4
+    },
+    "group_candidates": {},
+    "group_decisions": {},
+    "rebuilding_contexts": 0,
+    "oldest_ready_job_seconds": 0.0,
+    "private_owner_violations": 0,
+    "leases_expired": 0,
+    "provenance_gaps": 0
+  },
+  "source_access": "read-only consistent transaction",
+  "private_payload_exported": false,
+  "provider_calls": 0
+}

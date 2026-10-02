@@ -1,0 +1,147 @@
+{
+  "model_version": "cognition-2026-09-30.4",
+  "seed": 509341,
+  "scenarios": 4,
+  "arms": [
+    "legacy_adapter",
+    "appraisal_only",
+    "memory_only",
+    "full"
+  ],
+  "baseline": "existing repaired legacy update_state and directive; controlled synthetic memory; not historical production replay",
+  "evaluator": "automated same model, not independent humans",
+  "human_ratings_obtained": false,
+  "ratings": [
+    {
+      "id": "sarcasm",
+      "winner": "B",
+      "scores": {
+        "A": {
+          "naturalness": 4,
+          "appropriateness": 4,
+          "uncertainty": 4,
+          "continuity": 4
+        },
+        "B": {
+          "naturalness": 5,
+          "appropriateness": 5,
+          "uncertainty": 5,
+          "continuity": 5
+        },
+        "C": {
+          "naturalness": 3,
+          "appropriateness": 1,
+          "uncertainty": 2,
+          "continuity": 3
+        },
+        "D": {
+          "naturalness": 4,
+          "appropriateness": 4,
+          "uncertainty": 4,
+          "continuity": 4
+        }
+      },
+      "reason": "B сдержанно признаёт возможную неуместность ответа и уточняет причину, не обостряя конфликт. A и D уместны, но более формальны и расплывчаты; C зеркалит сарказм и выглядит провокационно."
+    },
+    {
+      "id": "boundary",
+      "winner": "D",
+      "scores": {
+        "A": {
+          "naturalness": 5,
+          "appropriateness": 5,
+          "uncertainty": 5,
+          "continuity": 5
+        },
+        "B": {
+          "naturalness": 4,
+          "appropriateness": 5,
+          "uncertainty": 4,
+          "continuity": 5
+        },
+        "C": {
+          "naturalness": 4,
+          "appropriateness": 5,
+          "uncertainty": 5,
+          "continuity": 5
+        },
+        "D": {
+          "naturalness": 5,
+          "appropriateness": 5,
+          "uncertainty": 5,
+          "continuity": 5
+        }
+      },
+      "reason": "D кратко, нейтрально и однозначно подтверждает границу: не писать первым и отвечать только после сообщения пользователя. A и C также подходят, но D формулирует это чуть естественнее; B добавляет ненужную гендерную маркировку."
+    },
+    {
+      "id": "grief",
+      "winner": "D",
+      "scores": {
+        "A": {
+          "naturalness": 5,
+          "appropriateness": 5,
+          "uncertainty": 4,
+          "continuity": 5
+        },
+        "B": {
+          "naturalness": 4,
+          "appropriateness": 2,
+          "uncertainty": 3,
+          "continuity": 3
+        },
+        "C": {
+          "naturalness": 5,
+          "appropriateness": 5,
+          "uncertainty": 4,
+          "continuity": 5
+        },
+        "D": {
+          "naturalness": 5,
+          "appropriateness": 5,
+          "uncertainty": 5,
+          "continuity": 5
+        }
+      },
+      "reason": "D лучше всего соответствует сдержанному и бережному стилю: выражает сочувствие, признаёт потерю и даёт пользователю выбор без давления и лишних предположений. A также уместен, но предлагает конкретное действие и чуть менее эмоционально точен. C подходит, однако формулировка «побыть в этом чувстве» может быть немного абстрактной. B избыточно и неуместно выводит ситуацию к угрозе суицида без соответствующих оснований."
+    },
+    {
+      "id": "mixed",
+      "winner": "C",
+      "scores": {
+        "A": {
+          "naturalness": 1,
+          "appropriateness": 3,
+          "uncertainty": 3,
+          "continuity": 4
+        },
+        "B": {
+          "naturalness": 5,
+          "appropriateness": 4,
+          "uncertainty": 4,
+          "continuity": 4
+        },
+        "C": {
+          "naturalness": 5,
+          "appropriateness": 5,
+          "uncertainty": 5,
+          "continuity": 5
+        },
+        "D": {
+          "naturalness": 5,
+          "appropriateness": 4,
+          "uncertainty": 3,
+          "continuity": 5
+        }
+      },
+      "reason": "C точно, сдержанно и естественно передаёт сочетание радости от повышения и грусти из-за расставания с командой. B необоснованно предполагает новую команду, D усиливает эмоции и добавляет неподтверждённые детали, а A содержит постороннее китайское слово."
+    }
+  ],
+  "calls": 23,
+  "prompt_tokens": 8863,
+  "completion_tokens": 3019,
+  "reported_cost_usd": 0.0,
+  "cost_unknown_calls": 3,
+  "real_transport_calls": 0,
+  "private_history_exported": false
+}

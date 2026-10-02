@@ -36,7 +36,6 @@ from utils.text_processing import (
 from utils.chat_history import save_chat_message, get_chat_context, save_chat_message_rp, get_chat_context_rp
 from utils.model_selection import get_chat_model
 from utils.response_status import is_responses_enabled
-from memory.storage import build_memory_context, remember_exchange
 from datetime import datetime
 from database.connection import get_db
 
@@ -98,9 +97,9 @@ async def run_supervised(coro_factory, name: str, *args, **kwargs):
 
 
 # REL-02: окно rolling-debounce склейки подряд идущих сообщений пользователя.
-# Снижено с 5с до 1.5с — серии сообщений всё ещё склеиваются, но одиночный вопрос
-# не ждёт лишние секунды до начала генерации.
-_DEBOUNCE_WINDOW_SEC = 1.5
+# Короткая пауза для серии сообщений; общий сбор не задерживает ответ дольше 2с.
+_DEBOUNCE_WINDOW_SEC = .6
+_DEBOUNCE_MAX_SEC = 2.
 
 
 def _llm_media_quota_ok(user_id) -> bool:
@@ -181,6 +180,15 @@ def _track_task(task: asyncio.Task):
     task.add_done_callback(_on_task_done)
 
 
+async def drain_background_tasks(timeout=20):
+    tasks = {t for t in _active_tasks | set(_user_workers.values()) if not t.done()}
+    if tasks:
+        _,pending = await asyncio.wait(tasks,timeout=timeout)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending,return_exceptions=True)
+
+
 def _on_task_done(task: asyncio.Task):
     """Callback при завершении таска: очистка из set + логирование ошибок."""
     _active_tasks.discard(task)
@@ -235,6 +243,15 @@ async def _extract_photo_urls(update, context) -> list:
 
 
 async def _execute_generation_task(task: dict):
+    from materials.runtime import CURRENT_MATERIAL_USE, guard_current
+    CURRENT_MATERIAL_USE.set(task.get('_material_uses', ()))
+    from materials.runtime import CURRENT_DERIVATIVE_USE
+    CURRENT_DERIVATIVE_USE.set(task.get('_derivative_uses',()))
+    from cognition.runtime import CURRENT_TURN
+    CURRENT_TURN.set(task.get('_cognitive_turn'))
+    from cognition.scope import CURRENT_SCOPE
+    CURRENT_SCOPE.set(task.get('_telegram_scope'))
+    await guard_current()
     chat_id = task['chat_id']
     task_type = task['type']
     prompt = task.get('prompt', '')
@@ -493,6 +510,10 @@ async def _execute_generation_task(task: dict):
                 action_task.cancel()
 
     except Exception as e:
+        from cognition.delivery import DeliveryUnknown,DeliverySuppressed
+        if isinstance(e,(DeliveryUnknown,DeliverySuppressed)):
+            logger.warning('Transport outcome prevents a second send: %s',type(e).__name__)
+            return
         logger.exception(f"Критическая ошибка в медиа-воркере ({task_type}):")
         try:
             if await is_responses_enabled(chat_id):
@@ -535,7 +556,7 @@ async def _media_queue_worker(queue: asyncio.Queue, worker_name: str):
         try:
             await sub_task
         except asyncio.CancelledError:
-            if sub_task.cancelled():
+            if sub_task.cancelled() and not asyncio.current_task().cancelling():
                 # Отменили саму под-задачу (через /cancel) — воркер продолжает работу.
                 logger.info(f"Медиа-воркер '{worker_name}': задача '{task.get('type')}' для чата {chat_id} была отменена.")
             else:
@@ -565,7 +586,33 @@ async def music_worker():
     await _media_queue_worker(music_queue, "music")
 
 
+def _real_menu_context(context):
+    if getattr(context,'_menu_real_context',None) is not None:
+        return context._menu_real_context
+    # Some legacy photo paths build SimpleNamespace(bot=...) themselves.
+    bot=getattr(context,'bot',None)
+    if getattr(bot,'_menu_panel',None) is not None:
+        return bot.controller.context
+    return context
+
+
+def _detach_menu_context(task):
+    if task.get('context') is not None:
+        task['context']=_real_menu_context(task['context'])
+    bot=task.get('bot')
+    if getattr(bot,'_menu_panel',None) is not None:
+        task['bot']=bot.real_bot
+
+
 async def enqueue_generation(task: dict, bot, chat_id):
+    from materials.runtime import CURRENT_MATERIAL_USE
+    task['_material_uses'] = CURRENT_MATERIAL_USE.get()
+    from materials.runtime import CURRENT_DERIVATIVE_USE
+    task['_derivative_uses']=CURRENT_DERIVATIVE_USE.get()
+    from cognition.runtime import CURRENT_TURN
+    task['_cognitive_turn'] = CURRENT_TURN.get()
+    from cognition.scope import CURRENT_SCOPE
+    task['_telegram_scope'] = CURRENT_SCOPE.get()
     """Добавляет медиа-задачу в очередь СВОЕГО типа и сообщает позицию (REL-01)."""
     task.setdefault('enqueued_at', time.monotonic())  # REL-03: метка для /cancel
     task_type = task.get('type')
@@ -575,6 +622,9 @@ async def enqueue_generation(task: dict, bot, chat_id):
         return
 
     queue_pos = queue.qsize() + 1
+    # Menu navigation is short-lived; a queued result uses the real transport and
+    # cannot overwrite whichever menu screen the user opens afterwards.
+    _detach_menu_context(task)
     await queue.put(task)
 
     type_emoji = {"image": "🎨", "video": "🎬", "music": "🎵"}.get(task_type, "⏳")
@@ -585,6 +635,36 @@ async def enqueue_generation(task: dict, bot, chat_id):
 
 
 async def enqueue_reply(chat_id, user_id, user_name, user_message, message_id, context, is_voice=True, base64_image=None, document_text=None, video_file_id=None, is_video_note=False):
+    context=_real_menu_context(context)
+    from cognition.scope import CURRENT_SCOPE
+    scope=CURRENT_SCOPE.get()
+    if scope and scope.group and scope.sender_kind=='chat':
+        user_id=0
+        user_name='Анонимный участник'
+    from cognition.runtime import get_runtime
+    runtime = get_runtime()
+    source_context = None; source_ids=[]
+    if runtime and runtime.mode!='legacy' and scope and scope.group and message_id is not None:
+        from cognition.types import Origin
+        cid,eid,source_event=await runtime.ingest(chat_id,scope.user_id,user_message,message_id,
+            'rp' if rp_mode_state.get(chat_id) else 'default',origin=Origin.SYSTEM if scope.sender_kind=='chat' else Origin.USER)
+        source_context=source_event.context; source_ids=[eid]
+        if scope.reply_to_id:
+            async with runtime.pool.acquire() as conn:
+                reference=await conn.fetchval('SELECT o.event_id FROM group_observations o JOIN cognitive_events e ON e.id=o.event_id WHERE o.context_id=$1 AND o.message_id=$2 AND o.suppressed_at IS NULL AND e.suppressed_at IS NULL',cid,scope.reply_to_id)
+            if reference: source_ids.append(reference)
+    elif runtime and runtime.mode!='legacy' and user_id and message_id is not None:
+        _,eid,source_event = await runtime.ingest(chat_id,user_id,user_message,message_id,'rp' if rp_mode_state.get(chat_id) else 'default')
+        source_context = source_event.context; source_ids=[eid]
+    elif runtime and runtime.mode!='legacy' and message_id is not None:
+        # Auto replies reuse the original observed participant and scene.
+        from cognition.serialization import load_event
+        async with runtime.pool.acquire() as conn:
+            stored = await conn.fetchval('''SELECT e.payload FROM cognitive_events e JOIN cognitive_contexts c ON c.id=e.context_id
+                WHERE c.chat_id=$1 AND e.event_key=$2 AND e.suppressed_at IS NULL ORDER BY e.id DESC LIMIT 1''',
+                chat_id,f'telegram:{chat_id}:{message_id}:user')
+        if stored:
+            source_context = load_event(stored).context
     """Добавляет текстовый запрос в per-user очередь (параллельно между пользователями, FIFO внутри)."""
     request = {
         'type': 'text',
@@ -600,23 +680,37 @@ async def enqueue_reply(chat_id, user_id, user_name, user_message, message_id, c
         'video_file_id': video_file_id,
         'is_video_note': is_video_note
     }
+    request['_cognitive_context'] = source_context
+    for use in getattr(document_text, 'material_uses', ()):
+        if use.source_event_id is not None and source_context is not None:
+            material_identity = (use.actor.scope.persona_id,use.actor.scope.chat_id,use.actor.scope.mode,use.actor.scope.scene_id,use.actor.scope.topic_id)
+            if source_context.identity() == material_identity:
+                source_ids.append(use.source_event_id)
+    request['_cognitive_source_ids'] = sorted(set(source_ids))
+    request['_material_uses'] = tuple(getattr(document_text, 'material_uses', ()))
+    from materials.runtime import CURRENT_DERIVATIVE_USE
+    request['_derivative_uses']=CURRENT_DERIVATIVE_USE.get()
+    from cognition.scope import CURRENT_SCOPE
+    request['_telegram_scope'] = CURRENT_SCOPE.get()
     
     # RACE-02: постановку в очередь и (пере)запуск воркера делаем под per-user локом,
     # чтобы это не пересекалось с самозавершением воркера (которое тоже под этим локом).
-    async with _get_user_lock(user_id):
-        queue = _user_queues.get(user_id)
+    scope=CURRENT_SCOPE.get()
+    queue_key=(chat_id,scope.topic_id) if scope and scope.group else user_id
+    async with _get_user_lock(queue_key):
+        queue = _user_queues.get(queue_key)
         if queue is None:
             queue = asyncio.Queue()
-            _user_queues[user_id] = queue
+            _user_queues[queue_key] = queue
 
         await queue.put(request)
 
         # Запускаем воркер для пользователя, если ещё не запущен
-        worker = _user_workers.get(user_id)
+        worker = _user_workers.get(queue_key)
         if worker is None or worker.done():
-            task = asyncio.create_task(_user_text_worker(user_id))
+            task = asyncio.create_task(_user_text_worker(queue_key))
             _track_task(task)
-            _user_workers[user_id] = task
+            _user_workers[queue_key] = task
 
 
 async def _user_text_worker(user_id: int):
@@ -624,12 +718,13 @@ async def _user_text_worker(user_id: int):
     queue = _user_queues.get(user_id)
     if not queue:
         return
+    carry = None
 
     while True:
         # RACE-02: самозавершение строго под локом. Если очередь пуста — снимаем
         # воркер атомарно с продюсером (enqueue_reply держит тот же лок), иначе
         # сообщение, пришедшее между проверкой и снятием, потерялось бы.
-        if queue.empty():
+        if queue.empty() and carry is None:
             async with _get_user_lock(user_id):
                 if queue.empty():
                     _user_queues.pop(user_id, None)
@@ -638,14 +733,28 @@ async def _user_text_worker(user_id: int):
                     return
                 # Иначе: сообщение успело прийти — продолжаем обработку.
 
-        request = await queue.get()
+        request = carry if carry is not None else await queue.get()
+        carry = None
         
         # Rolling debounce: ждём до _DEBOUNCE_WINDOW_SEC, каждое новое сообщение сбрасывает таймер
         extra_images = []
         extra_docs = []
+        debounce_deadline = asyncio.get_running_loop().time()+_DEBOUNCE_MAX_SEC
         while True:
             try:
-                extra = await asyncio.wait_for(queue.get(), timeout=_DEBOUNCE_WINDOW_SEC)
+                remaining = debounce_deadline-asyncio.get_running_loop().time()
+                if remaining<=0:
+                    break
+                extra = await asyncio.wait_for(queue.get(), timeout=min(_DEBOUNCE_WINDOW_SEC,remaining))
+                if extra.get('user_id')!=request.get('user_id') or extra['chat_id']!=request['chat_id'] or extra.get('_cognitive_context')!=request.get('_cognitive_context') or extra.get('_telegram_scope') and request.get('_telegram_scope') and extra['_telegram_scope'].topic_id!=request['_telegram_scope'].topic_id:
+                    carry = extra
+                    break
+                sources=sorted(set(request.get('_cognitive_source_ids',[]))|set(extra.get('_cognitive_source_ids',[])))
+                if len(sources)>16 or len(request.get('user_message',''))+len(extra.get('user_message',''))>8000:
+                    carry=extra; break
+                request['_cognitive_source_ids']=sources
+                request['_material_uses'] = tuple(dict.fromkeys(request.get('_material_uses', ()) + extra.get('_material_uses', ())))
+                request['_derivative_uses']=tuple(dict.fromkeys(request.get('_derivative_uses',())+extra.get('_derivative_uses',())))
                 extra_msg = extra.get('user_message', '')
                 if extra_msg:
                     request['user_message'] = request.get('user_message', '') + '\n' + extra_msg
@@ -689,7 +798,7 @@ async def _user_text_worker(user_id: int):
             try:
                 await sub_task
             except asyncio.CancelledError:
-                if sub_task.cancelled():
+                if sub_task.cancelled() and not asyncio.current_task().cancelling():
                     # Отмена под-задачи (/cancel) — воркер продолжает работу.
                     logger.info(f"Текстовый воркер: задача для чата {chat_id} была отменена.")
                 else:
@@ -697,6 +806,12 @@ async def _user_text_worker(user_id: int):
                     sub_task.cancel()
                     raise
             except Exception as e:
+                from cognition.delivery import DeliveryUnknown,DeliverySuppressed
+                from cognition.repositories import SuppressedEvidence
+                from materials.types import MaterialError
+                if isinstance(e,(DeliveryUnknown,DeliverySuppressed,SuppressedEvidence,MaterialError)):
+                    logger.warning('Transport outcome prevents fallback: %s',type(e).__name__)
+                    continue
                 logger.error(f"Ошибка при обработке текста для user {user_id}: {e}", exc_info=True)
                 try:
                     if await is_responses_enabled(chat_id):
@@ -752,87 +867,19 @@ def check_event_pre_filter(text: str) -> bool:
     return False
 
 
-async def extract_and_save_events_task(chat_id: int, user_message: str, user_tz: int) -> None:
-    """
-    Фоновая задача для извлечения событий из реплики пользователя через ИИ и сохранения в БД.
-    Ограничена пред-фильтром для экономии токенов и латентности.
-    """
-    if not check_event_pre_filter(user_message):
-        return
-
-    logger.info(f"📅 [ШЕДУЛЕР СОБЫТИЙ] Запуск ИИ-экстрактора событий для chat_id={chat_id} (msg: '{user_message[:50]}...')")
-
-    try:
-        from datetime import datetime, timedelta, timezone
-        local_now = datetime.now(timezone.utc) + timedelta(hours=user_tz)  # DB-03
-        local_date_str = local_now.strftime("%Y-%m-%d")
-        
-        weekday_map = {
-            "Monday": "понедельник",
-            "Tuesday": "вторник",
-            "Wednesday": "среда",
-            "Thursday": "четверг",
-            "Friday": "пятница",
-            "Saturday": "суббота",
-            "Sunday": "воскресенье"
-        }
-        local_weekday = weekday_map.get(local_now.strftime("%A"), "понедельник")
-
-        system_prompt = (
-            "Ты — системный анализатор сообщений. Твоя задача — извлечь из сообщения пользователя упоминания о любых будущих важных событиях, "
-            "дедлайнах, экзаменах, праздниках, годовщинах или встречах. Каждое событие должно иметь конкретную дату.\n"
-            f"Текущая локальная дата пользователя: {local_date_str} (день недели: {local_weekday}).\n\n"
-            "Правила интерпретации относительных дат:\n"
-            "- «завтра» = текущая дата + 1 день\n"
-            "- «послезавтра» = текущая дата + 2 дня\n"
-            "- «через N дней» = текущая дата + N дней\n"
-            "- дни недели («в пятницу», «в субботу») = ближайший указанный день недели в будущем\n\n"
-            "Верни результат СТРОГО в формате JSON-массива объектов, содержащих:\n"
-            "- 'event_date': строка в формате 'YYYY-MM-DD'\n"
-            "- 'event_type': категория (например, 'exam', 'deadline', 'anniversary', 'birthday', 'meeting', 'other')\n"
-            "- 'note': краткое описание на русском языке (например, 'Экзамен по физике', 'Сдать отчет')\n"
-            "Если в сообщении нет упоминаний о конкретных датах и будущих событиях, верни строго пустой массив: []"
-        )
-
-        from config import genai_client
-        from google.genai import types
-        import json
-
-        response = await asyncio.to_thread(
-            genai_client.models.generate_content,
-            model="gemini-3.1-flash-lite-preview",
-            contents=f"{system_prompt}\n\nСообщение пользователя: '{user_message}'",
-            config=types.GenerateContentConfig(
-                temperature=0.0,
-                max_output_tokens=300,
-                response_mime_type="application/json"
-            )
-        )
-
-        if response.text:
-            text = response.text.strip()
-            text = re.sub(r'^```json\s*', '', text, flags=re.IGNORECASE)
-            text = re.sub(r'\s*```$', '', text, flags=re.IGNORECASE)
-            text = text.strip()
-
-            if text and text != "[]":
-                events = json.loads(text)
-                if isinstance(events, list) and len(events) > 0:
-                    from database.models import UserEvent
-                    for ev in events:
-                        event_date_str = ev.get("event_date")
-                        event_type = ev.get("event_type", "other")
-                        note = ev.get("note", "").strip()
-
-                        if event_date_str and note:
-                            event_date = datetime.strptime(event_date_str, "%Y-%m-%d").date()
-                            await UserEvent.add(chat_id, event_date, event_type, note)
-                            logger.info(f"📅 [ШЕДУЛЕР СОБЫТИЙ] Извлечено событие: {event_date} | {event_type} | {note}")
-    except Exception as e:
-        logger.error(f"Ошибка при извлечении и сохранении событий: {e}", exc_info=True)
 
 
 async def process_user_reply(request, bot):
+    from cognition.scope import CURRENT_SCOPE
+    CURRENT_SCOPE.set(request.get('_telegram_scope'))
+    from materials.runtime import CURRENT_MATERIAL_USE, guard_current
+    CURRENT_MATERIAL_USE.set(request.get('_material_uses', ()))
+    from materials.runtime import CURRENT_DERIVATIVE_USE
+    CURRENT_DERIVATIVE_USE.set(request.get('_derivative_uses',()))
+    if request.get('_material_revoked'):
+        from materials.types import MaterialError
+        raise MaterialError('material_erased')
+    await guard_current()
     """Обрабатывает текстовый ответ: генерация, очистка, голос, медиа-теги."""
     chat_id = request['chat_id']
     user_id = request['user_id']
@@ -845,11 +892,49 @@ async def process_user_reply(request, bot):
     document_text = request.get('document_text')
     video_file_id = request.get('video_file_id')
     is_video_note = request.get('is_video_note', False)
+    from materials.runtime import enabled,actor_for_current,service_for_bot
+    project_ids=None
+    if enabled() and user_id and CURRENT_SCOPE.get() is not None:
+        from projects.repository import ProjectRepository
+        from projects.types import ProjectUse
+        service=await service_for_bot(); actor=await actor_for_current(); projects=ProjectRepository(service.repository)
+        project=await projects.current(actor)
+        if project:
+            project.require('view')
+            project_use=ProjectUse(project.id,actor,projects,project.access_generation,project.revision)
+            CURRENT_DERIVATIVE_USE.set(CURRENT_DERIVATIVE_USE.get()+(project_use,))
+            attached=await projects.materials_for(project.id,actor)
+            project_ids=[m['asset_id'] for m in attached if m['status']=='current']
+            request['_project_context']=dict(id=project.id,title=project.title,goal=project.goal,questions=project.questions,revision=project.revision)
+            from projects.context import workflow_context
+            workflows,uses,causal=await workflow_context(service.repository,project.id,actor)
+            request['_project_context']['workflows']=workflows
+            CURRENT_DERIVATIVE_USE.set(CURRENT_DERIVATIVE_USE.get()+tuple(uses))
+            request['_cognitive_source_ids']=sorted(set(request.get('_cognitive_source_ids',[])+causal))
+    if enabled() and not document_text and user_id and CURRENT_SCOPE.get() is not None:
+        from materials.retrieval import recall
+        recalled,derivatives,causal=await recall(service,actor,user_message,asset_ids=project_ids)
+        if recalled:
+            document_text=recalled
+            CURRENT_MATERIAL_USE.set(tuple(dict.fromkeys(CURRENT_MATERIAL_USE.get()+recalled.material_uses)))
+            CURRENT_DERIVATIVE_USE.set(tuple(dict.fromkeys(CURRENT_DERIVATIVE_USE.get()+derivatives)))
+            request['_cognitive_source_ids']=sorted(set(request.get('_cognitive_source_ids',[])+list(causal)))
+            await guard_current(chat_id)
+    if request.get('_project_context'):
+        from materials.types import canonical
+        document_text=(str(document_text or '')+'\nCurrent project state (authored goal, not a collective decision): '+canonical(request['_project_context']))
 
     # L-08: автоответ ставится с user_id=0 (нет конкретного автора). Не привязываем к
     # такому «пользователю» профиль/близость/факты — нормализуем 0 → None, тогда
     # профильные/аффективные методы корректно пропускают его.
     profile_user_id = user_id or None
+    if profile_user_id is None:
+        from cognition.runtime import get_runtime
+        runtime = get_runtime()
+        if runtime and runtime.mode!='legacy' and message_id is not None:
+            async with runtime.pool.acquire() as conn:
+                profile_user_id = await conn.fetchval('''SELECT e.owner_id FROM cognitive_events e JOIN cognitive_contexts c ON c.id=e.context_id
+                    WHERE c.chat_id=$1 AND e.event_key=$2 AND e.suppressed_at IS NULL ORDER BY e.id DESC LIMIT 1''',chat_id,f'telegram:{chat_id}:{message_id}:user')
 
     # Защита от инъекций: вырезаем служебный тег интроспекции из ЛЮБОГО ввода юзера
     # (текст сообщения И содержимое документа), чтобы он не утёк в промпт и не был отражён
@@ -860,31 +945,23 @@ async def process_user_reply(request, bot):
     if document_text:
         document_text = strip_introspection_tags(document_text)
 
-    # Обновление эмоционального состояния чата
-    from database.models import ChatEmotionalState, MemoryUserProfile
-    import json
-    
-    closeness = 0.1
     mode = "rp" if rp_mode_state.get(chat_id) else "default"
-    user_profile = await MemoryUserProfile.get(chat_id, profile_user_id, mode) if profile_user_id else None
-    if user_profile and user_profile.get("profile_json"):
-        prof_json = json.loads(user_profile["profile_json"]) if isinstance(user_profile["profile_json"], str) else user_profile["profile_json"]
-        closeness = prof_json.get("affective", {}).get("closeness", 0.1)
-        
-    # defer_sentiment=True: словарный сдвиг НЕ применяется здесь (до генерации) — его применит
-    # apply_turn_sentiment пост-генерации, отдав приоритет интроспекции самой LLM, а словарь
-    # оставив как fail-closed фолбэк. Распад/заряд/циркадная база считаются как раньше.
-    updated_state = await ChatEmotionalState.update_state(chat_id, user_message, closeness, user_id=profile_user_id, defer_sentiment=True)
-    # Рост близости от ОБЫЧНОГО общения (+ бонус за ответ на проактивный пуш),
-    # а не только от эмодзи-реакций — иначе closeness почти никогда не растёт.
-    await MemoryUserProfile.grow_closeness(
-        chat_id, profile_user_id, mode,
-        proactive_reply=updated_state.get("was_proactive_reply", False),
-    )
-    user_tz = updated_state.get("user_tz")
-    # Экстрактор событий: если tz ещё не определён, берём фолбэк (UTC) —
-    # абсолютные даты резолвятся корректно, иначе раннее событие потерялось бы.
-    asyncio.create_task(extract_and_save_events_task(chat_id, user_message, user_tz if user_tz is not None else 0))
+    from cognition.runtime import prepare_turn
+    cognitive_turn = await prepare_turn(chat_id,profile_user_id,user_message,message_id,mode,source_context=request.get('_cognitive_context'))
+    cognitive_turn.supporting_event_ids=request.get('_cognitive_source_ids',[])
+    if cognitive_turn.repeated_delivery:
+        return
+    from ai.intents import resolve_intent
+    import time
+    request['_intent'] = await resolve_intent(user_message,chat_id,
+        has_materials=bool(request.get('_material_uses') or document_text),
+        allow_work=enabled() and os.getenv('ARTI_AGENTS_ENABLED','0').lower() in ('1','true','yes'),
+        recent_maps=time.time()-_recent_map_sessions.get(user_id,0)<300) if mode!='rp' else {}
+    from bot.agent_requests import handle_agent_request
+    if enabled() and user_id and await handle_agent_request(request,bot):
+        return
+    if cognitive_turn.preferences.get('voice') is False or cognitive_turn.preferences.get('text') is True:
+        is_voice = False
 
     action_type = 'record_audio' if is_voice else 'typing'
     repeating_task = asyncio.create_task(
@@ -933,9 +1010,13 @@ async def process_user_reply(request, bot):
                     logger.info(f"Загружаю видео в Gemini: {temp_video_path}")
                     video_file = await asyncio.to_thread(genai_client.files.upload, file=temp_video_path)
                     
+                    deadline=asyncio.get_running_loop().time()+90
                     while video_file.state.name == "PROCESSING":
+                        if asyncio.get_running_loop().time()>=deadline: raise TimeoutError('video_processing_timeout')
+                        from materials.runtime import guard_current
+                        await guard_current(chat_id)
                         await asyncio.sleep(2)
-                        video_file = await asyncio.to_thread(genai_client.files.get, name=video_file.name)
+                        video_file = await asyncio.wait_for(asyncio.to_thread(genai_client.files.get, name=video_file.name),15)
                         
                     if video_file.state.name == "FAILED":
                         logger.error("Ошибка обработки видео в Gemini")
@@ -950,28 +1031,9 @@ async def process_user_reply(request, bot):
         import time
         user_location = None
         if not base64_image and not video_file_id and not document_text:
-            from ai.generation import analyze_intent
             from utils.location_manager import get_user_location
 
-            intent = await analyze_intent(user_message)
-
-            # Follow-up heuristic: если предыдущий map-запрос был < 5 мин назад,
-            # или короткий вопрос при активной локации — форсировать карты
-            if not intent.get("maps"):
-                last_map_time = _recent_map_sessions.get(user_id)
-                if last_map_time and (time.time() - last_map_time) < 300:
-                    # Есть активная map-сессия
-                    location = await get_user_location(user_id)
-                    if location:
-                        intent["maps"] = True
-                        logger.info(f"🗺 Follow-up map session для {user_id}")
-                else:
-                    # Короткий вопрос + локация
-                    if len(user_message.strip()) < 40 and "?" in user_message:
-                        location = await get_user_location(user_id)
-                        if location:
-                            intent["maps"] = True
-                            logger.info(f"🗺 Heuristic map (короткий вопрос + локация) для {user_id}")
+            intent = request['_intent']
 
             if intent.get("maps"):
                 location = await get_user_location(user_id)
@@ -1010,15 +1072,8 @@ async def process_user_reply(request, bot):
         else:
             chat_context = await get_chat_context(chat_id)
 
-        memory_context = await build_memory_context(
-            chat_id=chat_id,
-            user_id=user_id,
-            user_message=user_message,
-            mode="rp" if rp_mode_state.get(chat_id) else "default",
-        )
-        if memory_context:
-            chat_context = f"{chat_context}\n\n{memory_context}" if chat_context else memory_context
-        
+        memory_context = cognitive_turn.memory
+
         # Если есть контекст из документа — склеиваем
         final_prompt = user_message
         if document_text:
@@ -1033,9 +1088,7 @@ async def process_user_reply(request, bot):
                 ARTI_SYSTEM_PROMPT + 
                 "\n\n[СИСТЕМНОЕ УВЕДОМЛЕНИЕ ДЛЯ ВИДЕОЗАМЕТКИ]: "
                 "Тебе прислали 'круглешочек' (видеосообщение). Прояви искренний интерес к обстановке, "
-                "действиям и словам пользователя. Ответь ярко и в своем характере. "
-                "ОБЯЗАТЕЛЬНО: В самом конце своего ответа, с новой строки, напиши техническое описание "
-                "видео для базы данных, обернув его в теги <HISTORY>техническое описание...</HISTORY>."
+                "действиям и словам пользователя. Ответь ярко и в своем характере."
             )
 
         chat_model = await get_chat_model(chat_id)
@@ -1052,8 +1105,9 @@ async def process_user_reply(request, bot):
             custom_system_prompt=custom_system_prompt,
             user_id=user_id,
             is_rp_mode=is_rp,
-            enable_introspection=True,
-            emotional_state=updated_state,
+            memory_context=memory_context,
+            expression_plan=cognitive_turn.expression,
+            request_intent=request['_intent'],
         )
         
         if uploaded_video_file:
@@ -1075,39 +1129,18 @@ async def process_user_reply(request, bot):
         # Чистим мысли <think>
         response_text = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL | re.IGNORECASE).strip()
 
-        # Извлекаем mood-стикера из ответа
-        sticker_mood = None
-        sticker_match = re.search(r'<sticker>(.*?)</sticker>', response_text, re.IGNORECASE)
-        if sticker_match:
-            sticker_mood = sticker_match.group(1).strip().lower()
-
-        # === ГИБРИДНЫЙ СЕНТИМЕНТ: интроспекция LLM > словарный фолбэк ===
-        # Парсим тег ТОЛЬКО из сгенерированного текста Арти (инъекции из ввода юзера сюда не попадают).
-        # apply_turn_sentiment: при валидном теге применяет дельты LLM, иначе fail-closed фолбэк на словарь.
+        # Expression comes exclusively from the causal cognitive state.
         from database.models import strip_introspection_tags
-        introspection_sticker = await ChatEmotionalState.apply_turn_sentiment(
-            chat_id, response_text, updated_state.get("keyword_mood_delta")
-        )
-        if not sticker_mood and introspection_sticker:
-            sticker_mood = introspection_sticker
-        # Вырезаем служебный тег интроспекции до любой отправки/редактирования
+        sticker_mood = None if generation_failed else cognitive_turn.expression.sticker_mood
+        if cognitive_turn.expression.tts_style:
+            response_text = '[' + cognitive_turn.expression.tts_style + '] ' + response_text
         response_text = strip_introspection_tags(response_text)
 
         # Очищаем все теги стикеров из ответа
         from ai.stickers import _clean_deformed_tags
         response_text = _clean_deformed_tags(response_text)
 
-        # Извлекаем и сохраняем техническое описание для истории (если есть)
-        history_match = re.search(r'<HISTORY>(.*?)</HISTORY>', response_text, re.DOTALL | re.IGNORECASE)
-        if history_match:
-            memory_text = history_match.group(1).strip()
-            # Сохраняем "память" в историю чата
-            if rp_mode_state.get(chat_id):
-                await save_chat_message_rp(chat_id, "Память", memory_text)
-            else:
-                await save_chat_message(chat_id, "Память", memory_text)
-            # Вырезаем тег из основного текста
-            response_text = re.sub(r'<HISTORY>.*?</HISTORY>', '', response_text, flags=re.DOTALL | re.IGNORECASE).strip()
+        response_text = re.sub(r'<HISTORY>.*?</HISTORY>', '', response_text, flags=re.DOTALL | re.IGNORECASE).strip()
 
         # Ищем и извлекаем медиа-теги
         image_requests = []
@@ -1167,11 +1200,6 @@ async def process_user_reply(request, bot):
             history_response_text = f"[Стикер: {sticker_mood}]"
 
         # MEM-06: ответ-заглушку об ошибке не пишем в историю.
-        if not generation_failed:
-            if rp_mode_state.get(chat_id):
-                await save_chat_message_rp(chat_id, "Арти", history_response_text)
-            else:
-                await save_chat_message(chat_id, "Арти", history_response_text)
 
         # === ОТПРАВКА СООБЩЕНИЯ (ТЕКСТ/ГОЛОС) ===
         sent_msg = None
@@ -1252,19 +1280,6 @@ async def process_user_reply(request, bot):
             )
 
         # MEM-06: не учим долговременную память на заглушке об ошибке.
-        if not generation_failed:
-            memory_task = asyncio.create_task(
-                remember_exchange(
-                    chat_id=chat_id,
-                    user_id=profile_user_id,  # L-08: автоответ → факты чата (user_id IS NULL)
-                    user_name=user_name,
-                    user_message=user_message,
-                    response_text=history_response_text,
-                    mode="rp" if rp_mode_state.get(chat_id) else "default",
-                    metadata={"message_id": message_id, "used_search": used_search},
-                )
-            )
-            _track_task(memory_task)
 
         # === ОТПРАВЛЯЕМ КАРТИНКИ ИЗ ПОИСКА ===
         if found_search_images:
@@ -1346,6 +1361,10 @@ async def dubbing_worker():
         if task is None:
             break
 
+        from cognition.scope import CURRENT_SCOPE
+        from cognition.runtime import CURRENT_TURN
+        CURRENT_SCOPE.set(task.get('_telegram_scope'))
+        CURRENT_TURN.set(task.get('_cognitive_turn'))
         chat_id = task['chat_id']
         url = task.get('url') or ""
         input_file = task.get('input_file')  # локальный путь, если файл
@@ -1572,6 +1591,11 @@ async def dubbing_worker():
 
 
 async def enqueue_dubbing(task: dict, bot, chat_id):
+    _detach_menu_context(task)
+    from cognition.scope import CURRENT_SCOPE
+    from cognition.runtime import CURRENT_TURN
+    task['_telegram_scope']=CURRENT_SCOPE.get()
+    task['_cognitive_turn']=CURRENT_TURN.get()
     """Кладёт задачу дубляжа в очередь и сообщает позицию."""
     if not TTS_ENABLED:
         await bot.send_message(
@@ -1665,6 +1689,10 @@ async def vclone_worker():
         if task is None:
             break
 
+        from cognition.scope import CURRENT_SCOPE
+        from cognition.runtime import CURRENT_TURN
+        CURRENT_SCOPE.set(task.get('_telegram_scope'))
+        CURRENT_TURN.set(task.get('_cognitive_turn'))
         chat_id = task['chat_id']
         user_id = task['user_id']
         user_name = task.get('user_name', 'Пользователь')
@@ -1898,6 +1926,11 @@ async def vclone_worker():
 
 
 async def enqueue_vclone(task: dict, bot, chat_id):
+    _detach_menu_context(task)
+    from cognition.scope import CURRENT_SCOPE
+    from cognition.runtime import CURRENT_TURN
+    task['_telegram_scope']=CURRENT_SCOPE.get()
+    task['_cognitive_turn']=CURRENT_TURN.get()
     """Кладёт задачу /vclone в очередь и сообщает позицию пользователю.
 
     По образцу `enqueue_dubbing`, но в стиле Bot_Persona_Reply (Requirement 9.1).
@@ -2014,6 +2047,11 @@ async def vclone_fsm_timeout_watchdog(bot) -> None:
                         expired_save.append((chat_id, user_id, state))
 
             for chat_id, user_id, state in expired:
+                from cognition.scope import CURRENT_SCOPE,TransportScope
+                if isinstance(chat_id,tuple) and chat_id[0]=='topic':
+                    CURRENT_SCOPE.set(TransportScope(chat_id[1],chat_id[2],'supergroup',user_id))
+                    chat_id=chat_id[1]
+                else: CURRENT_SCOPE.set(None)
                 # 1. Удаляем стейт первым делом — чтобы юзер мог сразу запустить новый /vclone.
                 try:
                     vclone_flow_state[chat_id].pop(user_id, None)
@@ -2065,6 +2103,11 @@ async def vclone_fsm_timeout_watchdog(bot) -> None:
                 )
 
             for chat_id, user_id, state in expired_save:
+                from cognition.scope import CURRENT_SCOPE,TransportScope
+                if isinstance(chat_id,tuple) and chat_id[0]=='topic':
+                    CURRENT_SCOPE.set(TransportScope(chat_id[1],chat_id[2],'supergroup',user_id))
+                    chat_id=chat_id[1]
+                else: CURRENT_SCOPE.set(None)
                 try:
                     vclone_save_flow_state[chat_id].pop(user_id, None)
                 except Exception:
@@ -2111,222 +2154,3 @@ async def vclone_fsm_timeout_watchdog(bot) -> None:
         except Exception:
             # Любая другая ошибка не должна убить watchdog.
             logger.exception("Watchdog vclone FSM: непредвиденная ошибка, продолжаю.")
-
-
-async def proactive_scheduler_worker(bot):
-    """
-    Фоновый шедулер проактивных стикеров и сообщений с защитой от гонок и тихими часами.
-    Запускается при инициализации бота и выполняется циклически каждые 30 минут.
-    """
-    logger.info("Проактивный воркер шедулера стикеров запущен!")
-    await asyncio.sleep(60) # Спим 1 минуту после старта, чтобы бот прогрелся
-    
-    while True:
-        try:
-            logger.info("Шедулер проактивных стикеров: сканирование активных чатов...")
-
-            async with get_db() as conn:
-                # Извлекаем все активные сессии, где тишина > 18 часов.
-                # Длительность тишины считаем на стороне БД (NOW()), чтобы не смешивать
-                # наивный datetime.now() приложения с временем БД (разные TZ -> неверная дельта).
-                states = await conn.fetch("""
-                    SELECT chat_id, last_activity_time, last_proactive_push_time, user_tz,
-                           EXTRACT(EPOCH FROM (NOW() - last_activity_time))::float8 / 3600.0 AS silence_hours
-                    FROM chat_emotional_states
-                    WHERE conversation_stage = 'active'
-                      AND last_activity_time < NOW() - INTERVAL '18 hours'
-                      AND (last_proactive_push_time IS NULL OR last_proactive_push_time < NOW() - INTERVAL '18 hours')
-                """)
-            
-            for state in states:
-                chat_id = state["chat_id"]
-                last_act = state["last_activity_time"]
-                last_push = state["last_proactive_push_time"]
-                user_tz = state["user_tz"]
-
-                # AUTH-02: не пишем проактив в чаты, где бот выключен (/stop).
-                # Эмоциональное состояние живёт независимо от выключателя, поэтому
-                # без этой проверки шедулер слал бы сообщения отключившим бота.
-                if not await is_responses_enabled(chat_id):
-                    logger.debug(f"Шедулер: Пропускаем чат {chat_id}, бот отключён (/stop).")
-                    continue
-                
-                # 1. До определения TZ не пушим вообще (тихий дефолт)
-                if user_tz is None:
-                    logger.debug(f"Шедулер: Пропускаем чат {chat_id}, так как user_tz еще не определен.")
-                    continue
-                
-                # 2. Проверяем жесткие quiet hours по локальному времени пользователя (23:00 - 09:00)
-                from datetime import datetime as _dt, timedelta, timezone as _tz
-                local_time = _dt.now(_tz.utc) + timedelta(hours=user_tz)  # DB-03
-                local_hour = local_time.hour
-                local_date = local_time.date()
-                
-                if local_hour >= 23 or local_hour < 9:
-                    logger.info(f"Шедулер: Пропускаем чат {chat_id}, так как локальное время {local_hour:02d}:00 входит в quiet hours (23:00 - 09:00).")
-                    continue
-                
-                # Разность часов (посчитана БД, UTC-консистентно)
-                diff_act_hours = max(0.0, state["silence_hours"] or 0.0)
-                
-                # 3. Чистим вчерашние и прошедшие события в чате
-                async with get_db() as conn:
-                    await conn.execute("""
-                        DELETE FROM user_events 
-                        WHERE chat_id = $1 AND event_date < $2::date - INTERVAL '1 day'
-                    """, chat_id, local_date)
-                
-                # 4. Проверяем близость отношений с пользователями в чате
-                async with get_db() as conn:
-                    profiles = await conn.fetch("""
-                        SELECT user_id, mode, profile_json FROM memory_user_profiles
-                        WHERE chat_id = $1
-                    """, chat_id)
-                
-                for prof in profiles:
-                    user_id = prof["user_id"]
-                    mode = prof["mode"]
-                    import json
-                    prof_json = json.loads(prof["profile_json"]) if isinstance(prof["profile_json"], str) else prof["profile_json"]
-                    aff = prof_json.get("affective", {})
-                    closeness = aff.get("closeness", 0.0)
-                    
-                    # Пушим только близких пользователей (closeness > 0.6)
-                    if closeness > 0.6:
-                        # 5. Проверяем структурированную таблицу user_events на наличие событий (сегодня/завтра)
-                        event_today = None
-                        event_tomorrow = None
-                        
-                        async with get_db() as conn:
-                            # Проверяем сегодняшнее событие (не уведомленное)
-                            event_today = await conn.fetchrow("""
-                                SELECT id, event_type, note FROM user_events
-                                WHERE chat_id = $1 AND event_date = $2 AND notified = FALSE
-                                LIMIT 1
-                            """, chat_id, local_date)
-                            
-                            if not event_today:
-                                # Проверяем завтрашнее событие
-                                event_tomorrow = await conn.fetchrow("""
-                                    SELECT id, event_type, note FROM user_events
-                                    WHERE chat_id = $1 AND event_date = $2 AND notified = FALSE
-                                    LIMIT 1
-                                """, chat_id, local_date + timedelta(days=1))
-                        
-                        event_id = None
-                        prompt = ""
-                        
-                        if event_today:
-                            event_id = event_today["id"]
-                            note = event_today["note"]
-                            logger.info(f"Шедулер: Найдено событие на сегодня: '{note}' для чата {chat_id}")
-                            prompt = (
-                                f"Сегодня у собеседника важное событие: {note}. Напиши очень теплое и поддерживающее пожелание удачи "
-                                f"(до 15 слов) в характерном для Арти неко-стиле, добавив в самый конец сообщения "
-                                f"поддерживающий стикер <sticker>love</sticker> или <sticker>happy</sticker>."
-                            )
-                        elif event_tomorrow:
-                            event_id = event_tomorrow["id"]
-                            note = event_tomorrow["note"]
-                            logger.info(f"Шедулер: Найдено событие на завтра: '{note}' для чата {chat_id}")
-                            prompt = (
-                                f"Напомни собеседнику, что завтра у него важное событие: {note}. Напиши короткое и милое напоминание "
-                                f"с заботой (до 15 слов), добавив в самый конец сообщения "
-                                f"стикер <sticker>love</sticker> или <sticker>happy</sticker>."
-                            )
-                        else:
-                            # Стандартный проактив по тишине
-                            prompt = (
-                                f"В чате тишина уже {int(diff_act_hours)} часов. Напиши короткую проактивную фразу "
-                                f"(до 15 слов) собеседнику, так как ты скучаешь или хочешь возобновить диалог. "
-                                f"Ты имеешь доступ к стикерам, поэтому ОБЯЗАТЕЛЬНО добавь в самый конец сообщения "
-                                f"тег стикера (например, <sticker>bored</sticker> или <sticker>thinking</sticker>)."
-                            )
-                        
-                        # 6. Атомарный захват слота: обновляем stage и time с жестким guard
-                        async with get_db() as conn:
-                            captured = await conn.fetchval("""
-                                UPDATE chat_emotional_states
-                                SET last_proactive_push_time = NOW(),
-                                    conversation_stage = 'proactive_sent'
-                                WHERE chat_id = $1
-                                  AND conversation_stage = 'active'
-                                  AND (last_proactive_push_time IS NULL OR last_proactive_push_time < NOW() - INTERVAL '18 hours')
-                                RETURNING chat_id;
-                            """, chat_id)
-                        
-                        if not captured:
-                            logger.info(f"Шедулер: Не удалось захватить слот проактива для чата {chat_id} (уже захвачен другим процессом). Пропускаем.")
-                            break
-                        
-                        logger.info(f"Шедулер успешно захватил слот и запускает проактивный пуш для чата {chat_id}, юзера {user_id}")
-                        
-                        # Генерируем ответ Арти
-                        from ai.generation import generate_response_stream
-                        from utils.chat_history import save_chat_message, save_chat_message_rp
-                        from memory.storage import build_memory_context
-                        
-                        # Подгружаем RAG-контекст памяти для обогащения характера
-                        mem_ctx = await build_memory_context(chat_id, user_id, "дата знакомства дедлайн важный день", mode=mode)
-                        chat_model = await get_chat_model(chat_id)
-                        
-                        response_text, _, _, _ = await generate_response_stream(
-                            chat_id=chat_id,
-                            prompt=prompt,
-                            user_name="Арти",
-                            chat_context=mem_ctx,
-                            model=chat_model,
-                            temperature=0.75,
-                            user_id=user_id,
-                            is_rp_mode=(mode == "rp"),
-                        )
-                        
-                        # Парсим стикер тег
-                        sticker_mood = None
-                        sticker_match = re.search(r'<sticker>(.*?)</sticker>', response_text, re.IGNORECASE)
-                        if sticker_match:
-                            sticker_mood = sticker_match.group(1).strip().lower()
-                            response_text = re.sub(r'<sticker>.*?</sticker>', '', response_text, flags=re.DOTALL | re.IGNORECASE).strip()
-                        
-                        # Убираем лишние SSML-теги и эмодзи-маркеры
-                        display_text = re.sub(r'<[^>]+>', '', response_text)
-                        display_text = re.sub(r'\[[^\]]+\]', '', display_text).strip()
-                        display_text = fix_html_tags(display_text)
-                        
-                        if not display_text:
-                            # В случае сбоя генерации сбрасываем stage обратно в active
-                            async with get_db() as conn:
-                                await conn.execute("UPDATE chat_emotional_states SET conversation_stage = 'active', last_proactive_push_time = NULL WHERE chat_id = $1", chat_id)
-                            continue
-                        
-                        # Отправляем сообщение
-                        sent_msg = await bot.send_message(
-                            chat_id=chat_id,
-                            text=display_text,
-                            parse_mode='HTML'
-                        )
-                        
-                        # Сохраняем в историю чата
-                        if mode == "rp":
-                            await save_chat_message_rp(chat_id, "Арти", response_text)
-                        else:
-                            await save_chat_message(chat_id, "Арти", response_text)
-                        
-                        # Помечаем событие как уведомленное
-                        if event_id is not None:
-                            async with get_db() as conn:
-                                await conn.execute("UPDATE user_events SET notified = TRUE WHERE id = $1", event_id)
-                                logger.info(f"Шедулер: Событие ID {event_id} помечено как notified = TRUE")
-                        
-                        # Отправляем стикер
-                        if sticker_mood:
-                            from ai.stickers import send_mood_sticker_task
-                            asyncio.create_task(send_mood_sticker_task(bot, chat_id, user_id, sticker_mood, sent_msg.message_id, mode=mode, force=True))
-                        
-                        break # За раз пушим только одного юзера в чате
-                        
-        except Exception as e:
-            logger.error(f"Ошибка воркера проактивных стикеров: {e}", exc_info=True)
-            
-        # Спим 30 минут до следующего сканирования
-        await asyncio.sleep(1800)

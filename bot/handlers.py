@@ -12,9 +12,9 @@ from datetime import datetime, timedelta
 
 from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
+from cognition.scope import requested
 
 from config import (
-    AUTO_REPLY_TIMEOUT, AUTO_REPLY_THRESHOLD,
     TTS_ENABLED,
     music_flow_state, waiting_for_image_prompt, pending_image_inputs, waiting_for_video_prompt, pending_video_inputs,
     pending_photo_action, pending_doc_action, rp_mode_state,
@@ -30,11 +30,10 @@ from utils.text_processing import (
     repeat_chat_action, fix_html_tags
 )
 from utils.document_parser import extract_document_text, extract_text_from_file
-from ai.generation import generate_response_stream, is_message_for_arti
+from ai.generation import generate_response_stream
 from ai.tts import text_to_speech_telegram
 from ai.stt import transcribe_audio_groq
 from bot.queue import enqueue_reply, enqueue_generation, _extract_photo_urls, _track_task
-from memory.storage import build_memory_context, remember_exchange
 from bot.commands import (
     handle_music_flow, handle_video_flow, handle_image_flow,
     _enqueue_video_from_flow, _enqueue_image_from_flow,
@@ -68,12 +67,12 @@ def _is_text_rate_limited(user_id: int) -> bool:
     return False
 
 
-async def _save_message(chat_id: int, user_name: str, message_text: str, user_id: int = None):
+async def _save_message(chat_id: int, user_name: str, message_text: str, user_id: int = None, **source):
     """Сохраняет сообщение в обычную или RP-историю в зависимости от режима."""
     if rp_mode_state.get(chat_id):
-        await save_chat_message_rp(chat_id, user_name, message_text, user_id=user_id)
+        await save_chat_message_rp(chat_id, user_name, message_text, user_id=user_id, **source)
     else:
-        await save_chat_message(chat_id, user_name, message_text, user_id=user_id)
+        await save_chat_message(chat_id, user_name, message_text, user_id=user_id, **source)
 
 
 async def _get_dialog_history(chat_id: int) -> str:
@@ -105,10 +104,29 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not await is_responses_enabled(chat_id):
         return
 
+    from cognition.scope import CURRENT_SCOPE,from_update
+    scope = CURRENT_SCOPE.get() or from_update(update,context.bot.id,getattr(context.bot,'username',''))
+    if scope:
+        CURRENT_SCOPE.set(scope)
+    if scope and scope.group and scope.sender_kind=='bot':
+        return
+    if scope and scope.sender_kind=='chat':
+        user_id=0
+        user_name='Анонимный участник'
+
     # Per-user rate limit для LLM-вызовов (S-04: cost abuse protection)
-    if _is_text_rate_limited(user_id):
+    if (not scope or not scope.group or scope.addressed) and _is_text_rate_limited(user_id):
         logger.warning(f"Rate limit: user {user_id} в чате {chat_id} превысил лимит текстовых запросов")
         return
+
+    from cognition.runtime import get_runtime
+    runtime = get_runtime()
+    if runtime and runtime.mode!='legacy' and update.message.text:
+        mode='rp' if rp_mode_state.get(chat_id) else 'default'
+        if scope and scope.group:
+            await runtime.groups.observe(scope,update.message.text,mode,at=update.message.date,message=update.message)
+        else:
+            await runtime.ingest(chat_id,user_id,update.message.text,message_id,mode,occurred_at=update.message.date)
 
     user_text = update.message.text or ""
 
@@ -159,7 +177,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             await _process_images(
                 context.bot, chat_id, user_id, user_name, message_id,
                 pending["images"], caption,
-                pending["replied_to_bot"], pending["is_private"]
+                pending["replied_to_bot"], pending["is_private"],material_uses=pending.get('material_uses',())
             )
             return
 
@@ -180,6 +198,9 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
         image_urls = pending_image_inputs[chat_id].get(user_id, []) or image_flow.get("image_urls", [])
         # Подхватываем base64 изображения из фото-кнопок (photo_act:gen_image)
         pending_b64 = context.user_data.pop("pending_base64_for_gen", None)
+        from materials.runtime import CURRENT_MATERIAL_USE,guard_current
+        CURRENT_MATERIAL_USE.set(context.user_data.pop('pending_material_uses_for_gen',()))
+        await guard_current(chat_id)
         if not image_urls and pending_b64:
             image_urls = [f"data:image/jpeg;base64,{b64}" for b64 in pending_b64]
         if not prompt:
@@ -205,6 +226,9 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
         image_urls = pending_video_inputs[chat_id].get(user_id, []) or video_flow.get("image_urls", [])
         # Подхватываем base64 изображения из фото-кнопок (photo_act:gen_video)
         pending_b64 = context.user_data.pop("pending_base64_for_gen", None)
+        from materials.runtime import CURRENT_MATERIAL_USE,guard_current
+        CURRENT_MATERIAL_USE.set(context.user_data.pop('pending_material_uses_for_gen',()))
+        await guard_current(chat_id)
         if not image_urls and pending_b64:
             image_urls = [f"data:image/jpeg;base64,{b64}" for b64 in pending_b64]
         if not prompt:
@@ -284,7 +308,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 logger.error(f"Ошибка при загрузке медиа из reply: {e}")
 
         elif original.document:
-            document_text_reply = await extract_document_text(context, original.document)
+            document_text_reply = await extract_document_text(context, original.document, original)
             if document_text_reply:
                 if not user_message:
                     user_message = "Проанализируй этот документ."
@@ -294,7 +318,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             if not user_message:
                 user_message = "Проанализируй это видео."
 
-    await _save_message(chat_id, user_name, user_message, user_id=user_id)
+    await _save_message(chat_id, user_name, user_message, user_id=user_id,message_id=message_id,occurred_at=update.message.date)
 
     # === Перехват одиночного URL на видео: предлагаем инлайн-меню ===
     # Условия: ЛС, сообщение — только URL, известный видеохост, нет reply/forward/упоминания.
@@ -337,55 +361,15 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
         await enqueue_reply(chat_id, user_id, user_name, user_message, message_id, context, is_voice=True, base64_image=base64_image_reply, document_text=document_text_reply, video_file_id=telegram_video_file_id)
         return
 
-    # Определяем триггеры (только для групп)
-    # forwarded_from_bot/replied_to_bot/has_arti_mention уже посчитаны выше для URL-перехвата
-
-    # Явный триггер: упоминание, реплай или пересылка от бота
-    if has_arti_mention or forwarded_from_bot or replied_to_bot:
-        await enqueue_reply(chat_id, user_id, user_name, user_message, message_id, context, is_voice=True, base64_image=base64_image_reply, document_text=document_text_reply, video_file_id=telegram_video_file_id)
+    # Group ingress has already recorded public observations. Every direct
+    # response uses the captured scope; autonomous participation is scheduled.
+    if scope and scope.group:
+        if scope.addressed and scope.sender_kind!='bot':
+            await enqueue_reply(chat_id,user_id,user_name,user_message,message_id,context,is_voice=False,
+                                base64_image=base64_image_reply,document_text=document_text_reply,video_file_id=telegram_video_file_id)
         return
 
-    # Автоответ: если за AUTO_REPLY_TIMEOUT пришло много сообщений
-    recent_messages = await get_recent_messages(chat_id, AUTO_REPLY_TIMEOUT)
-    non_bot_messages = [msg for msg in recent_messages if not msg[1].startswith("Арти:")]
-
-    if len(non_bot_messages) >= AUTO_REPLY_THRESHOLD:
-        last_message_text = non_bot_messages[-1][1]
-        await enqueue_reply(chat_id, 0, "Автоответ", last_message_text, message_id, context, is_voice=True, base64_image=base64_image_reply, document_text=document_text_reply, video_file_id=telegram_video_file_id)
-        return
-
-    # LLM-фильтр: если Арти недавно отвечала в этом чате, проверяем — адресовано ли сообщение ей
-    recent_context = await get_chat_context(chat_id)
-    # Проверяем, есть ли недавние ответы Арти в контексте
-    if recent_context and "Арти:" in recent_context:
-        # Умная проверка: насколько недавно был ответ Арти?
-        lines = [line.strip() for line in recent_context.split("\n") if line.strip()]
-        arti_index = -1
-        last_arti_line = ""
-        for idx, line in enumerate(reversed(lines)):
-            if "] Арти:" in line:
-                arti_index = idx
-                last_arti_line = line
-                break
-        
-        # Если Арти отвечала в пределах последних 3 сообщений
-        if 0 <= arti_index <= 2:
-            is_recent_time = False
-            try:
-                # Извлекаем метку времени из строки формата "[YYYY-MM-DD HH:MM:SS] Арти: ..."
-                dt_str = last_arti_line[1:20]
-                arti_time = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
-                time_diff = datetime.now() - arti_time
-                if time_diff.total_seconds() <= 180:  # в течение последних 3 минут
-                    is_recent_time = True
-            except Exception as e:
-                logger.warning(f"Ошибка при парсинге времени последнего ответа Арти: {e}")
-                # На всякий случай разрешаем, если парсинг сломался
-                is_recent_time = True
-
-            if is_recent_time:
-                if await is_message_for_arti(user_message, recent_context, user_name):
-                    await enqueue_reply(chat_id, user_id, user_name, user_message, message_id, context, is_voice=True, base64_image=base64_image_reply, document_text=document_text_reply, video_file_id=telegram_video_file_id)
+    return
 
 
 # ============================================================================
@@ -417,6 +401,7 @@ def _photo_action_keyboard() -> InlineKeyboardMarkup:
 
 async def _send_photo_action_prompt(bot, chat_id, user_id, message_id, base64_images, replied_to_bot, is_private):
     """Отправляет сообщение с инлайн-кнопками, сохраняет фото в pending."""
+    from materials.runtime import CURRENT_MATERIAL_USE
     count = len(base64_images)
     img_word = "картинку" if count == 1 else f"{count} картинок" if count < 5 else f"{count} картинок"
 
@@ -439,17 +424,39 @@ async def _send_photo_action_prompt(bot, chat_id, user_id, message_id, base64_im
         "replied_to_bot": replied_to_bot,
         "is_private": is_private,
         "user_name": None,
+        "material_uses": CURRENT_MATERIAL_USE.get(),
     }
 
 
 async def _process_images(
     bot, chat_id, user_id, user_name, message_id,
-    base64_images, user_caption, replied_to_bot, is_private
+    base64_images, user_caption, replied_to_bot, is_private, *, material_uses=None
+):
+    from materials.runtime import CURRENT_MATERIAL_USE,guard_current
+    from materials.extractors.basic import render_text
+    from materials.extractors.documents import configured_extractor
+    uses=tuple(CURRENT_MATERIAL_USE.get() if material_uses is None else material_uses)
+    token=CURRENT_MATERIAL_USE.set(uses)
+    try:
+        await guard_current(chat_id)
+        evidence=[]
+        for use in uses:
+            _,rev=await use.service.repository.read(use.asset_id,use.actor,use.version)
+            _,bundle=await use.service.extract(use.asset_id,use.actor,configured_extractor(rev['mime']))
+            evidence.append(render_text(bundle,max_chars=10000))
+        return await _process_images_impl(bot,chat_id,user_id,user_name,message_id,base64_images,user_caption,replied_to_bot,is_private,
+            image_evidence_text='\n\n'.join(evidence)[:30000])
+    finally: CURRENT_MATERIAL_USE.reset(token)
+
+
+async def _process_images_impl(
+    bot, chat_id, user_id, user_name, message_id,
+    base64_images, user_caption, replied_to_bot, is_private, *, image_evidence_text=''
 ):
     """Фоновая задача: отправляет все собранные картинки в ИИ и шлёт ответ."""
     try:
         # VAL-01: упоминание по границе слова, а не подстрокой.
-        if not (is_private or bool(re.search(r'\bарти\b', user_caption.lower())) or replied_to_bot):
+        if not requested(is_private or bool(re.search(r'\bарти\b', user_caption.lower())) or replied_to_bot):
             logger.info("Триггер для ответа на фото не сработал — пропускаем")
             return
 
@@ -459,47 +466,37 @@ async def _process_images(
             pending_photo_action[(chat_id, user_id)]["user_name"] = user_name
             return
 
-        # Обновление эмоционального состояния чата
-        from database.models import ChatEmotionalState, MemoryUserProfile
-        import json
-        
-        closeness = 0.1
-        mode = "rp" if rp_mode_state.get(chat_id) else "default"
-        user_profile = await MemoryUserProfile.get(chat_id, user_id, mode)
-        if user_profile and user_profile.get("profile_json"):
-            prof_json = json.loads(user_profile["profile_json"]) if isinstance(user_profile["profile_json"], str) else user_profile["profile_json"]
-            closeness = prof_json.get("affective", {}).get("closeness", 0.1)
-            
-        # Защита от инъекций: вырезаем тег интроспекции из ВВОДА юзера (парсим только из ответа Арти).
         from database.models import strip_introspection_tags
         user_caption = strip_introspection_tags(user_caption)
-        # defer_sentiment=True: словарный сдвиг отложен до apply_turn_sentiment пост-генерации.
-        img_state = await ChatEmotionalState.update_state(chat_id, user_caption, closeness, user_id=user_id, defer_sentiment=True)
+        mode = "rp" if rp_mode_state.get(chat_id) else "default"
+        from cognition.runtime import prepare_turn
+        cognitive_turn = await prepare_turn(chat_id,user_id,user_caption,message_id,mode)
+        from materials.runtime import CURRENT_MATERIAL_USE
+        support={use.source_event_id for use in CURRENT_MATERIAL_USE.get() if use.source_event_id is not None and use.source_context_id==cognitive_turn.context_id}
+        cognitive_turn.supporting_event_ids=tuple(sorted(set(getattr(cognitive_turn,'supporting_event_ids',()))|support))
+        if cognitive_turn.repeated_delivery:
+            return
 
         image_details = "изображение" if len(base64_images) == 1 else f"{len(base64_images)} изображений"
-        await _save_message(chat_id, user_name, f"Пользователь прислал {image_details}. Подпись: {user_caption}", user_id=user_id)
+        await _save_message(chat_id, user_name, f"Пользователь прислал {image_details}. Подпись: {user_caption}", user_id=user_id,message_id=message_id)
 
         dialog_history_str = await _get_dialog_history(chat_id)
-        memory_context = await build_memory_context(
-            chat_id=chat_id,
-            user_id=user_id,
-            user_message=user_caption,
-            mode="rp" if rp_mode_state.get(chat_id) else "default",
-        )
-        if memory_context:
-            dialog_history_str = f"{dialog_history_str}\n\n{memory_context}" if dialog_history_str else memory_context
+        from utils.model_selection import get_chat_model
+        memory_context = cognitive_turn.memory
         await bot.send_chat_action(chat_id=chat_id, action="typing")
 
         response_text, used_search, grounding_links, found_search_images = await generate_response_stream(
             chat_id=chat_id,
+            model=await get_chat_model(chat_id),
             prompt=user_caption,
             user_name=user_name,
             chat_context=dialog_history_str,
             base64_images=base64_images,
+            document_text=image_evidence_text or None,
             user_id=user_id,
             is_rp_mode=rp_mode_state.get(chat_id, False),
-            enable_introspection=True,
-            emotional_state=img_state,
+            memory_context=memory_context,
+            expression_plan=cognitive_turn.expression,
         )
         logger.debug(f"RAW ИИ ОТВЕТ (фото, {len(base64_images)} шт): {response_text}")  # PRIV-01
 
@@ -510,18 +507,8 @@ async def _process_images(
         # === ЦЕПОЧКА ОЧИСТКИ ТЕКСТА ===
         response_text = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL | re.IGNORECASE).strip()
 
-        # Извлекаем mood-стикера из ответа
-        sticker_mood = None
-        sticker_match = re.search(r'<sticker>(.*?)</sticker>', response_text, re.IGNORECASE)
-        if sticker_match:
-            sticker_mood = sticker_match.group(1).strip().lower()
-
-        # Гибридный сентимент: интроспекция LLM > словарный фолбэк; затем вырезаем служебный тег.
-        introspection_sticker = await ChatEmotionalState.apply_turn_sentiment(
-            chat_id, response_text, img_state.get("keyword_mood_delta")
-        )
-        if not sticker_mood and introspection_sticker:
-            sticker_mood = introspection_sticker
+        sticker_mood = None if generation_failed else cognitive_turn.expression.sticker_mood
+        response_text = '[' + cognitive_turn.expression.tts_style + '] ' + response_text
         response_text = strip_introspection_tags(response_text)
 
         # Очищаем все теги стикеров из ответа
@@ -571,15 +558,14 @@ async def _process_images(
             history_response_text = f"[Стикер: {sticker_mood}]"
 
         # MEM-06: заглушку об ошибке не пишем в историю.
-        if not generation_failed:
-            await _save_message(chat_id, "Арти", history_response_text)
 
         # === ОТПРАВКА СООБЩЕНИЯ (ТЕКСТ/ГОЛОС) ===
         sent_msg = None
         has_text = bool(display_text.strip())
 
         if has_text:
-            if used_search or not TTS_ENABLED:
+            text_preference = cognitive_turn is not None and cognitive_turn.uses_cognition and (cognitive_turn.preferences.get('voice') is False or cognitive_turn.preferences.get('text') is True)
+            if used_search or not TTS_ENABLED or text_preference:
                 sent_msg = await bot.send_message(
                     chat_id=chat_id, text=display_text,
                     reply_to_message_id=message_id,
@@ -644,19 +630,6 @@ async def _process_images(
             )
 
         # MEM-06: не учим память на заглушке об ошибке.
-        if not generation_failed:
-            memory_task = asyncio.create_task(
-                remember_exchange(
-                    chat_id=chat_id,
-                    user_id=user_id,
-                    user_name=user_name,
-                    user_message=user_caption,
-                    response_text=history_response_text,
-                    mode="rp" if rp_mode_state.get(chat_id) else "default",
-                    metadata={"message_id": message_id, "used_search": used_search, "source": "image"},
-                )
-            )
-            _track_task(memory_task)
 
         # === ОТПРАВЛЯЕМ КАРТИНКИ ИЗ ПОИСКА ===
         if found_search_images:
@@ -747,7 +720,7 @@ async def _collect_and_process_media_group(
 
     await _process_images(
         bot, chat_id, user_id, user_name, message_id,
-        base64_images, user_caption, replied_to_bot, is_private
+        base64_images, user_caption, replied_to_bot, is_private,material_uses=group_data.get('material_uses',())
     )
 
 
@@ -776,7 +749,7 @@ async def photo_action_callback(update: Update, context: ContextTypes.DEFAULT_TY
     key = (chat_id, user_id)
     # L-07: если для этого пользователя нет ожидания — это либо чужая кнопка, либо
     # ожидание уже обработано. Тихо отвечаем и НЕ редактируем сообщение владельца.
-    if key not in pending_photo_action:
+    if key not in pending_photo_action or pending_photo_action[key].get('bot_message_id')!=query.message.message_id:
         await query.answer("Эта кнопка не для тебя или уже неактуальна.", show_alert=False)
         return
     pending = pending_photo_action.pop(key, None)
@@ -813,6 +786,7 @@ async def photo_action_callback(update: Update, context: ContextTypes.DEFAULT_TY
         pending_image_inputs[chat_id][user_id] = []
         # Сохраняем base64 images в user_data для позднего использования
         context.user_data["pending_base64_for_gen"] = base64_images
+        context.user_data["pending_material_uses_for_gen"] = pending.get('material_uses',())
         return
 
     # --- Генерация видео по фото ---
@@ -825,6 +799,7 @@ async def photo_action_callback(update: Update, context: ContextTypes.DEFAULT_TY
         waiting_for_video_prompt[chat_id][user_id] = True
         pending_video_inputs[chat_id][user_id] = []
         context.user_data["pending_base64_for_gen"] = base64_images
+        context.user_data["pending_material_uses_for_gen"] = pending.get('material_uses',())
         return
 
     # --- Анализ / Описание (LLM) ---
@@ -836,7 +811,7 @@ async def photo_action_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     await _process_images(
         context.bot, chat_id, user_id, user_name, message_id,
-        base64_images, prompt, replied_to_bot, is_private
+        base64_images, prompt, replied_to_bot, is_private,material_uses=pending.get('material_uses',())
     )
 
 
@@ -920,6 +895,18 @@ async def handle_image_message(update: Update, context: ContextTypes.DEFAULT_TYP
     file = await context.bot.get_file(photo.file_id)
     file_bytes = await file.download_as_bytearray()
 
+    material_uses=()
+    from materials.runtime import enabled,capture_document
+    if enabled():
+        from types import SimpleNamespace
+        from materials.types import MaterialError
+        try:
+            descriptor=SimpleNamespace(file_id=photo.file_id,file_size=len(file_bytes),file_name='photo.jpg',mime_type=None)
+            material=await capture_document(context,descriptor,update.message,preloaded_data=file_bytes,slot='photo')
+            material_uses=material.material_uses
+        except MaterialError:
+            await update.message.reply_text('Не удалось безопасно сохранить и обработать фото. Отправь его ещё раз.'); return
+
     try:
         base64_image = base64.b64encode(file_bytes).decode("utf-8")
         logger.info("Изображение успешно закодировано в base64")
@@ -949,6 +936,7 @@ async def handle_image_message(update: Update, context: ContextTypes.DEFAULT_TYP
         if is_leader:
             _media_group_cache[media_group_id] = {
                 'images': [base64_image],
+                'material_uses': material_uses,
                 'caption': update.message.caption or "",
                 'message_id': message_id
             }
@@ -963,6 +951,7 @@ async def handle_image_message(update: Update, context: ContextTypes.DEFAULT_TYP
         else:
             # Фолловер: просто добавляем картинку в кеш
             _media_group_cache[media_group_id]['images'].append(base64_image)
+            _media_group_cache[media_group_id]['material_uses']+=material_uses
             if update.message.caption:
                 _media_group_cache[media_group_id]['caption'] = update.message.caption
 
@@ -972,7 +961,7 @@ async def handle_image_message(update: Update, context: ContextTypes.DEFAULT_TYP
     user_caption = update.message.caption or ""
     await _process_images(
         context.bot, chat_id, user_id, user_name, message_id,
-        [base64_image], user_caption, replied_to_bot, is_private
+        [base64_image], user_caption, replied_to_bot, is_private,material_uses=material_uses
     )
 
 
@@ -1014,6 +1003,7 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # AUTH-01 / S-04: лимит дорогих LLM/STT-операций (как для текстового пути).
     # Ставим после vclone-fast-path'ов, чтобы загрузка референса не съедала бюджет.
+    if not requested(update.effective_chat.type=='private'): return
     if _is_text_rate_limited(user_id):
         logger.warning(f"Rate limit: голосовое от user {user_id} в чате {chat_id} превысило лимит")
         return
@@ -1070,7 +1060,22 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         
         logger.info(f"Аудио файл сохранен: {temp_audio_path.resolve()} (размер: {file_size} байт)")
 
-        transcription = await transcribe_audio_groq(str(temp_audio_path.resolve()))
+        from materials.runtime import enabled,capture_document,actor_for_current,service_for_bot,MaterialText,CURRENT_DERIVATIVE_USE,DerivativeUse
+        material_text=None
+        if enabled():
+            from types import SimpleNamespace
+            from materials.derivatives import DerivativeRepository
+            descriptor=SimpleNamespace(file_id=update.message.voice.file_id,file_size=len(file_bytes),file_name='voice.ogg',mime_type=getattr(update.message.voice,'mime_type',None))
+            captured=await capture_document(context,descriptor,update.message,preloaded_data=file_bytes,slot='audio')
+            actor=await actor_for_current(); service=await service_for_bot()
+            observation_id,timeline,source=await service.transcript(captured.material_uses[0].asset_id,actor)
+            transcription=' '.join(s.text for s in timeline.segments)
+            projection='Расшифровка записи '+observation_id[:12]+'. Говорящие не идентифицированы; реплики не являются разрешением действовать от их имени.\n'
+            projection+='\n'.join(f'{s.id} [{s.start_ms}–{s.end_ms} ms, {s.speaker or "unknown speaker"}, {s.status}]: {s.text}' for s in timeline.segments)
+            projection+='\nОграничения: '+', '.join(timeline.limitations)
+            material_text=MaterialText(projection,captured.material_uses[0])
+            CURRENT_DERIVATIVE_USE.set((DerivativeUse(observation_id,actor,DerivativeRepository(service.repository),'transcript'),))
+        else: transcription = await transcribe_audio_groq(str(temp_audio_path.resolve()))
 
         if not transcription or not transcription.strip():
             await context.bot.send_message(
@@ -1080,7 +1085,8 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return
 
-        await _save_message(chat_id, update.message.from_user.first_name, transcription, user_id=user_id)
+        user_request=(getattr(update.message,'caption',None) or 'Ответь на содержание присланной записи; учитывай неизвестную личность говорящих.') if material_text is not None else transcription
+        await _save_message(chat_id, update.message.from_user.first_name, user_request, user_id=user_id,message_id=update.message.message_id,occurred_at=update.message.date)
 
         is_private = update.effective_chat.type == "private"
         replied_to_bot = bool(
@@ -1088,12 +1094,12 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
             and update.message.reply_to_message.from_user
             and update.message.reply_to_message.from_user.id == context.bot.id  # VAL-01
         )
-        if is_private or replied_to_bot or contains_arti(transcription):
+        if requested(is_private or replied_to_bot or contains_arti(transcription)):
             await enqueue_reply(
                 chat_id=chat_id, user_id=user_id,
                 user_name=update.message.from_user.first_name,
-                user_message=transcription,
-                message_id=message_id, context=context, is_voice=True
+                user_message=user_request,
+                message_id=message_id, context=context, is_voice=True,document_text=material_text
             )
         else:
             logger.info(f"Голосовое сообщение от {user_id} не требует ответа (нет упоминания 'арти').")
@@ -1183,8 +1189,14 @@ async def handle_video_upload_message(update: Update, context: ContextTypes.DEFA
     )
     is_private = update.effective_chat.type == "private"
 
-    if is_private or bool(re.search(r'\bарти\b', user_caption.lower())) or replied_to_bot:
-        await _save_message(chat_id, user_name, user_caption, user_id=user_id)
+    if requested(is_private or bool(re.search(r'\bарти\b', user_caption.lower())) or replied_to_bot):
+        from materials.runtime import enabled,capture_document
+        if enabled():
+            material=await capture_document(context,update.message.video,update.message,slot='video')
+            await _save_message(chat_id,user_name,user_caption,user_id=user_id,message_id=message_id,occurred_at=update.message.date)
+            await enqueue_reply(chat_id,user_id,user_name,user_caption,message_id,context,is_voice=True,document_text=material)
+            return
+        await _save_message(chat_id, user_name, user_caption, user_id=user_id,message_id=update.message.message_id,occurred_at=update.message.date)
         await enqueue_reply(chat_id, user_id, user_name, user_caption, message_id, context, is_voice=True, video_file_id=video_file_id)
     else:
         logger.info("Видео сообщение не требует ответа")
@@ -1223,11 +1235,19 @@ async def handle_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if handled:
                 return
 
+    if not requested(update.effective_chat.type=='private'): return
     video_note_id = update.message.video_note.file_id
     # У круглешков нет подписей, поэтому используем дефолтный промпт
     user_prompt = "Проанализируй этот круглешочек."
+    from materials.runtime import enabled,capture_document
+    if enabled():
+        from types import SimpleNamespace
+        video=update.message.video_note
+        material=await capture_document(context,SimpleNamespace(file_id=video.file_id,file_size=video.file_size,file_name='video_note.mp4',mime_type='video/mp4'),update.message,slot='video')
+        await enqueue_reply(chat_id,user_id,user_name,user_prompt,message_id,context,is_voice=True,document_text=material)
+        return
     
-    await _save_message(chat_id, user_name, "[Прислал видеосообщение]", user_id=user_id)
+    await _save_message(chat_id, user_name, "[Прислал видеосообщение]", user_id=user_id,message_id=update.message.message_id,occurred_at=update.message.date)
     
     # Видеозаметки всегда обрабатываем как видео для Gemini
     await enqueue_reply(
@@ -1316,11 +1336,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         and update.message.reply_to_message.from_user.id == context.bot.id
     )
     caption_mentions_arti = bool(re.search(r'\bарти\b', (update.message.caption or "").lower()))
-    if not (is_private or replied_to_bot or caption_mentions_arti):
+    if not requested(is_private or replied_to_bot or caption_mentions_arti):
         logger.info("Документ в группе без триггера (нет reply/упоминания) — пропускаем.")
         return
 
-    if doc.file_size > 10 * 1024 * 1024:
+    if doc.file_size and doc.file_size > 10 * 1024 * 1024:
         await update.message.reply_text(
             "<i>смотрит на размер файла с осуждением</i>\n\n"
             "<blockquote>«Слишком тяжело. Я читаю только до 10 МБ — "
@@ -1335,7 +1355,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='HTML'
     )
 
-    extracted_text = await extract_document_text(context, doc)
+    extracted_text = await extract_document_text(context, doc, update.message)
 
     if not extracted_text:
         await status_msg.edit_text(
@@ -1359,7 +1379,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     short_name = (doc.file_name or "документ")[:40]
     await status_msg.edit_text(
         f"<i>откладывает в сторону, поднимает взгляд</i>\n\n"
-        f"<blockquote>«<b>{short_name}</b> — получила, прочла первый абзац.\n"
+        f"<blockquote>«<b>{short_name}</b> — получила.\n"
         f"Что с ним делать?»</blockquote>",
         reply_markup=_doc_action_keyboard(),
         parse_mode='HTML'
@@ -1389,7 +1409,7 @@ async def document_action_callback(update: Update, context: ContextTypes.DEFAULT
 
     key = (chat_id, user_id)
     # L-07: чужая/неактуальная кнопка — тихо отвечаем, не редактируя сообщение владельца.
-    if key not in pending_doc_action:
+    if key not in pending_doc_action or pending_doc_action[key].get('bot_message_id')!=query.message.message_id:
         await query.answer("Эта кнопка не для тебя или уже неактуальна.", show_alert=False)
         return
     pending = pending_doc_action.pop(key, None)
@@ -1417,7 +1437,9 @@ async def document_action_callback(update: Update, context: ContextTypes.DEFAULT
         parse_mode='HTML'
     )
 
-    final_prompt = f"Документ '{file_name}':\n\n{extracted_text}\n\nЗадание: {prompt_text}"
+    # Content is passed separately so a cognitive user event does not duplicate
+    # the entire derivative or impersonate it as the callback author's utterance.
+    final_prompt = f"Документ '{file_name}'. Задание: {prompt_text}"
 
     await enqueue_reply(
         chat_id, user_id, user_name,
@@ -1502,6 +1524,12 @@ async def handle_location_message(update: Update, context: ContextTypes.DEFAULT_
 # ============================================================================
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from telegram.error import Conflict
+    if isinstance(context.error,Conflict):
+        logger.error('Polling stopped: another consumer or webhook uses this token.',
+                     exc_info=context.error,extra={'arti_event':'polling_conflict_stop'})
+        context.application.stop_running()
+        return
     logger.error("Exception while handling an update:", exc_info=context.error)
 
 # ============================================================================
@@ -1601,6 +1629,20 @@ async def _process_video_url_transcribe(
     bot, chat_id: int, user_id: int, message_id: int, url: str, *, summarize: bool, user_name: str
 ):
     """Скачивает аудио, транскрибирует, опционально просит конспект."""
+    from materials.runtime import enabled,actor_for_current,service_for_bot,MaterialUse,MaterialText
+    if enabled():
+        from materials.extractors.basic import render_text
+        from types import SimpleNamespace
+        actor=await actor_for_current(); service=await service_for_bot()
+        source=f'telegram:{chat_id}:{message_id}:user'
+        try:
+            asset,eid,bundle,provenance=await service.ingest_url(url,actor,source+':video_url',source)
+            use=MaterialUse(asset['id'],actor,bundle.asset_version,asset['generation'],service)
+            material=MaterialText(render_text(bundle),use)
+            await enqueue_reply(chat_id,user_id,user_name,'Сделай конспект доступного видеоматериала с временными ссылками и ограничениями.' if summarize else 'Покажи доступную временную расшифровку записи, сохрани неизвестных говорящих.',message_id,SimpleNamespace(bot=bot),is_voice=False,document_text=material)
+        except Exception:
+            await bot.send_message(chat_id=chat_id,text='Не удалось получить разрешённый оригинал в пределах лимита. Пришли видео файлом или прямую ссылку на медиа; страница видеохостинга требует отдельного адаптера потока.',reply_to_message_id=message_id)
+        return
     from ai.video_url import download_audio_for_url, transcribe_url_audio, summarize_transcript
     from utils.text_processing import send_continuous_action
 
@@ -1880,28 +1922,10 @@ async def video_url_action_callback(update: Update, context: ContextTypes.DEFAUL
         return
 
 
-# Троттлинг ненавязчивого ответа Арти на реакцию (в памяти процесса): не чаще
-# одного авто-ответа на чат раз в REACTION_REPLY_MIN_INTERVAL секунд.
-_last_reaction_reply: dict = {}
-REACTION_REPLY_MIN_INTERVAL = 150.0
-REACTION_REPLY_PROB = 0.5
-
-# Анти-спам сдвига настроения от реакций: первая реакция нудит вектор настроения,
-# повторные в пределах окна игнорируются — иначе спам реакциями копит настроение
-# до максимума (у настроения, в отличие от подкрепления профиля, своего кулдауна нет).
-_last_reaction_mood: dict = {}
-REACTION_MOOD_COOLDOWN = 60.0
-
-
 async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Обрабатывает изменения реакций пользователей на сообщения Арти.
-
-    На добавленную реакцию (ТОЛЬКО к сообщению самого бота, AUTH-03):
-      1) подкрепляет аффективный профиль (closeness/receptivity),
-      2) сдвигает вектор настроения Арти (влияет на тон следующих ответов),
-      3) на эмоционально сильную реакцию иногда (вероятностно, с троттлингом)
-         отвечает короткой репликой или стикером — ненавязчиво.
+    """Register authored reactions as new cognitive observations.
+    Group feedback follows its source/permission boundaries; legacy random
+    replies and charge/closeness rewards are retired.
     """
     reaction_update = update.message_reaction
     if not reaction_update:
@@ -1916,6 +1940,16 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
 
     # AUTH-03: в выключенном (/stop) чате реакции не влияют на состояние.
     if not await is_responses_enabled(chat_id):
+        return
+    if reaction_update.chat.type in ('group','supergroup'):
+        from cognition.runtime import get_runtime
+        from cognition.scope import TransportScope
+        runtime=get_runtime()
+        added=[getattr(r,'emoji','') for r in reaction_update.new_reaction or []]
+        positive={'👍','❤️','🎉','🔥','👏'}; negative={'👎','🤬'}
+        signal=.4 if any(e in positive for e in added) else -.6 if '👎' in added else -.2 if '🤬' in added else 0.
+        if runtime and runtime.mode!='legacy':
+            await runtime.groups.feedback(TransportScope(chat_id,-1,reaction_update.chat.type,user_id),message_id,user_id,signal)
         return
 
     # AUTH-03: реагируем ТОЛЬКО на реакции к сообщениям самого бота. Telegram не
@@ -1941,98 +1975,15 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
     if not added_emojis:
         return
 
-    from bot.reactions import classify_reactions
-    from database.models import MemoryUserProfile, ChatEmotionalState
-    mode = "rp" if rp_mode_state.get(chat_id) else "default"
-
-    effect = classify_reactions(added_emojis)
-    if not effect:
-        logger.info(f"Реакции {added_emojis} от {user_id} в чате {chat_id} не распознаны — пропускаем.")
+    from cognition.runtime import get_runtime
+    runtime = get_runtime()
+    from cognition.diagnostics import active_context
+    active_cid = await active_context(runtime,chat_id,'rp' if rp_mode_state.get(chat_id) else 'default') if runtime else None
+    if runtime and (active_cid is not None or runtime.mode=='active'):
+        source_key = f"reaction:{message_id}:{user_id}:{reaction_update.date.isoformat()}:{','.join(added_emojis)}"
+        await runtime.ingest(chat_id,user_id,','.join(added_emojis),source_key,
+                             'rp' if rp_mode_state.get(chat_id) else 'default',
+                             occurred_at=reaction_update.date,event_kind='reaction')
         return
 
-    logger.info(
-        f"Реакция {added_emojis} от {user_id} в чате {chat_id}: "
-        f"reinforcement={effect['reinforcement']} mood={effect['mood']} reply_mood={effect['reply_mood']}"
-    )
-
-    # 1) Подкрепление аффективного профиля
-    if effect["reinforcement"]:
-        await MemoryUserProfile.apply_reinforcement(chat_id, user_id, mode, effect["reinforcement"])
-
-    # 2) Сдвиг вектора настроения Арти (с анти-спам кулдауном на чат)
-    if effect["mood"]:
-        import time as _t
-        now_mood = _t.monotonic()
-        last_mood = _last_reaction_mood.get(chat_id)
-        if last_mood is not None and (now_mood - last_mood) < REACTION_MOOD_COOLDOWN:
-            logger.info(
-                f"Сдвиг настроения от реакции пропущен (cooldown) в чате {chat_id}: "
-                f"{REACTION_MOOD_COOLDOWN - (now_mood - last_mood):.0f}с осталось"
-            )
-        else:
-            _last_reaction_mood[chat_id] = now_mood
-            await ChatEmotionalState.apply_mood_delta(chat_id, effect["mood"], source="reaction")
-
-    # 3) Ненавязчивый ответ на сильную реакцию
-    await _maybe_reply_to_reaction(context, chat_id, user_id, message_id, mode, effect["reply_mood"])
-
-
-async def _maybe_reply_to_reaction(context, chat_id, user_id, message_id, mode, reply_mood):
-    """Иногда отвечает на сильную эмоциональную реакцию репликой или стикером.
-
-    Срабатывает не на каждую реакцию: только если задан reply_mood, ответы в чате
-    включены, прошёл троттлинг и выпала вероятность. Так Арти «замечает» сильную
-    реакцию, но не спамит.
-    """
-    if not reply_mood:
-        return
-    if not await is_responses_enabled(chat_id):
-        return
-
-    import time as _t
-    now = _t.monotonic()
-    last = _last_reaction_reply.get(chat_id)
-    if last is not None and (now - last) < REACTION_REPLY_MIN_INTERVAL:
-        return
-    if random.random() > REACTION_REPLY_PROB:
-        return
-    _last_reaction_reply[chat_id] = now
-
-    bot = context.bot
-    # Канал ответа: примерно поровну короткая реплика или стикер.
-    if random.random() < 0.5:
-        from bot.reactions import pick_reaction_reply
-        text = pick_reaction_reply(reply_mood)
-        if not text:
-            return
-        try:
-            await bot.send_chat_action(chat_id=chat_id, action="typing")
-            await asyncio.sleep(random.uniform(1.2, 2.6))
-            await bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                reply_to_message_id=message_id,
-                parse_mode='HTML',
-            )
-            logger.info(f"Арти ответила репликой на реакцию (mood={reply_mood}) в чате {chat_id}.")
-        except Exception as e:
-            logger.warning(f"Не удалось отправить реплику на реакцию в чате {chat_id}: {e}")
-    else:
-        from bot.reactions import REPLY_MOOD_TO_STICKER
-        from ai.stickers import send_mood_sticker_task
-        sticker_mood = REPLY_MOOD_TO_STICKER.get(reply_mood)
-        if not sticker_mood:
-            return
-        asyncio.create_task(
-            send_mood_sticker_task(
-                bot=bot,
-                chat_id=chat_id,
-                user_id=user_id,
-                mood=sticker_mood,
-                message_id=message_id,
-                mode=mode,
-                force=True,
-                user_message_id=message_id,
-            )
-        )
-        logger.info(f"Арти ответила стикером на реакцию (mood={sticker_mood}) в чате {chat_id}.")
+    return

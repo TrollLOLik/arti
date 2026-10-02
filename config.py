@@ -4,6 +4,7 @@
 import os
 import logging
 from collections import defaultdict
+from cognition.scope import ScopedDict, ScopedDefaultDict
 from datetime import timedelta
 from dotenv import load_dotenv
 
@@ -99,7 +100,7 @@ CATBOX_USERHASH = os.getenv("CATBOX_USERHASH", "").strip()
 
 # OmniRoute (OpenAI-совместимый прокси для non-Gemini моделей). Адрес выносим в env
 # (CONF-02), чтобы не хардкодить localhost-эндпоинт в нескольких местах кода.
-OMNIROUTE_BASE_URL = os.getenv("OMNIROUTE_BASE_URL" "")
+OMNIROUTE_BASE_URL = os.getenv("OMNIROUTE_BASE_URL", "")
 
 # ============================================================================
 # ИСТОРИЯ ЧАТОВ
@@ -139,24 +140,24 @@ MEDIA_RATE_WINDOW = int(os.getenv("MEDIA_RATE_WINDOW", "300"))
 # /voice_save. По умолчанию выкл — включать только если подняты TTS-бэкенды
 # (VoxCPM Demo/локальный/Fish). Настраивается через .env: TTS_ENABLED=True.
 TTS_ENABLED = os.getenv("TTS_ENABLED", "False").strip().lower() == "true"
-MEMORY_CONSOLIDATION_AUTO = True
+MEMORY_CONSOLIDATION_AUTO = False  # Retired engine; cognition owns memory.
 # Применять план консолидации (объединение дублей фактов + перенос знаний в Wiki),
 # а не только строить его и выбрасывать. Раньше было False — авто-консолидация
 # жгла LLM-вызов каждые MEMORY_CONSOLIDATION_INTERVAL фактов и отбрасывала результат.
-MEMORY_CONSOLIDATION_APPLY = True
+MEMORY_CONSOLIDATION_APPLY = False  # Retired engine; cognition owns memory.
 MEMORY_CONSOLIDATION_INTERVAL = 50
-MEMORY_PROFILES_ENABLED = True
-MEMORY_TIMELINE_ENABLED = True
+MEMORY_PROFILES_ENABLED = False  # Retired engine; cognition owns memory.
+MEMORY_TIMELINE_ENABLED = False  # Retired engine; cognition owns memory.
 # Авто-перестроение смыслового профиля пользователя в живом диалоге (а не только
 # вручную через maintain_memory.py). Троттлится интервалом ниже, чтобы не дёргать LLM
 # на каждом сообщении: первый раз профиль строится сразу, как появились факты.
-MEMORY_PROFILE_AUTO = True
+MEMORY_PROFILE_AUTO = False  # Retired engine; cognition owns memory.
 MEMORY_PROFILE_MIN_INTERVAL_SEC = 1800
 # Применять построение сжатой хронологии (memory_timeline) автоматически в живом
 # диалоге. Раньше флаг был объявлен, но нигде не использовался, а запись в таблицу
 # шла ТОЛЬКО вручную через `maintain_memory.py --timeline --apply` → таблица всегда
 # оставалась пустой. Теперь build_timeline_events вызывается из remember_exchange.
-MEMORY_TIMELINE_APPLY = True
+MEMORY_TIMELINE_APPLY = False  # Retired engine; cognition owns memory.
 MEMORY_TIMELINE_MIN_MESSAGES = 30
 # Как часто (раз в N экзченджей на чат) пытаться построить timeline. Сама попытка
 # дёшева: build_timeline_events само пропускает работу, пока новых сообщений
@@ -186,37 +187,37 @@ if not PRIVILEGED_USER_IDS:
 # ============================================================================
 
 # Состояния для пошагового диалога /music
-music_flow_state = defaultdict(lambda: defaultdict(lambda: None))
+music_flow_state = ScopedDefaultDict(lambda: defaultdict(lambda: None))
 SKIP_WORDS = {"скип", "skip", "-", "пропустить", "скипнуть"}
 
 # Ожидание промпта для /video
-waiting_for_video_prompt = defaultdict(lambda: defaultdict(bool))
-pending_video_inputs = defaultdict(lambda: defaultdict(list))
+waiting_for_video_prompt = ScopedDefaultDict(lambda: defaultdict(bool))
+pending_video_inputs = ScopedDefaultDict(lambda: defaultdict(list))
 
 # Ожидание промпта для /image (in-memory fallback)
-waiting_for_image_prompt = defaultdict(lambda: defaultdict(bool))
-pending_image_inputs = defaultdict(lambda: defaultdict(list))
+waiting_for_image_prompt = ScopedDefaultDict(lambda: defaultdict(bool))
+pending_image_inputs = ScopedDefaultDict(lambda: defaultdict(list))
 
 # Состояние пошагового диалога /dub: {chat_id: {user_id: {...}}}
-dub_flow_state = defaultdict(lambda: defaultdict(lambda: None))
+dub_flow_state = ScopedDefaultDict(lambda: defaultdict(lambda: None))
 
 # Состояние пошагового диалога /vclone (alias /steal): {chat_id: {user_id: {...}}}
-vclone_flow_state = defaultdict(lambda: defaultdict(lambda: None))
-vclone_save_flow_state = defaultdict(lambda: defaultdict(lambda: None))
+vclone_flow_state = ScopedDefaultDict(lambda: defaultdict(lambda: None))
+vclone_save_flow_state = ScopedDefaultDict(lambda: defaultdict(lambda: None))
 
 # Pending действия по URL-видео: {(chat_id, user_id, message_id): {"url": str, "bot_message_id": int}}
-pending_video_url_action = {}
+pending_video_url_action = ScopedDict()
 
 # Ожидание действия с фото (без caption)
 # {(chat_id, user_id): {"images": [base64...], "message_id": int, "replied_to_bot": bool, "is_private": bool, "bot_message_id": int}}
-pending_photo_action = {}
+pending_photo_action = ScopedDict()
 
 # Ожидание действия с документом
 # {(chat_id, user_id): {"text": str, "file_name": str, "message_id": int, "bot_message_id": int}}
-pending_doc_action = {}
+pending_doc_action = ScopedDict()
 
 # Ожидание геолокации для возобновления запроса
-pending_map_requests = {}
+pending_map_requests = ScopedDict()
 
 # L-17: user_game_state удалён — нигде не использовался.
 
@@ -224,7 +225,7 @@ pending_map_requests = {}
 DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
 
 # Состояние ожидания поискового запроса модели (для админов)
-waiting_for_model_search = defaultdict(lambda: defaultdict(bool))
+waiting_for_model_search = ScopedDefaultDict(lambda: defaultdict(bool))
 
 
 # ============================================================================
@@ -287,7 +288,7 @@ except Exception as e:
     RP_SYSTEM_PROMPT = ""
 
 # RP-режим: {chat_id: True/False}
-rp_mode_state = {}
+rp_mode_state = ScopedDict()
 
 # ============================================================================
 # СИСТЕМНЫЙ ПРОМПТ АРТИ

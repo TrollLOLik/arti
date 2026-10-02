@@ -1,0 +1,34 @@
+{
+  "contract": "audio-eval-1",
+  "cases": [
+    {
+      "case": "decoder",
+      "passed": true
+    },
+    {
+      "case": "noisy_decoder",
+      "passed": true
+    },
+    {
+      "case": "native_provider_timestamp_fixture",
+      "passed": true
+    },
+    {
+      "case": "untimed_refusal",
+      "passed": true
+    },
+    {
+      "case": "correction_alignment",
+      "passed": true
+    }
+  ],
+  "passed": 5,
+  "total": 5,
+  "elapsed_seconds": 0.901404399999592,
+  "provider_calls": 0,
+  "telegram_calls": 0,
+  "limitations": [
+    "Synthetic tones exercise decoder and energy analysis; no speech-recognition accuracy measurement.",
+    "Provider payload fixtures exercise native timestamps and uncertainty. Independent real ASR/diarization corpus remains A24."
+  ]
+}

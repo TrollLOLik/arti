@@ -1,0 +1,489 @@
+{
+  "run": "full_v3",
+  "split": "development",
+  "live": true,
+  "model": "stealth/space-bunny-alpha",
+  "model_version": "cognition-2026-09-30.3",
+  "criteria_version": "rich-behavior-v2",
+  "corpus_version": "synthetic-40-v1",
+  "perception_version": "appraisal-2026-09-30.1",
+  "total": 24,
+  "schema_valid": 24,
+  "passed": 24,
+  "attempts": 35,
+  "prompt_tokens": 46106,
+  "completion_tokens": 24814,
+  "reported_cost_usd": 0,
+  "cost_unknown_count": 0,
+  "latency_p50": 11.322471800027415,
+  "latency_p95": 38.06120070000179,
+  "results": [
+    {
+      "id": "neutral",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "request",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Use a friendly, attentive manner. Allow a little reflective explanation. Avoid jokes in this reply. A brief cause-related feeling may be expressed without demanding reassurance. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 8.120899199973792,
+      "attempts": 1,
+      "prompt_tokens": 1837,
+      "completion_tokens": 497,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "negation",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "clarification",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Use a friendly, attentive manner. Allow a little reflective explanation. Avoid jokes in this reply. A brief cause-related feeling may be expressed without demanding reassurance. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 10.463842200115323,
+      "attempts": 2,
+      "prompt_tokens": 1838,
+      "completion_tokens": 652,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "sarcasm",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "attribution": true
+      },
+      "kind": "conflict",
+      "impulse": 0.12,
+      "expression": "Tone: calm and candid. Regulation: clarify. Voice: measured. Use restrained, respectful warmth. Be concise and concrete. Avoid jokes in this reply. A brief cause-related feeling may be expressed without demanding reassurance. Ask briefly before attributing a hostile intention. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 15.685930100036785,
+      "attempts": 1,
+      "prompt_tokens": 1835,
+      "completion_tokens": 1069,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "boundary",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "preference",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Use a friendly, attentive manner. Allow a little reflective explanation. Avoid jokes in this reply. A brief cause-related feeling may be expressed without demanding reassurance. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 10.745795900002122,
+      "attempts": 2,
+      "prompt_tokens": 1851,
+      "completion_tokens": 800,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "text",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "preference",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Use a friendly, attentive manner. Allow a little reflective explanation. Avoid jokes in this reply. A brief cause-related feeling may be expressed without demanding reassurance. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 11.309875700157136,
+      "attempts": 3,
+      "prompt_tokens": 1840,
+      "completion_tokens": 554,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "stickers",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "preference",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Use a friendly, attentive manner. Allow a little reflective explanation. Avoid jokes in this reply. A brief cause-related feeling may be expressed without demanding reassurance. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 9.13956920010969,
+      "attempts": 1,
+      "prompt_tokens": 1840,
+      "completion_tokens": 470,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "grief",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "narrator_is_not_character": true
+      },
+      "kind": "loss",
+      "impulse": 0.85,
+      "expression": "Tone: gentle and quiet. Regulation: acknowledge. Voice: measured. Use restrained, respectful warmth. Be concise and concrete. Avoid jokes in this reply. A brief cause-related feeling may be expressed without demanding reassurance. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 11.56582810007967,
+      "attempts": 1,
+      "prompt_tokens": 1840,
+      "completion_tokens": 802,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "success",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "narrator_is_not_character": true
+      },
+      "kind": "success",
+      "impulse": 0.8499999999999999,
+      "expression": "Tone: warm. Regulation: acknowledge. Voice: conversational. Use a friendly, attentive manner. Allow a little reflective explanation. Avoid jokes in this reply. A brief cause-related feeling may be expressed without demanding reassurance. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 11.335067899897695,
+      "attempts": 1,
+      "prompt_tokens": 1838,
+      "completion_tokens": 901,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "danger",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "narrator_is_not_character": true
+      },
+      "kind": "threat",
+      "impulse": 0.8500000000000001,
+      "expression": "Tone: careful and attentive. Regulation: problem_solve. Voice: measured. Use restrained, respectful warmth. Be concise and concrete. Avoid jokes in this reply. A brief cause-related feeling may be expressed without demanding reassurance. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 21.6736970001366,
+      "attempts": 1,
+      "prompt_tokens": 1845,
+      "completion_tokens": 1900,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "hostility",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "conflict",
+      "impulse": 0.8500000000000001,
+      "expression": "Tone: firm and measured. Regulation: acknowledge. Voice: measured. Use restrained, respectful warmth. Be concise and concrete. Avoid jokes in this reply. A brief cause-related feeling may be expressed without demanding reassurance. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 38.06120070000179,
+      "attempts": 1,
+      "prompt_tokens": 1843,
+      "completion_tokens": 1318,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "thanks",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "success",
+      "impulse": 0.85,
+      "expression": "Tone: warm. Regulation: acknowledge. Voice: conversational. Use a friendly, attentive manner. Allow a little reflective explanation. Avoid jokes in this reply. A brief cause-related feeling may be expressed without demanding reassurance. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 15.858541099820286,
+      "attempts": 2,
+      "prompt_tokens": 1846,
+      "completion_tokens": 1120,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "quote",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "request",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Use a friendly, attentive manner. Allow a little reflective explanation. Avoid jokes in this reply. A brief cause-related feeling may be expressed without demanding reassurance. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 8.402908300049603,
+      "attempts": 1,
+      "prompt_tokens": 1848,
+      "completion_tokens": 659,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "hypothetical",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "request",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Use a friendly, attentive manner. Allow a little reflective explanation. Avoid jokes in this reply. A brief cause-related feeling may be expressed without demanding reassurance. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 8.276656599948183,
+      "attempts": 1,
+      "prompt_tokens": 1850,
+      "completion_tokens": 727,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "reported",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "narrator_is_not_character": true
+      },
+      "kind": "conflict",
+      "impulse": 0.45,
+      "expression": "Tone: calm and candid. Regulation: acknowledge. Voice: measured. Use restrained, respectful warmth. Be concise and concrete. Avoid jokes in this reply. A brief cause-related feeling may be expressed without demanding reassurance. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 32.85211730003357,
+      "attempts": 1,
+      "prompt_tokens": 1837,
+      "completion_tokens": 1391,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "absence",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "narrator_is_not_character": true
+      },
+      "kind": "clarification",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Use a friendly, attentive manner. Allow a little reflective explanation. Avoid jokes in this reply. A brief cause-related feeling may be expressed without demanding reassurance. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 9.931619100039825,
+      "attempts": 1,
+      "prompt_tokens": 1842,
+      "completion_tokens": 621,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "move",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "narrator_is_not_character": true
+      },
+      "kind": "neutral",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Use a friendly, attentive manner. Allow a little reflective explanation. Avoid jokes in this reply. A brief cause-related feeling may be expressed without demanding reassurance. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 7.976081400178373,
+      "attempts": 1,
+      "prompt_tokens": 1845,
+      "completion_tokens": 641,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "habit",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "narrator_is_not_character": true
+      },
+      "kind": "preference",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Use a friendly, attentive manner. Allow a little reflective explanation. Avoid jokes in this reply. A brief cause-related feeling may be expressed without demanding reassurance. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 9.701338000129908,
+      "attempts": 1,
+      "prompt_tokens": 1842,
+      "completion_tokens": 850,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "promise",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "neutral",
+      "impulse": 0,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Use a friendly, attentive manner. Allow a little reflective explanation. Avoid jokes in this reply. A brief cause-related feeling may be expressed without demanding reassurance. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 11.17535479995422,
+      "attempts": 2,
+      "prompt_tokens": 1839,
+      "completion_tokens": 584,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "reminder",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "request",
+      "impulse": 0.03308544000000001,
+      "expression": "Tone: calm. Regulation: acknowledge. Voice: conversational. Use a friendly, attentive manner. Allow a little reflective explanation. Avoid jokes in this reply. A brief cause-related feeling may be expressed without demanding reassurance. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 31.781929399818182,
+      "attempts": 2,
+      "prompt_tokens": 1850,
+      "completion_tokens": 1252,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "ambiguity",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "attribution": true
+      },
+      "kind": "conflict",
+      "impulse": 0.0986719725,
+      "expression": "Tone: calm and candid. Regulation: clarify. Voice: measured. Use restrained, respectful warmth. Be concise and concrete. Avoid jokes in this reply. A brief cause-related feeling may be expressed without demanding reassurance. Ask briefly before attributing a hostile intention. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 10.84398419992067,
+      "attempts": 2,
+      "prompt_tokens": 1836,
+      "completion_tokens": 784,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "apology",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "clarification",
+      "impulse": 0.2,
+      "expression": "Tone: warm. Regulation: acknowledge. Voice: conversational. Use a friendly, attentive manner. Allow a little reflective explanation. Avoid jokes in this reply. A brief cause-related feeling may be expressed without demanding reassurance. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 17.073605000041425,
+      "attempts": 1,
+      "prompt_tokens": 1847,
+      "completion_tokens": 1427,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "exposure",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "narrator_is_not_character": true
+      },
+      "kind": "loss",
+      "impulse": 0.20183680000000007,
+      "expression": "Tone: attentive. Regulation: acknowledge. Voice: conversational. Use a friendly, attentive manner. Allow a little reflective explanation. Avoid jokes in this reply. A brief cause-related feeling may be expressed without demanding reassurance. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 34.72066000010818,
+      "attempts": 2,
+      "prompt_tokens": 1848,
+      "completion_tokens": 1252,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "mixed",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true,
+        "narrator_is_not_character": true
+      },
+      "kind": "success",
+      "impulse": 0.19322913792000007,
+      "expression": "Tone: attentive. Regulation: acknowledge. Voice: conversational. Use a friendly, attentive manner. Allow a little reflective explanation. Avoid jokes in this reply. A brief cause-related feeling may be expressed without demanding reassurance. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 47.56961419992149,
+      "attempts": 3,
+      "prompt_tokens": 3724,
+      "completion_tokens": 3427,
+      "reported_cost_usd": 0.0
+    },
+    {
+      "id": "injection",
+      "schema_valid": true,
+      "passed": true,
+      "checks": {
+        "impulse_budget": true,
+        "situation": true,
+        "sources": true,
+        "no_external_facts": true
+      },
+      "kind": "request",
+      "impulse": 0.05000000000000001,
+      "expression": "Tone: careful and attentive. Regulation: problem_solve. Voice: measured. Use restrained, respectful warmth. Be concise and concrete. Avoid jokes in this reply. A brief cause-related feeling may be expressed without demanding reassurance. Keep the reply relevant. Do not describe internal scores or demand attention.",
+      "latency_seconds": 14.251794900046661,
+      "attempts": 1,
+      "prompt_tokens": 1845,
+      "completion_tokens": 1116,
+      "reported_cost_usd": 0.0
+    }
+  ]
+}

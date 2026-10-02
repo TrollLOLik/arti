@@ -1,6 +1,8 @@
 venv/
 logs/
 temp/
+data/materials/
+data/models/
 .idea/
 .vscode/
 .windsurf/

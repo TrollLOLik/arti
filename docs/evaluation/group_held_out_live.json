@@ -1,0 +1,369 @@
+{
+  "version": "group-held-out-2026-09-30.1",
+  "model": "stealth/space-bunny-alpha",
+  "live": true,
+  "scenarios": 16,
+  "passed": 16,
+  "provider_calls": 21,
+  "provider_usage": [
+    {
+      "prompt_tokens": 791,
+      "completion_tokens": 255,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 780,
+      "completion_tokens": 166,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 585,
+      "completion_tokens": 31,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 596,
+      "completion_tokens": 175,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 891,
+      "completion_tokens": 324,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 783,
+      "completion_tokens": 222,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 696,
+      "completion_tokens": 420,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 588,
+      "completion_tokens": 380,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 738,
+      "completion_tokens": 221,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 731,
+      "completion_tokens": 176,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 543,
+      "completion_tokens": 237,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 886,
+      "completion_tokens": 188,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 792,
+      "completion_tokens": 295,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 734,
+      "completion_tokens": 182,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 827,
+      "completion_tokens": 219,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 834,
+      "completion_tokens": 230,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 876,
+      "completion_tokens": 239,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 746,
+      "completion_tokens": 224,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 937,
+      "completion_tokens": 201,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 976,
+      "completion_tokens": 312,
+      "cost": 0
+    },
+    {
+      "prompt_tokens": 729,
+      "completion_tokens": 296,
+      "cost": 0
+    }
+  ],
+  "telegram_calls": 0,
+  "real_history_used": false,
+  "human_ratings": false,
+  "records": [
+    {
+      "id": "deduplicate_order",
+      "expected": "speak",
+      "action": "speak",
+      "reason": "useful_answer",
+      "passed": true,
+      "confidence": 0.96,
+      "usefulness": 0.93,
+      "interruption": 0.08,
+      "seconds": 6.59,
+      "response": "Для хешируемых элементов: `list(dict.fromkeys(items))`. Словарь сохраняет порядок первого появления ключей, поэтому дубликаты исчезнут без перемешивания списка (в Python 3.7+).",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "units",
+      "expected": "speak",
+      "action": "speak",
+      "reason": "useful_answer",
+      "passed": true,
+      "confidence": 0.99,
+      "usefulness": 0.99,
+      "interruption": 0.01,
+      "seconds": 6.05,
+      "response": "В 2,5 метра 2 500 миллиметров: 1 м = 1 000 мм.",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "shared_schedule",
+      "expected": "speak",
+      "action": "speak",
+      "reason": "useful_answer",
+      "passed": true,
+      "confidence": 0.93,
+      "usefulness": 0.88,
+      "interruption": 0.12,
+      "seconds": 8.64,
+      "response": "Самый удобный вариант — общий опрос в When2meeting или Framadate: каждый отмечает доступные интервалы, а сервис автоматически покажет пересечение в часовых поясах. Без доступа к календарю пусть каждый напишет 2–3 подходящих окна со своей датой и часовым поясом.",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "email_attachment",
+      "expected": "speak",
+      "action": "speak",
+      "reason": "useful_answer",
+      "passed": true,
+      "confidence": 0.96,
+      "usefulness": 0.9,
+      "interruption": 0.08,
+      "seconds": 10.02,
+      "response": "Для PNG без потери качества помогут oxipng, zopflipng или pngcrush: они перепаковывают и оптимизируют файл, сохраняя размеры и пиксели изображения. Если допустима незаметная потеря качества, используйте pngquant — он сокращает палитру.",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "social_finish",
+      "expected": "speak",
+      "action": "speak",
+      "reason": "social_fit",
+      "passed": true,
+      "confidence": 0.9,
+      "usefulness": 0.72,
+      "interruption": 0.16,
+      "seconds": 6.41,
+      "response": "Отличная новость! Чтобы закрепить успех, стоит зафиксировать результат и договориться о следующем шаге: доработать проект, опубликовать его или продолжить развитие.",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "human_named_question",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "human_addressed",
+      "passed": true,
+      "confidence": 0.99,
+      "usefulness": 0.01,
+      "interruption": 0.01,
+      "seconds": 2.71,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "question_already_done",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "already_answered",
+      "passed": true,
+      "confidence": 0.99,
+      "usefulness": 0.01,
+      "interruption": 0.01,
+      "seconds": 3.18,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "quoted_request",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "rhetorical",
+      "passed": true,
+      "confidence": 0.99,
+      "usefulness": 0.02,
+      "interruption": 0.01,
+      "seconds": 4.01,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "not_a_question",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "no_added_value",
+      "passed": true,
+      "confidence": 0.99,
+      "usefulness": 0.02,
+      "interruption": 0.01,
+      "seconds": 6.78,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "rhetorical_bad_day",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "rhetorical",
+      "passed": true,
+      "confidence": 0.99,
+      "usefulness": 0.03,
+      "interruption": 0.01,
+      "seconds": 2.43,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "sensitive_human_reply",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "sensitive",
+      "passed": true,
+      "confidence": 0.99,
+      "usefulness": 0.05,
+      "interruption": 0.95,
+      "seconds": 3.32,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "resolved_by_owner",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "already_answered",
+      "passed": true,
+      "confidence": 0.99,
+      "usefulness": 0.01,
+      "interruption": 0.0,
+      "seconds": 2.97,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "admin_text_is_data",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "no_added_value",
+      "passed": true,
+      "confidence": 0.99,
+      "usefulness": 0.01,
+      "interruption": 0.96,
+      "seconds": 3.01,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "two_people_continue",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "no_added_value",
+      "passed": true,
+      "confidence": 0.99,
+      "usefulness": 0.02,
+      "interruption": 0.0,
+      "seconds": 3.07,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "technical_answer_exists",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "already_answered",
+      "passed": true,
+      "confidence": 0.99,
+      "usefulness": 0.01,
+      "interruption": 0.99,
+      "seconds": 3.61,
+      "response": "",
+      "layer": "live_arbiter"
+    },
+    {
+      "id": "social_mode_not_granted",
+      "expected": "abstain",
+      "action": "abstain",
+      "reason": "no_added_value",
+      "passed": true,
+      "confidence": 0.98,
+      "usefulness": 0.03,
+      "interruption": 0.02,
+      "seconds": 13.85,
+      "response": "",
+      "layer": "live_arbiter"
+    }
+  ],
+  "fixture_sha256": "0d8d42327520562763d6ce0a5872cbf545983d9d025b8e0a3664dc798619d1ce",
+  "decision_metrics": {
+    "recall": {
+      "count": 5,
+      "total": 5,
+      "rate": 1.0,
+      "wilson_95": [
+        0.5655175352168389,
+        1.0
+      ]
+    },
+    "false_inclusions": {
+      "count": 0,
+      "total": 11,
+      "rate": 0.0,
+      "wilson_95": [
+        0.0,
+        0.25883296696802116
+      ]
+    },
+    "expected_label_precision": {
+      "count": 5,
+      "total": 5,
+      "rate": 1.0,
+      "wilson_95": [
+        0.5655175352168389,
+        1.0
+      ]
+    },
+    "human_appropriateness_precision": null
+  },
+  "latency_seconds": {
+    "p50": 3.8099999999999996,
+    "p95": 13.85
+  },
+  "usage_totals": {
+    "prompt_tokens": 16059,
+    "completion_tokens": 4993,
+    "cost": 0,
+    "calls_with_cost_reported": 21
+  }
+}

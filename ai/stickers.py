@@ -13,7 +13,6 @@ from typing import Dict, List, Optional
 from telegram import Bot, ReactionTypeEmoji
 from config import ARTI_STICKER_SET, STICKERS_ENABLED
 from database.connection import get_db
-from database.models import ChatEmotionalState, MemoryUserProfile
 
 logger = logging.getLogger(__name__)
 emotional_logger = logging.getLogger("emotional.state")
@@ -265,121 +264,28 @@ async def _classify_via_gemini_vision(bot: Bot, pack_name: str, stickers: List) 
 
 
 async def send_mood_sticker_task(bot: Bot, chat_id: int, user_id: int, mood: str, message_id: int, mode: str = "default", force: bool = False, user_message_id: Optional[int] = None):
-    """
-    Фоновая асинхронная задача: рассчитывает вероятность P_send, 
-    выбирает стикер с защитой от повторов и отправляет его после имитации раздумья.
-
-    force=True — проактивный пуш: вероятностный гейт по conversational-charge пропускается
-    (после долгого молчания заряд ≈ 0, иначе проактивный стикер почти никогда не уходит).
-    Жёсткий 2-минутный анти-спам сохраняется в любом случае.
-    """
-    if not STICKERS_ENABLED or mood not in SUPPORTED_MOODS:
+    """Express the current cognitive plan; receipt delivery owns the cooldown."""
+    from cognition.runtime import CURRENT_TURN
+    turn = CURRENT_TURN.get()
+    if not STICKERS_ENABLED or mood not in SUPPORTED_MOODS or turn is None or not turn.active:
         return
-
-    try:
-        # 1. Загружаем эмоциональное состояние
-        emo_state = await ChatEmotionalState.get_or_create(chat_id)
-        charge = emo_state.get("charge", 0.0)
-        
-        # Получаем аффективный профиль пользователя
-        closeness = 0.1
-        sticker_receptivity = 0.5
-        user_profile = await MemoryUserProfile.get(chat_id, user_id, mode)
-        if user_profile and user_profile.get("profile_json"):
-            prof_json = json.loads(user_profile["profile_json"]) if isinstance(user_profile["profile_json"], str) else user_profile["profile_json"]
-            aff = prof_json.get("affective", {})
-            closeness = aff.get("closeness", 0.1)
-            sticker_receptivity = aff.get("sticker_receptivity", 0.5)
-
-        # Фактор времени (RecencyFactor) — жёсткий анти-спам (не чаще 1 стикера в 2 минуты).
-        # Дельту берём из БД (seconds_since_sticker), чтобы не смешивать datetime.now() с временем БД.
-        recency_factor = 1.0
-        diff_sec = emo_state.get("seconds_since_sticker")
-        if diff_sec is not None:
-            if diff_sec < 120:
-                logger.info("Отмена отправки стикера: сработал жесткий временной анти-спам (2 минуты).")
-                return
-            elif diff_sec < 600:
-                # В промежутке от 2 до 10 минут вероятность плавно растёт
-                recency_factor = (diff_sec - 120) / 480
-
-        if force:
-            # Проактивный пуш: модель уже решила прислать стикер, поэтому обходим
-            # вероятностный гейт по conversational-charge (после долгого молчания он ≈ 0).
-            emotional_logger.info(
-                f"[STICKER_GATE] chat_id={chat_id} user_id={user_id} | Mood={mood} | "
-                f"Charge={charge:.3f} | Closeness={closeness:.3f} | Verdict=FORCED"
-            )
-            logger.info("Проактивный стикер: вероятностный гейт пропущен (force=True).")
-        else:
-            # Вероятностный гейт
-            p_send = charge * sticker_receptivity * recency_factor
-
-            # Близким друзьям повышаем базовую вероятность
-            if closeness > 0.6:
-                p_send = min(p_send * 1.3, 1.0)
-
-            random_val = random.random()
-            logger.info(f"Вероятностный гейт стикера: p_send={p_send:.2f}, roll={random_val:.2f}, charge={charge:.2f}")
-
-            verdict = "PASS" if random_val <= p_send else "FAIL"
-            flat_log_entry = (
-                f"[STICKER_GATE] chat_id={chat_id} user_id={user_id} | "
-                f"Mood={mood} | "
-                f"Charge={charge:.3f} | "
-                f"Receptivity={sticker_receptivity:.3f} | "
-                f"RecencyFactor={recency_factor:.3f} | "
-                f"Closeness={closeness:.3f} | "
-                f"P_send={p_send:.3f} | "
-                f"Roll={random_val:.3f} | "
-                f"Verdict={verdict}"
-            )
-            emotional_logger.info(flat_log_entry)
-
-            if random_val > p_send:
-                logger.info("Стикер заблокирован вероятностным гейтом.")
-                # FALLBACK TO REACTION: если заряд средний (> 0.15), шлем нативную реакцию
-                if charge > 0.15:
-                    reaction_target_id = user_message_id if user_message_id is not None else message_id
-                    await try_send_telegram_reaction(bot, chat_id, reaction_target_id, mood)
-                return
-
-        # 2. Загружаем стикерпак
-        pack = await load_sticker_pack(bot)
-        if not pack or mood not in pack or not pack[mood]:
-            logger.warning(f"В стикерпаке нет стикеров для настроения '{mood}'.")
-            return
-
-        # Защита от повторов (Anti-repeat)
-        history = json.loads(emo_state["sticker_history"]) if isinstance(emo_state["sticker_history"], str) else emo_state["sticker_history"]
-        if not isinstance(history, list):
-            history = []
-            
-        available_stickers = [file_id for file_id in pack[mood] if file_id not in history]
-        if not available_stickers:
-            available_stickers = pack[mood] # если все были использованы — сбрасываем
-
-        selected_sticker = random.choice(available_stickers)
-
-        # 3. Эффект раздумья (Имитация человека)
-        delay = random.uniform(1.5, 4.0)
-        logger.info(f"Имитация раздумья перед отправкой стикера: {delay:.2f} сек.")
-        await bot.send_chat_action(chat_id=chat_id, action="choose_sticker")
-        await asyncio.sleep(delay)
-
-        # 4. Отправляем стикер
-        await bot.send_sticker(
-            chat_id=chat_id,
-            sticker=selected_sticker,
-            reply_to_message_id=message_id
-        )
-        logger.info(f"Стикер '{mood}' успешно отправлен в чат {chat_id}.")
-
-        # Обновляем состояние в БД
-        await ChatEmotionalState.record_sticker_sent(chat_id, selected_sticker, mood)
-
-    except Exception as e:
-        logger.error(f"Сбой отправки стикера: {e}", exc_info=True)
+    if turn.event.context.chat_id != chat_id or turn.expression.sticker_mood != mood:
+        return
+    pack = await load_sticker_pack(bot)
+    choices = (pack or {}).get(mood,[])
+    if not choices:
+        return
+    # Transport metadata is not emotional memory. Respect the last three
+    # confirmed/ambiguous sends without reviving charge or receptivity.
+    async with turn.runtime.pool.acquire() as conn:
+        recent = await conn.fetchval("""SELECT ARRAY_AGG(payload->>'sticker_id') FROM
+            (SELECT payload FROM cognitive_outbox WHERE context_id=$1 AND channel='sticker'
+             AND status IN ('sending','delivered','delivery_unknown')
+             AND payload ? 'sticker_id' ORDER BY id DESC LIMIT 3) s""",turn.context_id) or []
+    available = [value for value in choices if value not in recent] or choices
+    import hashlib
+    index = int.from_bytes(hashlib.sha256(turn.event.event_id.encode()).digest()[:4],'big') % len(available)
+    await bot.send_sticker(chat_id=chat_id,sticker=available[index],reply_to_message_id=message_id)
 
 
 async def try_send_telegram_reaction(bot: Bot, chat_id: int, message_id: int, mood: str):

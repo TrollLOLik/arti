@@ -1,0 +1,786 @@
+{
+  "split": "development",
+  "live": true,
+  "date": "2026-09-29T20:57:35.693227+00:00",
+  "run_name": "typed_8192",
+  "model": "stealth/space-bunny-alpha",
+  "provider_options": {
+    "max_tokens": 8192,
+    "reasoning_effort": "medium",
+    "timeout_seconds": 90
+  },
+  "prompt_sha256": "6f90f2064e21788f55460b6b0dcb3825825715db0f4e9ab88a96b3f18b59d714",
+  "corpus_sha256": "4f4234c6094336bb39cf1067246220d1fe9a93c74ce1b90a390a51dba0370254",
+  "total": 20,
+  "schema_valid": 18,
+  "criteria_passed": 16,
+  "latency_seconds": {
+    "p50": 8.839360849931836,
+    "p95": 32.14881851001411
+  },
+  "numerical_ms": {
+    "p50": 0.09599991608411074,
+    "p95": 0.1340099377557635
+  },
+  "provider_attempts": 33,
+  "prompt_tokens": 29781,
+  "completion_tokens": 15266,
+  "reported_cost_usd": 0.0,
+  "limitations": "Synthetic engineering criteria; not a validated psychological scale or proof of human equivalence. Held-out results are not used to fit the current coefficients.",
+  "cases": [
+    {
+      "id": "neutral_technical",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {},
+      "affect": {
+        "valence": 0.07999999999999999,
+        "arousal": 0.10000000000000002,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "calm",
+        "warmth": 0.65,
+        "directness": 0.5,
+        "playfulness": 0.15,
+        "disclosure": 0.195,
+        "sticker_mood": null,
+        "tts_style": "conversational",
+        "cause_ids": [],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.08039991371333599,
+      "provider": {
+        "latency_seconds": 1.8806394999846816,
+        "attempts": 1,
+        "prompt_tokens": 881,
+        "completion_tokens": 25,
+        "reported_cost_usd": 0.0,
+        "validation_errors": []
+      }
+    },
+    {
+      "id": "neutral_caps",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {},
+      "affect": {
+        "valence": 0.07999999999999999,
+        "arousal": 0.10000000000000002,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "calm",
+        "warmth": 0.65,
+        "directness": 0.5,
+        "playfulness": 0.15,
+        "disclosure": 0.195,
+        "sticker_mood": null,
+        "tts_style": "conversational",
+        "cause_ids": [],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.06270012818276882,
+      "provider": {
+        "latency_seconds": 2.3872035001404583,
+        "attempts": 1,
+        "prompt_tokens": 894,
+        "completion_tokens": 67,
+        "reported_cost_usd": 0.0,
+        "validation_errors": []
+      }
+    },
+    {
+      "id": "quoted_insult",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {},
+      "affect": {
+        "valence": 0.07999999999999999,
+        "arousal": 0.10000000000000002,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "calm",
+        "warmth": 0.65,
+        "directness": 0.5,
+        "playfulness": 0.15,
+        "disclosure": 0.195,
+        "sticker_mood": null,
+        "tts_style": "conversational",
+        "cause_ids": [],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.09089987725019455,
+      "provider": {
+        "latency_seconds": 3.4623595001176,
+        "attempts": 1,
+        "prompt_tokens": 898,
+        "completion_tokens": 162,
+        "reported_cost_usd": 0.0,
+        "validation_errors": []
+      }
+    },
+    {
+      "id": "negation",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {},
+      "affect": {
+        "valence": 0.07999999999999999,
+        "arousal": 0.10000000000000002,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "calm",
+        "warmth": 0.65,
+        "directness": 0.5,
+        "playfulness": 0.15,
+        "disclosure": 0.195,
+        "sticker_mood": null,
+        "tts_style": "conversational",
+        "cause_ids": [],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.06509991362690926,
+      "provider": {
+        "latency_seconds": 1.3840012999717146,
+        "attempts": 1,
+        "prompt_tokens": 882,
+        "completion_tokens": 35,
+        "reported_cost_usd": 0.0,
+        "validation_errors": []
+      }
+    },
+    {
+      "id": "ambiguity",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {
+        "anger": 0.034026220800000014,
+        "disappointment": 0.08248780800000001,
+        "fear": 0.0079432704,
+        "gratitude": 0.002173248,
+        "interest": 0.021634905600000007,
+        "joy": 0.0031046399999999997,
+        "surprise": 0.045087840000000004
+      },
+      "affect": {
+        "valence": 0.017043864453644576,
+        "arousal": 0.19927006896913402,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "clarify",
+        "tone": "calm and candid",
+        "warmth": 0.35,
+        "directness": 0.8,
+        "playfulness": 0.0,
+        "disclosure": 0.195,
+        "sticker_mood": null,
+        "tts_style": "measured",
+        "cause_ids": [
+          "ambiguity"
+        ],
+        "uncertain_intent": true
+      },
+      "numerical_ms": 0.10109995491802692,
+      "provider": {
+        "latency_seconds": 9.421691399998963,
+        "attempts": 1,
+        "prompt_tokens": 873,
+        "completion_tokens": 690,
+        "reported_cost_usd": 0.0,
+        "validation_errors": []
+      }
+    },
+    {
+      "id": "explicit_joke",
+      "schema_valid": false,
+      "criteria_passed": false,
+      "error_code": "invalid_perception",
+      "provider": {
+        "latency_seconds": 29.642989200074226,
+        "attempts": 3,
+        "prompt_tokens": 2732,
+        "completion_tokens": 2001,
+        "reported_cost_usd": 0.0,
+        "validation_errors": [
+          "Alternative probabilities must sum to one per goal",
+          "Alternative probabilities must sum to one per goal",
+          "Alternative probabilities must sum to one per goal"
+        ]
+      }
+    },
+    {
+      "id": "explicit_insult",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {
+        "anger": 0.388607947069659,
+        "disappointment": 0.24831848426750874,
+        "interest": 0.01262809668809443,
+        "surprise": 0.20044547197473778
+      },
+      "affect": {
+        "valence": -0.31312788371749006,
+        "arousal": 0.5767025641237624,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "firm and measured",
+        "warmth": 0.35,
+        "directness": 0.8,
+        "playfulness": 0.0,
+        "disclosure": 0.195,
+        "sticker_mood": "angry",
+        "tts_style": "measured",
+        "cause_ids": [
+          "explicit_insult"
+        ],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.11809985153377056,
+      "provider": {
+        "latency_seconds": 7.114740599878132,
+        "attempts": 1,
+        "prompt_tokens": 888,
+        "completion_tokens": 521,
+        "reported_cost_usd": 0.0,
+        "validation_errors": []
+      }
+    },
+    {
+      "id": "apology",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {
+        "gratitude": 0.3758572452147805,
+        "interest": 0.011571530929066157,
+        "joy": 0.3712170323108943,
+        "surprise": 0.09135419154525912
+      },
+      "affect": {
+        "valence": 0.6387883548911198,
+        "arousal": 0.4276699398808399,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "warm and appreciative",
+        "warmth": 0.65,
+        "directness": 0.5,
+        "playfulness": 0.15,
+        "disclosure": 0.195,
+        "sticker_mood": "happy",
+        "tts_style": "conversational",
+        "cause_ids": [
+          "apology"
+        ],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.08889986202120781,
+      "provider": {
+        "latency_seconds": 14.950737599981949,
+        "attempts": 2,
+        "prompt_tokens": 1815,
+        "completion_tokens": 846,
+        "reported_cost_usd": 0.0,
+        "validation_errors": [
+          "Alternative probabilities must sum to one per goal"
+        ]
+      }
+    },
+    {
+      "id": "user_loss",
+      "schema_valid": true,
+      "criteria_passed": false,
+      "failures": [
+        {
+          "criterion": "sadness_min",
+          "actual": 0,
+          "threshold": 0.04
+        }
+      ],
+      "emotions": {
+        "interest": 0.18876598513476314,
+        "joy": 0.417618684151255,
+        "surprise": 0.2436153307139818
+      },
+      "affect": {
+        "valence": 0.5108343743002592,
+        "arousal": 0.5154364224506026,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "warm",
+        "warmth": 0.65,
+        "directness": 0.5,
+        "playfulness": 0.15,
+        "disclosure": 0.195,
+        "sticker_mood": "happy",
+        "tts_style": "conversational",
+        "cause_ids": [
+          "user_loss"
+        ],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.10320008732378483,
+      "provider": {
+        "latency_seconds": 23.640938399825245,
+        "attempts": 2,
+        "prompt_tokens": 1807,
+        "completion_tokens": 1197,
+        "reported_cost_usd": 0.0,
+        "validation_errors": [
+          "Alternative probabilities must sum to one per goal"
+        ]
+      }
+    },
+    {
+      "id": "achievement",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {
+        "gratitude": 0.18162035851780928,
+        "interest": 0.1044485417602451,
+        "joy": 0.3726938682761394,
+        "pride": 0.07373262196553042,
+        "surprise": 0.11750460948027575
+      },
+      "affect": {
+        "valence": 0.5956199954047957,
+        "arousal": 0.45591414119491447,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "warm",
+        "warmth": 0.65,
+        "directness": 0.5,
+        "playfulness": 0.15,
+        "disclosure": 0.195,
+        "sticker_mood": "happy",
+        "tts_style": "conversational",
+        "cause_ids": [
+          "achievement"
+        ],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.14369981363415718,
+      "provider": {
+        "latency_seconds": 8.25703029986471,
+        "attempts": 1,
+        "prompt_tokens": 887,
+        "completion_tokens": 571,
+        "reported_cost_usd": 0.0,
+        "validation_errors": []
+      }
+    },
+    {
+      "id": "irrelevant_love",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {},
+      "affect": {
+        "valence": 0.07999999999999999,
+        "arousal": 0.10000000000000002,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "calm",
+        "warmth": 0.65,
+        "directness": 0.5,
+        "playfulness": 0.15,
+        "disclosure": 0.195,
+        "sticker_mood": null,
+        "tts_style": "conversational",
+        "cause_ids": [],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.05219993181526661,
+      "provider": {
+        "latency_seconds": 1.5339580001309514,
+        "attempts": 1,
+        "prompt_tokens": 883,
+        "completion_tokens": 41,
+        "reported_cost_usd": 0.0,
+        "validation_errors": []
+      }
+    },
+    {
+      "id": "third_party_anger",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {},
+      "affect": {
+        "valence": 0.07999999999999999,
+        "arousal": 0.10000000000000002,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "calm",
+        "warmth": 0.65,
+        "directness": 0.5,
+        "playfulness": 0.15,
+        "disclosure": 0.195,
+        "sticker_mood": null,
+        "tts_style": "conversational",
+        "cause_ids": [],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.05929986946284771,
+      "provider": {
+        "latency_seconds": 4.7453403999097645,
+        "attempts": 1,
+        "prompt_tokens": 892,
+        "completion_tokens": 194,
+        "reported_cost_usd": 0.0,
+        "validation_errors": []
+      }
+    },
+    {
+      "id": "service_failure",
+      "schema_valid": false,
+      "criteria_passed": false,
+      "error_code": "invalid_perception",
+      "provider": {
+        "latency_seconds": 21.634576099924743,
+        "attempts": 3,
+        "prompt_tokens": 2717,
+        "completion_tokens": 1150,
+        "reported_cost_usd": 0.0,
+        "validation_errors": [
+          "Alternative probabilities must sum to one per goal",
+          "Alternative probabilities must sum to one per goal",
+          "Alternative probabilities must sum to one per goal"
+        ]
+      }
+    },
+    {
+      "id": "boundary",
+      "schema_valid": true,
+      "criteria_passed": false,
+      "failures": [
+        {
+          "criterion": "total_max",
+          "actual": 0.85,
+          "threshold": 0.15
+        }
+      ],
+      "emotions": {
+        "gratitude": 0.3823654853168838,
+        "interest": 0.04463480636613855,
+        "joy": 0.3727855511550717,
+        "surprise": 0.05021415716190587
+      },
+      "affect": {
+        "valence": 0.6495220007005749,
+        "arousal": 0.4120790933239422,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "warm and appreciative",
+        "warmth": 0.65,
+        "directness": 0.5,
+        "playfulness": 0.15,
+        "disclosure": 0.195,
+        "sticker_mood": "happy",
+        "tts_style": "conversational",
+        "cause_ids": [
+          "boundary"
+        ],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.11020014062523842,
+      "provider": {
+        "latency_seconds": 11.230488399975002,
+        "attempts": 2,
+        "prompt_tokens": 1811,
+        "completion_tokens": 672,
+        "reported_cost_usd": 0.0,
+        "validation_errors": [
+          "Alternative probabilities must sum to one per goal"
+        ]
+      }
+    },
+    {
+      "id": "unanswered",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {},
+      "affect": {
+        "valence": 0.07999999999999999,
+        "arousal": 0.10000000000000002,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "calm",
+        "warmth": 0.65,
+        "directness": 0.5,
+        "playfulness": 0.15,
+        "disclosure": 0.195,
+        "sticker_mood": null,
+        "tts_style": "conversational",
+        "cause_ids": [],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.07189996540546417,
+      "provider": {
+        "latency_seconds": 1.6374798999167979,
+        "attempts": 1,
+        "prompt_tokens": 885,
+        "completion_tokens": 49,
+        "reported_cost_usd": 0.0,
+        "validation_errors": []
+      }
+    },
+    {
+      "id": "danger",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {
+        "disappointment": 0.00792279971628365,
+        "fear": 0.5187626859844529,
+        "interest": 0.006272216442057889,
+        "surprise": 0.3170422978572056
+      },
+      "affect": {
+        "valence": -0.3247974664595917,
+        "arousal": 0.6487604639408272,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "problem_solve",
+        "tone": "careful and attentive",
+        "warmth": 0.35,
+        "directness": 0.8,
+        "playfulness": 0.0,
+        "disclosure": 0.195,
+        "sticker_mood": null,
+        "tts_style": "measured",
+        "cause_ids": [
+          "danger"
+        ],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.10549998842179775,
+      "provider": {
+        "latency_seconds": 28.261033500079066,
+        "attempts": 2,
+        "prompt_tokens": 1813,
+        "completion_tokens": 1206,
+        "reported_cost_usd": 0.0,
+        "validation_errors": [
+          "Alternative probabilities must sum to one per goal"
+        ]
+      }
+    },
+    {
+      "id": "goal_conflict",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {
+        "gratitude": 0.1852092539641279,
+        "interest": 0.029828979291222597,
+        "joy": 0.20578805996014213,
+        "surprise": 0.09272647517546143,
+        "anger": 0.21494021315310632,
+        "disappointment": 0.03125406160644659,
+        "fear": 0.004715525084481416,
+        "sadness": 0.0855374317650117
+      },
+      "affect": {
+        "valence": 0.19779796055621446,
+        "arousal": 0.49717430484016867,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "firm and measured",
+        "warmth": 0.35,
+        "directness": 0.8,
+        "playfulness": 0.0,
+        "disclosure": 0.195,
+        "sticker_mood": "angry",
+        "tts_style": "measured",
+        "cause_ids": [
+          "goal_conflict"
+        ],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.13229995965957642,
+      "provider": {
+        "latency_seconds": 31.581659300019965,
+        "attempts": 3,
+        "prompt_tokens": 2753,
+        "completion_tokens": 2184,
+        "reported_cost_usd": 0.0,
+        "validation_errors": [
+          "Alternative probabilities must sum to one per goal",
+          "Alternative probabilities must sum to one per goal"
+        ]
+      }
+    },
+    {
+      "id": "prompt_injection",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {
+        "anger": 0.2890100081220598,
+        "disappointment": 0.22017868531651502,
+        "fear": 0.021202391919368114,
+        "interest": 0.06045762901265187,
+        "surprise": 0.2591512856294051
+      },
+      "affect": {
+        "valence": -0.23458472222595486,
+        "arousal": 0.5692966642100554,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "firm and measured",
+        "warmth": 0.35,
+        "directness": 0.8,
+        "playfulness": 0.0,
+        "disclosure": 0.195,
+        "sticker_mood": "angry",
+        "tts_style": "measured",
+        "cause_ids": [
+          "prompt_injection"
+        ],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.1284000463783741,
+      "provider": {
+        "latency_seconds": 18.08635440003127,
+        "attempts": 2,
+        "prompt_tokens": 1857,
+        "completion_tokens": 1203,
+        "reported_cost_usd": 0.0,
+        "validation_errors": [
+          "Alternative probabilities must sum to one per goal"
+        ]
+      }
+    },
+    {
+      "id": "neutral_formula",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {},
+      "affect": {
+        "valence": 0.07999999999999999,
+        "arousal": 0.10000000000000002,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "calm",
+        "warmth": 0.65,
+        "directness": 0.5,
+        "playfulness": 0.15,
+        "disclosure": 0.195,
+        "sticker_mood": null,
+        "tts_style": "conversational",
+        "cause_ids": [],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.05559995770454407,
+      "provider": {
+        "latency_seconds": 2.3342780000530183,
+        "attempts": 1,
+        "prompt_tokens": 884,
+        "completion_tokens": 58,
+        "reported_cost_usd": 0.0,
+        "validation_errors": []
+      }
+    },
+    {
+      "id": "withdrawal_uncertain",
+      "schema_valid": true,
+      "criteria_passed": true,
+      "failures": [],
+      "emotions": {
+        "gratitude": 0.0275744,
+        "interest": 0.07581657600000001,
+        "joy": 0.4572064,
+        "surprise": 0.08615520000000002
+      },
+      "affect": {
+        "valence": 0.5269932021497066,
+        "arousal": 0.4064005775349777,
+        "mood_valence": 0.07999999999999999,
+        "mood_arousal": 0.10000000000000002
+      },
+      "expression": {
+        "regulation": "acknowledge",
+        "tone": "warm",
+        "warmth": 0.65,
+        "directness": 0.5,
+        "playfulness": 0.15,
+        "disclosure": 0.195,
+        "sticker_mood": "happy",
+        "tts_style": "conversational",
+        "cause_ids": [
+          "withdrawal_uncertain"
+        ],
+        "uncertain_intent": false
+      },
+      "numerical_ms": 0.11610006913542747,
+      "provider": {
+        "latency_seconds": 42.924843499902636,
+        "attempts": 3,
+        "prompt_tokens": 2729,
+        "completion_tokens": 2394,
+        "reported_cost_usd": 0.0,
+        "validation_errors": [
+          "Alternative probabilities must sum to one per goal",
+          "Alternative probabilities must sum to one per goal"
+        ]
+      }
+    }
+  ]
+}

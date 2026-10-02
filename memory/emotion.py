@@ -8,6 +8,7 @@ whitelist эмоций. Здесь НЕТ обращений к БД — тол�
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Optional
 
@@ -44,7 +45,7 @@ def parse_emotional_introspection(text: Optional[str]) -> Optional[dict]:
     raw_delta = data.get("mood_delta", {})
     if isinstance(raw_delta, dict):
         for key, val in raw_delta.items():
-            if key in SUPPORTED_MOODS and isinstance(val, (int, float)) and not isinstance(val, bool):
+            if key in SUPPORTED_MOODS and isinstance(val, (int, float)) and not isinstance(val, bool) and math.isfinite(val):
                 mood_delta[key] = max(-0.25, min(0.25, float(val)))
 
     suggest = data.get("sticker_mood_suggest")

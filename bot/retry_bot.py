@@ -31,11 +31,36 @@ class RetryBot(ExtBot):
     MAX_ATTEMPTS = 3
 
     async def _call_with_retry(self, method, *args, **kwargs):
+        from cognition.scope import CURRENT_SCOPE
+        scope=CURRENT_SCOPE.get()
+        from cognition.runtime import CURRENT_TURN
+        turn = CURRENT_TURN.get()
+        name = getattr(method,'__name__','')
+        destination=kwargs.get('chat_id',args[0] if args else None)
+        if name.startswith('send_') and name != 'send_chat_action' or name in ('copy_message','forward_message'):
+            from materials.runtime import guard_current
+            await guard_current(destination)
+        if scope and scope.chat_id==destination and scope.topic_id>0 and (name.startswith('send_') or name in ('copy_message','forward_message')):
+            if kwargs.get('message_thread_id',scope.topic_id)!=scope.topic_id: raise ValueError('Queued destination topic changed')
+            kwargs['message_thread_id']=scope.topic_id
+        if turn is not None and turn.tracks_delivery and (name.startswith('send_') and name!='send_chat_action' or name=='set_message_reaction'):
+            from cognition.delivery import send_with_receipt
+            result = await send_with_receipt(method,args,kwargs,'reaction' if name=='set_message_reaction' else name[5:])
+            _maybe_record_sent(result)
+            return result
         last_exc: Exception | None = None
         for attempt in range(self.MAX_ATTEMPTS):
             try:
                 result = await method(*args, **kwargs)
                 _maybe_record_sent(result)
+                if scope and scope.group and name.startswith('send_') and getattr(result,'message_id',None):
+                    from cognition.runtime import get_runtime
+                    runtime=get_runtime()
+                    if runtime:
+                        from dataclasses import replace
+                        from config import rp_mode_state
+                        await runtime.groups.observe(replace(scope,message_id=result.message_id,addressed=True,reply_to_id=kwargs.get('reply_to_message_id') or getattr(kwargs.get('reply_parameters'),'message_id',None)),getattr(result,'text',None) or getattr(result,'caption',None) or '[media]',
+                            'rp' if rp_mode_state.get(scope.chat_id) else 'default',is_bot=True)
                 return result
             except (TimedOut, NetworkError) as e:
                 last_exc = e
@@ -70,6 +95,15 @@ class RetryBot(ExtBot):
 
     async def send_document(self, *args, **kwargs):
         return await self._call_with_retry(super().send_document, *args, **kwargs)
+
+    async def send_sticker(self,*args,**kwargs):
+        return await self._call_with_retry(super().send_sticker,*args,**kwargs)
+
+    async def set_message_reaction(self,*args,**kwargs):
+        return await self._call_with_retry(super().set_message_reaction,*args,**kwargs)
+
+    async def send_media_group(self,*args,**kwargs):
+        return await self._call_with_retry(super().send_media_group,*args,**kwargs)
 
     # --- Чтения ---
     # get_file/edit_*/copy/forward тоже бывают подвержены TimedOut на flaky-сети.
