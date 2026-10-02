@@ -51,7 +51,7 @@ from bot.commands import (
 from bot.queue import (
     image_worker, video_worker, music_worker,
     dubbing_worker, vclone_worker,
-    vclone_fsm_timeout_watchdog, proactive_scheduler_worker,
+    vclone_fsm_timeout_watchdog,
     run_supervised
 )
 from bot.retry_bot import RetryBot
@@ -124,7 +124,6 @@ def run_with_restart():
                 logger.info("Воркер vclone запущен (supervised).")
                 spawn_worker(run_supervised(vclone_fsm_timeout_watchdog, "vclone_fsm_watchdog", app.bot))
                 logger.info("Watchdog vclone FSM запущен (supervised).")
-                spawn_worker(run_supervised(proactive_scheduler_worker, "proactive_scheduler", app.bot))
                 from cognition.runtime import get_runtime
                 from cognition.intentions import intention_scheduler
                 spawn_worker(run_supervised(intention_scheduler,'cognitive_intentions',get_runtime(),app.bot))

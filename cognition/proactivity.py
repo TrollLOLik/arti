@@ -17,8 +17,8 @@ class GroupService:
     def __init__(self,runtime,judge=None):
         self.runtime=runtime; self.pool=runtime.pool; self.policies=PolicyRepository(self.pool)
         if judge is None:
-            from ai.group_participation import OpenRouterGroupJudge
-            judge=OpenRouterGroupJudge()
+            from ai.group_participation import SelectedModelGroupJudge
+            judge=SelectedModelGroupJudge()
         self.judge=judge
 
     async def close(self):
@@ -38,7 +38,7 @@ class GroupService:
         async with self.pool.acquire() as conn:
             rows=await conn.fetch('''SELECT o.*,e.source_id FROM group_observations o JOIN cognitive_events e ON e.id=o.event_id
                 WHERE o.context_id=$1 AND o.suppressed_at IS NULL AND e.suppressed_at IS NULL AND o.payload IS NOT NULL
-                AND o.observed_at>=$2 ORDER BY o.observed_at DESC,o.id DESC LIMIT 64''',cid,now-timedelta(days=policy.retention_days))
+                AND o.event_id>$3 AND o.observed_at>=$2 ORDER BY o.observed_at DESC,o.id DESC LIMIT 64''',cid,now-timedelta(days=policy.retention_days),ctx['history_after_event_id'])
             state=await conn.fetchrow('SELECT * FROM group_topic_runtime WHERE context_id=$1',cid)
             feedback=await conn.fetch('''SELECT f.*,g.kind FROM group_feedback f
                 JOIN cognitive_outbox o ON o.context_id=f.context_id AND o.receipt_id=f.message_id AND o.status='delivered'
@@ -423,7 +423,13 @@ class GroupService:
             await self.policies.set(chat_id,dict(mode='mentions',execution='shadow',full_visibility=False))
         async with self.pool.acquire() as conn,conn.transaction():
             await conn.execute("UPDATE group_candidates SET status='cancelled',payload=NULL WHERE context_id IN (SELECT id FROM cognitive_contexts WHERE chat_id=ANY($1::bigint[])) AND status IN ('pending','deferred','claimed')",[old_chat,new_chat])
-            await conn.execute("UPDATE cognitive_contexts SET authority='shadow',authority_explicit=TRUE WHERE chat_id=ANY($1::bigint[])",[old_chat,new_chat])
+            if not getattr(self.runtime,'strict',False):
+                await conn.execute("UPDATE cognitive_contexts SET authority='shadow',authority_explicit=TRUE WHERE chat_id=ANY($1::bigint[])",[old_chat,new_chat])
+            else:
+                from cognition.runtime import fence_context
+                contexts = await conn.fetch('SELECT id FROM cognitive_contexts WHERE chat_id=ANY($1::bigint[]) ORDER BY id FOR UPDATE',[old_chat,new_chat])
+                for context in contexts:
+                    await fence_context(conn,context['id'])
             await conn.execute("UPDATE group_topic_settings SET payload=payload || '{\"mode\":\"mentions\",\"execution\":\"shadow\",\"full_visibility\":false}'::jsonb,revision=revision+1 WHERE chat_id=ANY($1::bigint[])",[old_chat,new_chat])
 
     async def maintenance(self):

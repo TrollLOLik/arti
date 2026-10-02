@@ -103,7 +103,11 @@ async def run(args):
                 cid = await conn.fetchval('SELECT id FROM cognitive_contexts WHERE persona_id=$1 AND chat_id=$2 AND mode=$3 AND scene_id=$4 AND topic_id=$5',*context.identity())
             if cid is None:
                 raise ValueError('Unknown context: observe/migrate first')
-            await CognitiveRuntime(pool,None,'legacy').set_authority(cid,args.value)
+            runtime = CognitiveRuntime(pool,None,'active',strict=True)
+            try:
+                await runtime.set_authority(cid,args.value)
+            finally:
+                await runtime.close()
             return dict(context_id=cid,authority=args.value,transport_calls=0)
         if args.command=='cancel-unknown':
             async with pool.acquire() as conn:
@@ -129,7 +133,7 @@ if __name__=='__main__':
     authority.add_argument('--mode',choices=('default','rp'),default='default')
     authority.add_argument('--scene-id',default='')
     authority.add_argument('--topic-id',type=int,default=-1)
-    authority.add_argument('--value',choices=('shadow','active','legacy'),required=True)
+    authority.add_argument('--value',choices=('active',),required=True)
     reconcile = sub.add_parser('cancel-unknown')
     reconcile.add_argument('--outbox-id',type=int,required=True)
     print(json.dumps(asyncio.run(run(parser.parse_args())),ensure_ascii=True))

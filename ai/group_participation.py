@@ -55,7 +55,7 @@ class OpenRouterGroupJudge:
     async def close(self):
         if self.owned and self.client: await self.client.aclose()
 
-    async def request(self,system,data,tokens):
+    async def request(self,system,data,tokens,chat_id=None):
         if self.client is None: self.client=httpx.AsyncClient(timeout=90)
         if self.key is None:
             from cognition.interpreter import environment_key
@@ -96,7 +96,7 @@ confidence (scores 0..1), evidence_ids (supplied source IDs only), channel (text
 Allowed reasons: useful_answer, shared_task, social_fit, continuation, already_answered, human_addressed,
 rhetorical, no_added_value, uncertain, interrupting, sensitive, defer_for_people, topic_seed.
 Use reaction only when explicitly permitted. Scores express engineering judgement, not psychological certainty.'''
-        data=await self.request(system,dict(conversation=packet,candidate=candidate),4096)
+        data=await self.request(system,dict(conversation=packet,candidate=candidate),4096,frame.chat_id)
         return GroupJudgement.parse(data,allowed)
 
     async def compose(self,frame,candidate,judgement,expression=''):
@@ -107,10 +107,40 @@ Add concrete value rather than repeating others. No demands for attention, guilt
 internal scores, policy explanations or mentions of users who did not invite them. Maximum 600 characters.
 For reaction channel return a single permitted emoji from 👍,❤️,🎉,🤔. For text prefer 1-3 sentences.
 Return exactly {"text": "..."}. If you cannot add value return {"text":""}.''',
-            dict(conversation=frame.public_packet(candidate.get('message_id')),candidate=candidate,decision=judgement.reason,channel=judgement.channel,expression=expression),4096)
+            dict(conversation=frame.public_packet(candidate.get('message_id')),candidate=candidate,decision=judgement.reason,channel=judgement.channel,expression=expression),4096,frame.chat_id)
         if not isinstance(data,dict) or set(data)!={'text'} or not isinstance(data['text'],str):
             raise ValueError('Invalid group response')
         text=data['text'].strip()
         if len(text)>600 or (judgement.channel=='reaction' and text not in ('👍','❤️','🎉','🤔')):
             raise ValueError('Invalid group response length or reaction')
         return text
+
+
+class SelectedModelGroupJudge(OpenRouterGroupJudge):
+    """Arbitration and composition follow the group's normal model choice."""
+    def __init__(self, transport=None):
+        from ai.providers.structured import SelectedModelClient
+        self.transport = transport or SelectedModelClient()
+        self.calls = 0
+        self.metrics = []
+
+    async def close(self):
+        await self.transport.close()
+
+    async def request(self, system, data, tokens, chat_id=None):
+        model = await self.transport.model_for(chat_id)
+        messages = [dict(role='system',content=system),dict(role='user',content=json.dumps(data,ensure_ascii=False))]
+        for attempt in range(2):
+            self.calls += 1
+            try:
+                response = await self.transport.complete(model,messages,tokens,.1)
+                if response.status_code != 200:
+                    raise ValueError('group_provider_failed')
+                body = response.json()
+                self.metrics.append({k:body.get('usage',{}).get(k) for k in ('prompt_tokens','completion_tokens','cost')})
+                self.metrics = self.metrics[-128:]
+                return json.loads(body['choices'][0]['message']['content'])
+            except (httpx.HTTPError,ValueError,KeyError,TypeError,IndexError,TimeoutError):
+                if attempt:
+                    raise ValueError('group_provider_failed') from None
+                await asyncio.sleep(.25)

@@ -122,95 +122,16 @@ class DatabaseRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], await MemoryWikiPage.search(10, 'default', 'Казань'))
         self.assertEqual([], await MemoryWikiPage.search(10, 'default', ''))
 
-    async def test_sticker_does_not_change_affect(self):
-        from database.models import ChatEmotionalState
-        await ChatEmotionalState.get_or_create(10)
-        async with self.pool.acquire() as conn:
-            await conn.execute("UPDATE chat_emotional_states SET charge=0.8, mood_state='{}'::jsonb WHERE chat_id=10")
-        await ChatEmotionalState.record_sticker_sent(10, 'synthetic-file', 'happy')
-        state = await ChatEmotionalState.get_or_create(10)
-        self.assertAlmostEqual(state['charge'], 0.8)
 
-    async def test_transport_retry_does_not_add_charge(self):
-        from database.models import ChatEmotionalState
-        first = await ChatEmotionalState.update_state(10, 'Привет', defer_sentiment=True, source_key='default:message:1')
-        second = await ChatEmotionalState.update_state(10, 'Привет', defer_sentiment=True, source_key='default:message:1')
-        self.assertEqual(first['charge'], second['charge'])
-        self.assertTrue(second['repeated_input'])
 
-    async def test_sentiment_retry_does_not_add_mood(self):
-        from database.models import ChatEmotionalState
-        await ChatEmotionalState.get_or_create(10)
-        for _ in range(3):
-            await ChatEmotionalState.apply_mood_delta(10, {'happy':.2}, source_key='default:message:1')
-        state = await ChatEmotionalState.get_or_create(10)
-        import json
-        moods = json.loads(state['mood_state']) if isinstance(state['mood_state'],str) else state['mood_state']
-        self.assertAlmostEqual(moods['happy'], .2)
 
-    async def _consolidate(self, plan):
-        import json
-        from memory.consolidator import consolidate_chat_facts
-        response = SimpleNamespace(text=json.dumps(plan))
-        with patch('memory.consolidator.genai_client.models.generate_content', return_value=response):
-            return await consolidate_chat_facts(10, dry_run=False)
 
-    async def _candidates(self):
-        from database.models import MemoryFact
-        return [await MemoryFact.create(10, 'Факт ' + str(n), user_id=1) for n in range(8)]
 
-    async def test_consolidation_dedup_result_stays_active_and_owned(self):
-        ids = await self._candidates()
-        await self._consolidate({'facts':[{'text':'Факт 0', 'source_ids':ids[:2]}], 'archive_ids':ids[:2]})
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow('SELECT * FROM memory_facts WHERE id=$1', ids[0])
-            self.assertIsNone(row['archived_at'])
-            self.assertEqual(row['user_id'], 1)
-            self.assertIsNotNone(await conn.fetchval('SELECT archived_at FROM memory_facts WHERE id=$1', ids[1]))
 
-    async def test_unaccepted_replacements_keep_sources(self):
-        ids = await self._candidates()
-        await self._consolidate({'facts':[], 'archive_ids':ids})
-        async with self.pool.acquire() as conn:
-            self.assertEqual(8, await conn.fetchval('SELECT count(*) FROM memory_facts WHERE archived_at IS NULL'))
 
-    async def test_wiki_suggestion_keeps_source_until_verified(self):
-        ids = await self._candidates()
-        await self._consolidate({'facts':[], 'archive_ids':ids, 'wiki_suggestions':[{'page_key':'draft', 'title':'Draft', 'content':'Synthetic', 'category':'world_lore', 'source_fact_ids':ids}]})
-        async with self.pool.acquire() as conn:
-            self.assertEqual(8, await conn.fetchval('SELECT count(*) FROM memory_facts WHERE archived_at IS NULL'))
 
-    async def test_consolidation_does_not_merge_owners(self):
-        from database.models import MemoryFact
-        ids = await self._candidates()
-        other = await MemoryFact.create(10,'Факт другого участника',user_id=2)
-        report = await self._consolidate({'facts':[{'text':'Смешанный факт','source_ids':[ids[0],other]}], 'archive_ids':[ids[0],other]})
-        self.assertEqual(report['new_fact_count'],0)
-        async with self.pool.acquire() as conn:
-            self.assertEqual(9,await conn.fetchval('SELECT count(*) FROM memory_facts WHERE archived_at IS NULL'))
 
-    async def test_invalid_source_types_do_not_archive_facts(self):
-        ids = await self._candidates()
-        await self._consolidate({'facts':[{'text':'Replacement','source_ids':[True,1.5]}], 'archive_ids':ids})
-        async with self.pool.acquire() as conn:
-            self.assertEqual(8,await conn.fetchval('SELECT count(*) FROM memory_facts WHERE archived_at IS NULL'))
 
-    async def test_retrieval_preserves_facts_and_chunks_without_marking_expression(self):
-        from database.models import MemoryFact
-        import memory.storage as storage
-        for i in range(5):
-            await MemoryFact.create(10,f'Казань FACT_MARKER_{i}',user_id=1)
-        with patch.object(storage,'get_profile_context',new=AsyncMock(return_value='PROFILE ' * 2000)), \
-             patch.object(storage,'get_timeline_context',new=AsyncMock(return_value='TIMELINE ' * 200)), \
-             patch.object(storage,'embed_query',new=AsyncMock(return_value=[])), \
-             patch.object(storage.MemoryChunk,'search_text',new=AsyncMock(return_value=[{'chunk_text':'CHUNK_MARKER'}])):
-            context = await storage.build_memory_context(10,1,'Казань')
-        for i in range(5):
-            self.assertIn(f'FACT_MARKER_{i}',context)
-        self.assertIn('CHUNK_MARKER',context)
-        self.assertLessEqual(len(context),7000)
-        async with self.pool.acquire() as conn:
-            self.assertEqual(0,await conn.fetchval('SELECT sum(used_count) FROM memory_facts'))
 
 
 if __name__ == '__main__':

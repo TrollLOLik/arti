@@ -18,7 +18,7 @@ def register_planning(registry):
             return ToolResult('success',dict(id=id,kind=args['kind'],revision=row['revision'],content_hash=semantic_fingerprint(row['spec'])),dependencies=(row['head'],))
         from artifacts.validation import validate_evidence
         async def validate_artifact(spec): await validate_evidence(spec,c.actor,c.service.repository)
-        planner=ModelPlanner(registry); contract=await planner.propose(args['goal'],args['context'],kind='artifact' if args['kind']=='artifact' else 'plan',guard=c.validate,validator=validate_artifact if args['kind']=='artifact' else None)
+        planner=ModelPlanner(registry,chat_id=c.actor.scope.chat_id); contract=await planner.propose(args['goal'],args['context'],kind='artifact' if args['kind']=='artifact' else 'plan',guard=c.validate,validator=validate_artifact if args['kind']=='artifact' else None)
         async with c.service.repository.pool.acquire() as conn:
             task=await conn.fetchrow('SELECT plan_id FROM arti_tasks WHERE id=$1',c.task_id); refs=await DerivativeRepository(c.service.repository)._chain(conn,task['plan_id'],c.actor)
         if args['kind']=='artifact':

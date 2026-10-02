@@ -20,8 +20,8 @@ from tests.support.database import isolated_database
 
 
 async def main():
-    from ai.generation import build_emotional_directive
-    from database.models import ChatEmotionalState
+    from tools.legacy_baseline import build_emotional_directive
+    from tools.legacy_baseline import ChatEmotionalState
     provider = Completion()
     packet,key,ratings = [],{},[]
     rng = random.Random(509341)

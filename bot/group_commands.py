@@ -72,8 +72,7 @@ async def proactivity_command(update,context):
         from config import rp_mode_state
         mode='rp' if rp_mode_state.get(scope.chat_id) else 'default'
         cid,_,_=await runtime.ingest(scope.chat_id,update.effective_user.id,'','control:'+uuid.uuid4().hex,mode,origin=Origin.SYSTEM,event_kind='system',addressed_to_arti=False)
-        async with runtime.pool.acquire() as conn:
-            await conn.execute("UPDATE cognitive_contexts SET authority='active',authority_explicit=TRUE WHERE id=$1",cid)
+        await runtime.set_authority(cid,'active')
     policy,_=await runtime.groups.policies.get(scope.chat_id,scope.topic_id)
     await update.effective_message.reply_text(f'Сохранено: {policy.mode}, {policy.execution}. Полная видимость: {policy.full_visibility}.')
 

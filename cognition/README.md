@@ -16,23 +16,12 @@ suppression and recoverable projection rebuilds. Actual Telegram receipts produc
 own-action events. Delivery failures are not user evidence; ambiguous sends are
 never retried automatically. Legacy mutation entry points enforce one authority.
 
-Default authority is `shadow`; enabling `active` requires an explicit operational
-switch. Global `legacy` starts without an interpreter/worker and overrides prior
-active context flags for rollback. Importing this package does not start the bot.
-
-See [results and all twenty batches](../docs/ARTI_IMPLEMENTATION_PROGRESS.md),
-[operations](../docs/ARTI_COGNITION_RUNBOOK.md), and [machine contract](contract.json).
-Scientific coefficients remain engineering hypotheses. Human ratings and a real
-chat pilot window have not been completed.
-
-```powershell
-python -m tools.run_cognition_tests
-python -m tools.evaluate_mechanisms
-python -m tools.evaluate_full_cognition --split final_held_out --run-name frozen_final_v4
-python -m tools.cognition_admin verify-copy
-```
-
-Offline suites mock providers and use new `arti_cognition_test_<uuid>` databases.
-Verify-copy reads the configured DB locally but does not modify it or export raw
-text. Live evaluation drivers accept only their fixed synthetic input corpora.
-Never relabel a previously inspected hold-out as a fresh experiment.
+Production always uses active cognition. The runtime promotes current stored
+contexts with epoch/lease fencing at startup; retired RP scenes stay retired.
+`ARTI_COGNITION_MODE` and `ARTI_COGNITION_MODEL` are obsolete and ignored.
+Interpretation, group arbitration/composition and agent planning follow the
+chat model selected through the Telegram menu or `/model`, using the same
+Gemini or configured OpenAI-compatible provider. OpenRouter is not required.
+Offline simulations retain explicit authority variants for regression tests;
+they cannot enable legacy emotional mutation APIs in the application.
+See `docs/ARTI_COGNITION_RUNBOOK.md` for source migration and recovery.

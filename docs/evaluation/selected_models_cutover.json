@@ -1,0 +1,64 @@
+{
+  "cases": [
+    {
+      "model": "capy/grok-4-1-fast",
+      "case": "neutral",
+      "schema_valid": false,
+      "semantic_ok": false,
+      "error": "provider_unavailable",
+      "attempts": 3
+    },
+    {
+      "model": "capy/grok-4-1-fast",
+      "case": "channels",
+      "schema_valid": false,
+      "semantic_ok": false,
+      "error": "provider_unavailable",
+      "attempts": 3
+    },
+    {
+      "model": "capy/grok-4-1-fast",
+      "case": "loss",
+      "schema_valid": false,
+      "semantic_ok": false,
+      "error": "provider_unavailable",
+      "attempts": 3
+    },
+    {
+      "model": "gemini-3.1-flash-lite-preview",
+      "case": "neutral",
+      "schema_valid": true,
+      "semantic_ok": true,
+      "attempts": 1,
+      "prompt_tokens": 1901,
+      "completion_tokens": 217,
+      "latency_seconds": 9.644
+    },
+    {
+      "model": "gemini-3.1-flash-lite-preview",
+      "case": "channels",
+      "schema_valid": true,
+      "semantic_ok": true,
+      "attempts": 1,
+      "prompt_tokens": 1906,
+      "completion_tokens": 247,
+      "latency_seconds": 1.546
+    },
+    {
+      "model": "gemini-3.1-flash-lite-preview",
+      "case": "loss",
+      "schema_valid": true,
+      "semantic_ok": true,
+      "attempts": 1,
+      "prompt_tokens": 1904,
+      "completion_tokens": 509,
+      "latency_seconds": 2.541
+    }
+  ],
+  "all_passed": false,
+  "working_database_access": "read-only model selection",
+  "private_payload_exported": false,
+  "telegram_messages_sent": 0,
+  "synthetic_only": true,
+  "limitation": "Smoke checks, not an independent assessment of human realism."
+}

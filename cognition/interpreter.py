@@ -1,4 +1,4 @@
-"""Typed perception through OpenRouter. The provider proposes meaning, never deltas."""
+"""Typed perception via chat selection; OpenRouter remains an offline eval transport."""
 import asyncio
 import json
 import os
@@ -103,6 +103,16 @@ class OpenRouterInterpreter:
     async def close(self):
         await self.client.aclose()
 
+    async def model_for(self, event):
+        return self.model
+
+    async def complete(self, model, messages):
+        return await self.client.post('https://openrouter.ai/api/v1/chat/completions',
+            headers={'Authorization': 'Bearer ' + self._api_key},
+            json={'model': model, 'messages': messages, 'temperature': 0,
+                'max_tokens': 8192, 'reasoning': {'effort': 'medium', 'exclude': True},
+                'response_format': {'type': 'json_object'}})
+
     async def interpret(self, event: CognitiveEvent, goals=DEFAULT_GOALS, memories=(), intentions=(), rich=False, sensory=()) -> InterpretationResult:
         if event.evidence.origin.value not in ('user','delivered_action'):
             raise ValueError('Interpretation requires a real observation or confirmed action')
@@ -124,6 +134,7 @@ class OpenRouterInterpreter:
                 'The commitment actor is arti; the target participant is the evidence owner.')
         messages = [{'role':'system', 'content':SYSTEM_PROMPT + (SITUATION_PROMPT if rich else '')}, {'role':'user', 'content':json.dumps(content, ensure_ascii=False)}]
         expected = {'appraisals','situation'} if rich else {'appraisals'}
+        model = await self.model_for(event)
         started = time.perf_counter()
         prompt_tokens = completion_tokens = 0
         reported_cost = 0.
@@ -132,11 +143,7 @@ class OpenRouterInterpreter:
         code = 'provider_unavailable'
         for attempt in range(1, self.max_attempts + 1):
             try:
-                response = await self.client.post('https://openrouter.ai/api/v1/chat/completions',
-                    headers={'Authorization':'Bearer ' + self._api_key},
-                    json={'model':self.model, 'messages':messages, 'temperature':0,
-                          'max_tokens':8192, 'reasoning':{'effort':'medium', 'exclude':True},
-                          'response_format':{'type':'json_object'}})
+                response = await self.complete(model, messages)
                 if response.status_code != 200:
                     if response.status_code not in (408, 429, 500, 502, 503, 504):
                         raise InterpreterFailure('provider_rejected')
@@ -182,7 +189,7 @@ class OpenRouterInterpreter:
                             messages.append({'role':'user', 'content':'The prior result violated the supplied JSON schema: ' + message + '. Return all required fields and valid probabilities; root fields: ' + ', '.join(sorted(expected)) + '.'})
                         else:
                             messages[-1]['content'] = 'Schema validation failed: ' + message + '. Correct this field and return the complete required JSON object.'
-            except httpx.TimeoutException:
+            except (httpx.TimeoutException, TimeoutError):
                 code = 'timeout'
             except (httpx.TransportError, json.JSONDecodeError):
                 code = 'provider_unavailable'
@@ -192,6 +199,28 @@ class OpenRouterInterpreter:
                                         'prompt_tokens':prompt_tokens, 'completion_tokens':completion_tokens,
                                         'reported_cost_usd':reported_cost if cost_known else None,
                                         'validation_errors':validation_errors})
+
+
+class SelectedModelInterpreter(OpenRouterInterpreter):
+    """Production interpreter; model and provider are selected by the chat menu."""
+    def __init__(self, transport=None, timeout_seconds=90, max_attempts=3):
+        from ai.providers.structured import SelectedModelClient
+        self.transport = transport or SelectedModelClient(timeout=timeout_seconds)
+        self.max_attempts = max_attempts
+        if not 1 <= max_attempts <= 3:
+            raise ValueError('A bounded retry policy is required')
+
+    async def model_for(self, event):
+        try:
+            return await self.transport.model_for(event.context.chat_id)
+        except Exception:
+            raise InterpreterFailure('model_selection_failed') from None
+
+    async def complete(self, model, messages):
+        return await self.transport.complete(model, messages, 8192)
+
+    async def close(self):
+        await self.transport.close()
 
 
 def complete_uncertainty(perception: Perception) -> Perception:

@@ -9,6 +9,8 @@ async def active_context(runtime,chat_id,mode):
     if not runtime or runtime.mode=='legacy':
         return None
     context = await runtime.context(chat_id,mode)
+    if getattr(runtime,'strict',False):
+        return await runtime.ensure_context(context)
     async with runtime.pool.acquire() as conn:
         row = await conn.fetchrow('SELECT id,authority FROM cognitive_contexts WHERE persona_id=$1 AND chat_id=$2 AND mode=$3 AND scene_id=$4 AND topic_id=$5',*context.identity())
     return row['id'] if row and row['authority']=='active' else None

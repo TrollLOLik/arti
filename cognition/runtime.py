@@ -1,14 +1,13 @@
 """Single authoritative event cycle shared by Telegram and isolated simulations."""
 import asyncio
 import contextvars
-import os
 import uuid
 from dataclasses import dataclass,replace,field
 from datetime import datetime,timezone
 from weakref import WeakValueDictionary
 
 from cognition.affect import advance,appraise,affect,expression,available_goals
-from cognition.interpreter import OpenRouterInterpreter,environment_key,InterpreterFailure
+from cognition.interpreter import SelectedModelInterpreter,InterpreterFailure
 from cognition.jobs import JobQueue
 from cognition.memory_repository import MemoryRepository,key
 from cognition.prompting import memory_for_prompt
@@ -22,6 +21,14 @@ from cognition.worker import CognitiveWorker
 
 CURRENT_TURN = contextvars.ContextVar('arti_cognitive_turn',default=None)
 _runtime = None
+
+
+async def fence_context(conn,cid):
+    """Invalidate in-flight work while preserving permitted projections."""
+    await conn.execute('UPDATE cognitive_contexts SET suppression_epoch=suppression_epoch+1,worker_token=NULL,worker_lease_until=NULL WHERE id=$1',cid)
+    await conn.execute('UPDATE cognitive_artifacts SET projection_epoch=(SELECT suppression_epoch FROM cognitive_contexts WHERE id=$1) WHERE context_id=$1 AND suppressed_at IS NULL',cid)
+    await conn.execute("UPDATE cognitive_jobs SET status='pending',lease_token=NULL,lease_until=NULL,available_at=NOW() WHERE context_id=$1 AND status='running'",cid)
+    await conn.execute("UPDATE cognitive_outbox SET status='cancelled',payload=NULL WHERE context_id=$1 AND status='prepared'",cid)
 
 
 @dataclass
@@ -54,10 +61,13 @@ class PreparedTurn:
 
 
 class CognitiveRuntime:
-    def __init__(self,pool,interpreter,mode='shadow',clock=None):
+    def __init__(self,pool,interpreter,mode='active',clock=None,*,strict=False):
         if mode not in ('shadow','active','legacy'):
             raise ValueError('Invalid cognitive authority')
         self.pool,self.interpreter,self.mode = pool,interpreter,mode
+        self.strict = strict
+        if strict and mode != 'active':
+            raise ValueError('Production cognition is always active')
         self.clock = clock or (lambda:datetime.now(timezone.utc))
         self.repo = CognitiveRepository(pool)
         self.memory = MemoryRepository(pool)
@@ -73,9 +83,72 @@ class CognitiveRuntime:
         # A crash between send and receipt must never trigger an automatic resend.
         async with self.pool.acquire() as conn:
             await conn.execute("UPDATE cognitive_outbox SET status='delivery_unknown' WHERE status='sending' AND updated_at<NOW()-INTERVAL '10 minutes'")
+        if self.strict:
+            await self.activate_current_contexts()
         if start_worker and self.mode!='legacy':
             self.worker.start()
         return self
+
+    async def activate_current_contexts(self):
+        """Promote current contexts, preserving retired/unresolved RP scenes."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch('''SELECT c.id FROM cognitive_contexts c
+                WHERE c.authority!='active' AND (c.mode='default' OR EXISTS(
+                    SELECT 1 FROM cognitive_scenes s WHERE s.chat_id=c.chat_id
+                    AND s.topic_id=c.topic_id AND s.scene_id=c.scene_id)) ORDER BY c.id''')
+        for row in rows:
+            await self.set_authority(row['id'], 'active')
+        return len(rows)
+
+    async def ensure_context(self, context):
+        """An empty diagnostic context is storage, never invented evidence."""
+        from cognition.affect import initial_state
+        async with self.pool.acquire() as conn,conn.transaction():
+            if self.strict and context.mode == 'rp':
+                await conn.execute('SELECT pg_advisory_xact_lock($1::bigint)',context.chat_id)
+                scene = await conn.fetchval('SELECT scene_id FROM cognitive_scenes WHERE chat_id=$1 AND topic_id=$2',context.chat_id,context.topic_id)
+                if scene != context.scene_id:
+                    raise SuppressedEvidence()
+            cid = await conn.fetchval('''INSERT INTO cognitive_contexts
+                (persona_id,chat_id,mode,scene_id,topic_id,model_version,state,authority)
+                VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8)
+                ON CONFLICT(persona_id,chat_id,mode,scene_id,topic_id) DO NOTHING RETURNING id''',
+                *context.identity(),MODEL_VERSION,dump(initial_state(context,self.clock())),self.mode)
+            if cid is None:
+                cid = await conn.fetchval('''SELECT id FROM cognitive_contexts
+                    WHERE persona_id=$1 AND chat_id=$2 AND mode=$3 AND scene_id=$4 AND topic_id=$5''',*context.identity())
+        if self.strict:
+            async with self.pool.acquire() as conn:
+                authority = await conn.fetchval('SELECT authority FROM cognitive_contexts WHERE id=$1',cid)
+            if authority != 'active':
+                await self.set_authority(cid,'active')
+        return cid
+
+    async def reset_history(self,chat_id,mode='default'):
+        context = await self.context(chat_id,mode)
+        cid = await self.ensure_context(context)
+        async with self.pool.acquire() as conn,conn.transaction():
+            await self._validate_current_scene(conn,cid)
+            await conn.fetchval('SELECT revision FROM cognitive_contexts WHERE id=$1 FOR UPDATE',cid)
+            await conn.execute('''UPDATE cognitive_contexts SET history_after_event_id=
+                COALESCE((SELECT MAX(id) FROM cognitive_events WHERE context_id=$1),0) WHERE id=$1''',cid)
+            await fence_context(conn,cid)
+            await conn.execute("UPDATE group_candidates SET status='cancelled',payload=NULL WHERE context_id=$1 AND status IN ('pending','deferred','claimed')",cid)
+        from cognition.history import invalidate_history
+        invalidate_history(chat_id)
+        return cid
+
+    async def _validate_current_scene(self,conn,cid):
+        if not self.strict:
+            return
+        context = await conn.fetchrow('SELECT chat_id,mode,scene_id,topic_id FROM cognitive_contexts WHERE id=$1',cid)
+        if context is None:
+            raise ValueError('Unknown cognitive context')
+        if context['mode'] == 'rp':
+            await conn.execute('SELECT pg_advisory_xact_lock($1::bigint)',context['chat_id'])
+            scene = await conn.fetchval('SELECT scene_id FROM cognitive_scenes WHERE chat_id=$1 AND topic_id=$2',context['chat_id'],context['topic_id'])
+            if scene != context['scene_id']:
+                raise SuppressedEvidence()
 
     async def close(self):
         await self.worker.stop()
@@ -105,6 +178,10 @@ class CognitiveRuntime:
 
     async def ingest(self,chat_id,owner,text,message_id,mode='default',occurred_at=None,origin=Origin.USER,context=None,event_kind='utterance',audience=None,addressed_to_arti=None,reply_to_id=None):
         context = context or await self.context(chat_id,mode)
+        if self.strict and context != await self.context(chat_id,mode,context.topic_id):
+            raise SuppressedEvidence()
+        if self.strict:
+            await self.ensure_context(context)
         source = f'telegram:{chat_id}:{message_id}:{origin.value}'
         async with self.pool.acquire() as conn:
             existing = await conn.fetchrow('''SELECT e.* FROM cognitive_events e JOIN cognitive_contexts c ON c.id=e.context_id
@@ -325,6 +402,7 @@ class CognitiveRuntime:
         memory,ids = memory_for_prompt(memories,beliefs)
         # Inclusion is recorded later by the final prompt assembler.
         async with self.pool.acquire() as conn,conn.transaction():
+            await self._validate_current_scene(conn,cid)
             await conn.fetchval('SELECT revision FROM cognitive_contexts WHERE id=$1 FOR UPDATE',cid)
             await self.memory._put(conn,cid,'regulation',key('regulation',event.event_id),
                                    dict(strategy=decision.strategy,expected_outcome=decision.expected_outcome,pending=decision.pending,
@@ -365,16 +443,17 @@ class CognitiveRuntime:
         await self.memory.record_retrieval(turn.context_id,turn.event.evidence.owner_id,turn.event.event_id,'included',sorted(artifact_ids),self.clock())
 
     async def set_authority(self,cid,authority):
+        if self.strict and authority != 'active':
+            raise ValueError('Production cognition cannot return to legacy/shadow')
         if authority not in ('active','shadow','legacy'):
             raise ValueError('Invalid authority')
         async with self.pool.acquire() as conn,conn.transaction():
+            await self._validate_current_scene(conn,cid)
             await conn.fetchval('SELECT revision FROM cognitive_contexts WHERE id=$1 FOR UPDATE',cid)
             changed = await conn.fetchval('SELECT authority!=$2 FROM cognitive_contexts WHERE id=$1',cid,authority)
             await conn.execute('UPDATE cognitive_contexts SET authority=$2,authority_explicit=TRUE WHERE id=$1',cid,authority)
             if changed:
-                await conn.execute('UPDATE cognitive_contexts SET suppression_epoch=suppression_epoch+1,worker_token=NULL,worker_lease_until=NULL WHERE id=$1',cid)
-                await conn.execute('UPDATE cognitive_artifacts SET projection_epoch=(SELECT suppression_epoch FROM cognitive_contexts WHERE id=$1) WHERE context_id=$1 AND suppressed_at IS NULL',cid)
-                await conn.execute("UPDATE cognitive_jobs SET status='pending',lease_token=NULL,lease_until=NULL,available_at=NOW() WHERE context_id=$1 AND status='running'",cid)
+                await fence_context(conn,cid)
             # Re-enable the prior projection by authority alone; no mixing or
             # reverse import of new numerical states into the old core.
             if authority!='active':
@@ -383,10 +462,10 @@ class CognitiveRuntime:
 
 async def start_runtime(pool,mode=None,interpreter=None):
     global _runtime
-    mode = mode or os.getenv('ARTI_COGNITION_MODE','shadow')
-    if interpreter is None and mode!='legacy':
-        interpreter = OpenRouterInterpreter(environment_key(),model=os.getenv('ARTI_COGNITION_MODEL','stealth/space-bunny-alpha'))
-    _runtime = await CognitiveRuntime(pool,interpreter,mode).initialize()
+    if mode not in (None,'active'):
+        raise ValueError('Production cognition is always active')
+    interpreter = interpreter or SelectedModelInterpreter()
+    _runtime = await CognitiveRuntime(pool,interpreter,'active',strict=True).initialize()
     return _runtime
 
 
@@ -417,5 +496,5 @@ async def prepare_turn(chat_id,user_id,text,message_id,mode='default',task_serio
             return turn
     if not runtime or runtime.mode=='legacy' or user_id is None or message_id is None:
         CURRENT_TURN.set(None)
-        return None
+        raise SuppressedEvidence('A cognitive response requires an available runtime and authored source')
     return await runtime.prepare(chat_id,user_id,text,message_id,mode,task_serious,source_context)

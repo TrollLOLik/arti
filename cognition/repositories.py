@@ -75,10 +75,11 @@ class CognitiveRepository:
         state = initial_state(event.context, event.observed_at)
         async with self.pool.acquire() as conn, conn.transaction():
             cid = await conn.fetchval("""
-                INSERT INTO cognitive_contexts(persona_id, chat_id, mode, scene_id, topic_id, model_version, state)
-                VALUES($1,$2,$3,$4,$5,$6,$7::jsonb)
+                INSERT INTO cognitive_contexts(persona_id, chat_id, mode, scene_id, topic_id, model_version, state, authority)
+                VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8)
                 ON CONFLICT(persona_id,chat_id,mode,scene_id,topic_id) DO NOTHING RETURNING id
-            """, *event.context.identity(), MODEL_VERSION, dump(state))
+            """, *event.context.identity(), MODEL_VERSION, dump(state),
+                'shadow' if event.context.mode=='rp' and event.context.scene_id=='legacy-unresolved' else 'active')
             if cid is None:
                 cid = await conn.fetchval("""
                     SELECT id FROM cognitive_contexts WHERE persona_id=$1 AND chat_id=$2 AND mode=$3 AND scene_id=$4 AND topic_id=$5

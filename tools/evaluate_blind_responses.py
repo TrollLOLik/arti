@@ -59,7 +59,7 @@ class Completion:
 
 
 async def main():
-    from ai.generation import build_emotional_directive
+    from tools.legacy_baseline import build_emotional_directive
     completion = Completion()
     rng = random.Random(817340)
     frames = Path('tests/fixtures/full_perceptions/full_v3/development')

@@ -46,6 +46,8 @@ async def _send_with_receipt(method,args,kwargs,channel):
     text = str(kwargs.get('text') or kwargs.get('caption') or '')
     # Files, API tokens, reply markup and raw provider errors are never serialized.
     payload = dict(text=text,channel=channel,topic_id=topic,reply_to_id=kwargs.get('message_id') if channel=='reaction' else getattr(kwargs.get('reply_parameters'),'message_id',None) or kwargs.get('reply_to_message_id'))
+    if channel == 'sticker' and isinstance(kwargs.get('sticker'), str):
+        payload['sticker_id'] = kwargs['sticker']
     async with runtime.pool.acquire() as conn,conn.transaction():
         ctx = await conn.fetchrow('SELECT * FROM cognitive_contexts WHERE id=$1 FOR UPDATE',turn.context_id)
         permitted = await conn.fetchval('SELECT 1 FROM cognitive_events WHERE context_id=$1 AND id=$2 AND suppressed_at IS NULL',turn.context_id,turn.event_id)

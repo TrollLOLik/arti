@@ -15,7 +15,6 @@ from telegram.ext import ContextTypes
 from cognition.scope import requested
 
 from config import (
-    AUTO_REPLY_TIMEOUT, AUTO_REPLY_THRESHOLD,
     TTS_ENABLED,
     music_flow_state, waiting_for_image_prompt, pending_image_inputs, waiting_for_video_prompt, pending_video_inputs,
     pending_photo_action, pending_doc_action, rp_mode_state,
@@ -31,11 +30,10 @@ from utils.text_processing import (
     repeat_chat_action, fix_html_tags
 )
 from utils.document_parser import extract_document_text, extract_text_from_file
-from ai.generation import generate_response_stream, is_message_for_arti
+from ai.generation import generate_response_stream
 from ai.tts import text_to_speech_telegram
 from ai.stt import transcribe_audio_groq
 from bot.queue import enqueue_reply, enqueue_generation, _extract_photo_urls, _track_task
-from memory.storage import build_memory_context, remember_exchange
 from bot.commands import (
     handle_music_flow, handle_video_flow, handle_image_flow,
     _enqueue_video_from_flow, _enqueue_image_from_flow,
@@ -371,55 +369,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                                 base64_image=base64_image_reply,document_text=document_text_reply,video_file_id=telegram_video_file_id)
         return
 
-    # Определяем триггеры (только для групп)
-    # forwarded_from_bot/replied_to_bot/has_arti_mention уже посчитаны выше для URL-перехвата
-
-    # Явный триггер: упоминание, реплай или пересылка от бота
-    if has_arti_mention or forwarded_from_bot or replied_to_bot:
-        await enqueue_reply(chat_id, user_id, user_name, user_message, message_id, context, is_voice=True, base64_image=base64_image_reply, document_text=document_text_reply, video_file_id=telegram_video_file_id)
-        return
-
-    # Автоответ: если за AUTO_REPLY_TIMEOUT пришло много сообщений
-    recent_messages = await get_recent_messages(chat_id, AUTO_REPLY_TIMEOUT)
-    non_bot_messages = [msg for msg in recent_messages if not msg[1].startswith("Арти:")]
-
-    if len(non_bot_messages) >= AUTO_REPLY_THRESHOLD:
-        last_message_text = non_bot_messages[-1][1]
-        await enqueue_reply(chat_id, 0, "Автоответ", last_message_text, message_id, context, is_voice=True, base64_image=base64_image_reply, document_text=document_text_reply, video_file_id=telegram_video_file_id)
-        return
-
-    # LLM-фильтр: если Арти недавно отвечала в этом чате, проверяем — адресовано ли сообщение ей
-    recent_context = await get_chat_context(chat_id)
-    # Проверяем, есть ли недавние ответы Арти в контексте
-    if recent_context and "Арти:" in recent_context:
-        # Умная проверка: насколько недавно был ответ Арти?
-        lines = [line.strip() for line in recent_context.split("\n") if line.strip()]
-        arti_index = -1
-        last_arti_line = ""
-        for idx, line in enumerate(reversed(lines)):
-            if "] Арти:" in line:
-                arti_index = idx
-                last_arti_line = line
-                break
-        
-        # Если Арти отвечала в пределах последних 3 сообщений
-        if 0 <= arti_index <= 2:
-            is_recent_time = False
-            try:
-                # Извлекаем метку времени из строки формата "[YYYY-MM-DD HH:MM:SS] Арти: ..."
-                dt_str = last_arti_line[1:20]
-                arti_time = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
-                time_diff = datetime.now() - arti_time
-                if time_diff.total_seconds() <= 180:  # в течение последних 3 минут
-                    is_recent_time = True
-            except Exception as e:
-                logger.warning(f"Ошибка при парсинге времени последнего ответа Арти: {e}")
-                # На всякий случай разрешаем, если парсинг сломался
-                is_recent_time = True
-
-            if is_recent_time:
-                if await is_message_for_arti(user_message, recent_context, user_name):
-                    await enqueue_reply(chat_id, user_id, user_name, user_message, message_id, context, is_voice=True, base64_image=base64_image_reply, document_text=document_text_reply, video_file_id=telegram_video_file_id)
+    return
 
 
 # ============================================================================
@@ -516,46 +466,28 @@ async def _process_images_impl(
             pending_photo_action[(chat_id, user_id)]["user_name"] = user_name
             return
 
-        # Обновление эмоционального состояния чата
-        from database.models import ChatEmotionalState, MemoryUserProfile
-        import json
-        
-        closeness = 0.1
+        from database.models import strip_introspection_tags
+        user_caption = strip_introspection_tags(user_caption)
         mode = "rp" if rp_mode_state.get(chat_id) else "default"
         from cognition.runtime import prepare_turn
         cognitive_turn = await prepare_turn(chat_id,user_id,user_caption,message_id,mode)
-        if cognitive_turn is not None:
-            from materials.runtime import CURRENT_MATERIAL_USE
-            support={use.source_event_id for use in CURRENT_MATERIAL_USE.get() if use.source_event_id is not None and use.source_context_id==cognitive_turn.context_id}
-            cognitive_turn.supporting_event_ids=tuple(sorted(set(getattr(cognitive_turn,'supporting_event_ids',()))|support))
-        if cognitive_turn is not None and cognitive_turn.uses_cognition and cognitive_turn.repeated_delivery:
+        from materials.runtime import CURRENT_MATERIAL_USE
+        support={use.source_event_id for use in CURRENT_MATERIAL_USE.get() if use.source_event_id is not None and use.source_context_id==cognitive_turn.context_id}
+        cognitive_turn.supporting_event_ids=tuple(sorted(set(getattr(cognitive_turn,'supporting_event_ids',()))|support))
+        if cognitive_turn.repeated_delivery:
             return
-        user_profile = await MemoryUserProfile.get(chat_id, user_id, mode)
-        if user_profile and user_profile.get("profile_json"):
-            prof_json = json.loads(user_profile["profile_json"]) if isinstance(user_profile["profile_json"], str) else user_profile["profile_json"]
-            closeness = prof_json.get("affective", {}).get("closeness", 0.1)
-            
-        # Защита от инъекций: вырезаем тег интроспекции из ВВОДА юзера (парсим только из ответа Арти).
-        from database.models import strip_introspection_tags
-        user_caption = strip_introspection_tags(user_caption)
-        # defer_sentiment=True: словарный сдвиг отложен до apply_turn_sentiment пост-генерации.
-        emotion_source_key = f"photo:{mode}:{message_id}" if message_id is not None else None
-        img_state = {} if cognitive_turn is not None and cognitive_turn.uses_cognition else await ChatEmotionalState.update_state(chat_id, user_caption, closeness, user_id=user_id, defer_sentiment=True, source_key=emotion_source_key)
 
         image_details = "изображение" if len(base64_images) == 1 else f"{len(base64_images)} изображений"
         await _save_message(chat_id, user_name, f"Пользователь прислал {image_details}. Подпись: {user_caption}", user_id=user_id,message_id=message_id)
 
         dialog_history_str = await _get_dialog_history(chat_id)
-        memory_context = cognitive_turn.memory if cognitive_turn is not None and cognitive_turn.uses_cognition else await build_memory_context(
-            chat_id=chat_id,
-            user_id=user_id,
-            user_message=user_caption,
-            mode="rp" if rp_mode_state.get(chat_id) else "default",
-        )
+        from utils.model_selection import get_chat_model
+        memory_context = cognitive_turn.memory
         await bot.send_chat_action(chat_id=chat_id, action="typing")
 
         response_text, used_search, grounding_links, found_search_images = await generate_response_stream(
             chat_id=chat_id,
+            model=await get_chat_model(chat_id),
             prompt=user_caption,
             user_name=user_name,
             chat_context=dialog_history_str,
@@ -563,10 +495,8 @@ async def _process_images_impl(
             document_text=image_evidence_text or None,
             user_id=user_id,
             is_rp_mode=rp_mode_state.get(chat_id, False),
-            enable_introspection=True,
-            emotional_state=img_state,
             memory_context=memory_context,
-            expression_plan=cognitive_turn.expression if cognitive_turn is not None and cognitive_turn.uses_cognition else None,
+            expression_plan=cognitive_turn.expression,
         )
         logger.debug(f"RAW ИИ ОТВЕТ (фото, {len(base64_images)} шт): {response_text}")  # PRIV-01
 
@@ -577,21 +507,8 @@ async def _process_images_impl(
         # === ЦЕПОЧКА ОЧИСТКИ ТЕКСТА ===
         response_text = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL | re.IGNORECASE).strip()
 
-        # Извлекаем mood-стикера из ответа
-        sticker_mood = None
-        sticker_match = re.search(r'<sticker>(.*?)</sticker>', response_text, re.IGNORECASE)
-        if sticker_match:
-            sticker_mood = sticker_match.group(1).strip().lower()
-
-        # Гибридный сентимент: интроспекция LLM > словарный фолбэк; затем вырезаем служебный тег.
-        introspection_sticker = None if generation_failed or (cognitive_turn is not None and cognitive_turn.uses_cognition) else await ChatEmotionalState.apply_turn_sentiment(
-            chat_id, response_text, img_state.get("keyword_mood_delta"), source_key=emotion_source_key
-        )
-        if not sticker_mood and introspection_sticker:
-            sticker_mood = introspection_sticker
-        if cognitive_turn is not None and cognitive_turn.uses_cognition:
-            sticker_mood = None if generation_failed else cognitive_turn.expression.sticker_mood
-            response_text = '[' + cognitive_turn.expression.tts_style + '] ' + response_text
+        sticker_mood = None if generation_failed else cognitive_turn.expression.sticker_mood
+        response_text = '[' + cognitive_turn.expression.tts_style + '] ' + response_text
         response_text = strip_introspection_tags(response_text)
 
         # Очищаем все теги стикеров из ответа
@@ -641,8 +558,6 @@ async def _process_images_impl(
             history_response_text = f"[Стикер: {sticker_mood}]"
 
         # MEM-06: заглушку об ошибке не пишем в историю.
-        if not generation_failed and (cognitive_turn is None or not cognitive_turn.uses_cognition):
-            await _save_message(chat_id, "Арти", history_response_text)
 
         # === ОТПРАВКА СООБЩЕНИЯ (ТЕКСТ/ГОЛОС) ===
         sent_msg = None
@@ -715,19 +630,6 @@ async def _process_images_impl(
             )
 
         # MEM-06: не учим память на заглушке об ошибке.
-        if not generation_failed and (cognitive_turn is None or not cognitive_turn.uses_cognition):
-            memory_task = asyncio.create_task(
-                remember_exchange(
-                    chat_id=chat_id,
-                    user_id=user_id,
-                    user_name=user_name,
-                    user_message=user_caption,
-                    response_text=history_response_text,
-                    mode="rp" if rp_mode_state.get(chat_id) else "default",
-                    metadata={"message_id": message_id, "used_search": used_search, "source": "image"},
-                )
-            )
-            _track_task(memory_task)
 
         # === ОТПРАВЛЯЕМ КАРТИНКИ ИЗ ПОИСКА ===
         if found_search_images:
@@ -2014,28 +1916,10 @@ async def video_url_action_callback(update: Update, context: ContextTypes.DEFAUL
         return
 
 
-# Троттлинг ненавязчивого ответа Арти на реакцию (в памяти процесса): не чаще
-# одного авто-ответа на чат раз в REACTION_REPLY_MIN_INTERVAL секунд.
-_last_reaction_reply: dict = {}
-REACTION_REPLY_MIN_INTERVAL = 150.0
-REACTION_REPLY_PROB = 0.5
-
-# Анти-спам сдвига настроения от реакций: первая реакция нудит вектор настроения,
-# повторные в пределах окна игнорируются — иначе спам реакциями копит настроение
-# до максимума (у настроения, в отличие от подкрепления профиля, своего кулдауна нет).
-_last_reaction_mood: dict = {}
-REACTION_MOOD_COOLDOWN = 60.0
-
-
 async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Обрабатывает изменения реакций пользователей на сообщения Арти.
-
-    На добавленную реакцию (ТОЛЬКО к сообщению самого бота, AUTH-03):
-      1) подкрепляет аффективный профиль (closeness/receptivity),
-      2) сдвигает вектор настроения Арти (влияет на тон следующих ответов),
-      3) на эмоционально сильную реакцию иногда (вероятностно, с троттлингом)
-         отвечает короткой репликой или стикером — ненавязчиво.
+    """Register authored reactions as new cognitive observations.
+    Group feedback follows its source/permission boundaries; legacy random
+    replies and charge/closeness rewards are retired.
     """
     reaction_update = update.message_reaction
     if not reaction_update:
@@ -2096,98 +1980,4 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
                              occurred_at=reaction_update.date,event_kind='reaction')
         return
 
-    from bot.reactions import classify_reactions
-    from database.models import MemoryUserProfile, ChatEmotionalState
-    mode = "rp" if rp_mode_state.get(chat_id) else "default"
-
-    effect = classify_reactions(added_emojis)
-    if not effect:
-        logger.info(f"Реакции {added_emojis} от {user_id} в чате {chat_id} не распознаны — пропускаем.")
-        return
-
-    logger.info(
-        f"Реакция {added_emojis} от {user_id} в чате {chat_id}: "
-        f"reinforcement={effect['reinforcement']} mood={effect['mood']} reply_mood={effect['reply_mood']}"
-    )
-
-    # 1) Подкрепление аффективного профиля
-    if effect["reinforcement"]:
-        await MemoryUserProfile.apply_reinforcement(chat_id, user_id, mode, effect["reinforcement"])
-
-    # 2) Сдвиг вектора настроения Арти (с анти-спам кулдауном на чат)
-    if effect["mood"]:
-        import time as _t
-        now_mood = _t.monotonic()
-        last_mood = _last_reaction_mood.get(chat_id)
-        if last_mood is not None and (now_mood - last_mood) < REACTION_MOOD_COOLDOWN:
-            logger.info(
-                f"Сдвиг настроения от реакции пропущен (cooldown) в чате {chat_id}: "
-                f"{REACTION_MOOD_COOLDOWN - (now_mood - last_mood):.0f}с осталось"
-            )
-        else:
-            _last_reaction_mood[chat_id] = now_mood
-            await ChatEmotionalState.apply_mood_delta(chat_id, effect["mood"], source="reaction")
-
-    # 3) Ненавязчивый ответ на сильную реакцию
-    await _maybe_reply_to_reaction(context, chat_id, user_id, message_id, mode, effect["reply_mood"])
-
-
-async def _maybe_reply_to_reaction(context, chat_id, user_id, message_id, mode, reply_mood):
-    """Иногда отвечает на сильную эмоциональную реакцию репликой или стикером.
-
-    Срабатывает не на каждую реакцию: только если задан reply_mood, ответы в чате
-    включены, прошёл троттлинг и выпала вероятность. Так Арти «замечает» сильную
-    реакцию, но не спамит.
-    """
-    if not reply_mood:
-        return
-    if not await is_responses_enabled(chat_id):
-        return
-
-    import time as _t
-    now = _t.monotonic()
-    last = _last_reaction_reply.get(chat_id)
-    if last is not None and (now - last) < REACTION_REPLY_MIN_INTERVAL:
-        return
-    if random.random() > REACTION_REPLY_PROB:
-        return
-    _last_reaction_reply[chat_id] = now
-
-    bot = context.bot
-    # Канал ответа: примерно поровну короткая реплика или стикер.
-    if random.random() < 0.5:
-        from bot.reactions import pick_reaction_reply
-        text = pick_reaction_reply(reply_mood)
-        if not text:
-            return
-        try:
-            await bot.send_chat_action(chat_id=chat_id, action="typing")
-            await asyncio.sleep(random.uniform(1.2, 2.6))
-            await bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                reply_to_message_id=message_id,
-                parse_mode='HTML',
-            )
-            logger.info(f"Арти ответила репликой на реакцию (mood={reply_mood}) в чате {chat_id}.")
-        except Exception as e:
-            logger.warning(f"Не удалось отправить реплику на реакцию в чате {chat_id}: {e}")
-    else:
-        from bot.reactions import REPLY_MOOD_TO_STICKER
-        from ai.stickers import send_mood_sticker_task
-        sticker_mood = REPLY_MOOD_TO_STICKER.get(reply_mood)
-        if not sticker_mood:
-            return
-        asyncio.create_task(
-            send_mood_sticker_task(
-                bot=bot,
-                chat_id=chat_id,
-                user_id=user_id,
-                mood=sticker_mood,
-                message_id=message_id,
-                mode=mode,
-                force=True,
-                user_message_id=message_id,
-            )
-        )
-        logger.info(f"Арти ответила стикером на реакцию (mood={sticker_mood}) в чате {chat_id}.")
+    return

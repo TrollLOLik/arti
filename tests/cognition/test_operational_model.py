@@ -220,17 +220,19 @@ class OperationalDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await conn.fetchval("SELECT COUNT(*) FROM cognitive_legacy_map WHERE source_table='memory_messages'"),4)
             self.assertEqual(await conn.fetchval("SELECT COUNT(*) FROM cognitive_events WHERE payload->>'text'='Beyond snapshot'"),0)
 
-    async def test_timeline_empty_output_advances_processed_checkpoint(self):
+    async def test_retired_timeline_cannot_call_provider_or_advance_old_checkpoint(self):
         from memory import timeline
         async with self.pool.acquire() as conn:
             for i in range(3):
                 await conn.execute("INSERT INTO memory_messages(chat_id,user_id,user_name,role,mode,source,message_text) VALUES(10,1,'User','user','default','test','Hello')")
-        with patch.object(timeline,'MEMORY_TIMELINE_MIN_MESSAGES',1),patch.object(timeline.genai_client.models,'generate_content',return_value=SimpleNamespace(text='{"events":[]}')) as call:
+        with patch('config.genai_client.models.generate_content',side_effect=AssertionError('retired provider')) as call:
             first = await timeline.build_timeline_events(10,dry_run=False)
             second = await timeline.build_timeline_events(10,dry_run=False)
-        self.assertEqual(first['event_count'],0)
-        self.assertEqual(second['message_count'],0)
-        self.assertEqual(call.call_count,1)
+        self.assertEqual(first['status'],'retired')
+        self.assertEqual(second['status'],'retired')
+        call.assert_not_called()
+        async with self.pool.acquire() as conn:
+            self.assertEqual(await conn.fetchval('SELECT COUNT(*) FROM memory_processing_checkpoints'),0)
 
     async def test_final_generator_uses_whole_memory_objects_and_actual_inclusion(self):
         turn = await self.runtime.prepare(10,1,'Remember this project.',1)
@@ -461,6 +463,6 @@ class OperationalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(rollback.worker,'start') as start,patch('cognition.runtime.get_runtime',return_value=rollback):
             await rollback.initialize()
             start.assert_not_called()
-            self.assertTrue(await legacy_permitted(10))
+            self.assertFalse(await legacy_permitted(10))
             self.assertIsNone(await active_context(rollback,10,'default'))
             self.assertEqual(await due_intentions(rollback),[])
