@@ -401,6 +401,8 @@ async def stop(update, context):
         return
 
     await set_responses_enabled(chat_id, False)
+    from cognition.telegram_scope import cancel_pending_intake
+    await cancel_pending_intake(chat_id, None)
     logger.info(f"Бот отключен в чате {chat_id}.")
     await update.message.reply_text(random.choice(STOP_RESPONSES), parse_mode='HTML')
 
@@ -456,9 +458,12 @@ async def handle_cancel_command(update: Update, context: ContextTypes.DEFAULT_TY
     """Отменяет текущие пошаговые запросы (музыка, фото, видео)."""
     chat_id = update.effective_chat.id
     user_id = update.message.from_user.id
-    if update.effective_chat.type!='private' and not await is_admin(update.effective_user,chat_id,context):
-        await update.message.reply_text('Остановить запросы всего чата может только администратор. Свою задачу останови в её карточке.')
+    if getattr(context,'args',None) or (update.effective_chat.type!='private' and not await is_admin(update.effective_user,chat_id,context)):
+        from bot.request_runtime import cancel_own_request
+        await cancel_own_request(update,context)
         return
+    from cognition.telegram_scope import cancel_pending_intake
+    await cancel_pending_intake(chat_id,None)
     from bot.menu import cancel_menu_input
     await cancel_menu_input(update,context)
     

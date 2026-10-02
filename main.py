@@ -62,6 +62,32 @@ application: Optional[telegram.ext.Application] = None
 _instance_lock = None
 
 
+class PollerLeaseLost(RuntimeError):
+    """Polling stopped safely and may restart only after full cleanup."""
+
+
+async def watch_instance(app, *, interval=1, health_timeout=3):
+    """Never keep polling with an uncertain lease; preserve terminal stops."""
+    while True:
+        await asyncio.sleep(interval)
+        stop = _instance_lock is not None and _instance_lock.stop_requested()
+        try:
+            healthy = await asyncio.wait_for(app.bot_data['poller_lease'].healthy(), health_timeout)
+        except Exception:
+            healthy = False
+        if stop or not healthy:
+            # Conflict and explicit user stop take precedence over recovery,
+            # including when they arrive during the health query.
+            stop = stop or (_instance_lock is not None and _instance_lock.stop_requested())
+            if stop:
+                app.bot_data['stop_reason'] = 'requested'
+            elif app.bot_data.get('stop_reason') != 'polling_conflict':
+                app.bot_data['stop_reason'] = 'lease_lost'
+            logger.info('Остановка Арти: %s', 'команда перезапуска/остановки' if stop else 'потеря блокировки poller')
+            app.stop_running()
+            return
+
+
 def setup_signal_handlers():
     """Настройка обработчиков сигналов для graceful shutdown"""
     if sys.platform != "win32":
@@ -87,6 +113,9 @@ def run_with_restart():
     asyncio.set_event_loop(loop)
     
     while restart_count < max_restarts:
+        # A stop received during reconnect backoff must not start a new poller.
+        if _instance_lock is not None and _instance_lock.stop_requested():
+            break
         try:
             logger.info(f"Запуск бота (попытка {restart_count + 1})...")
             
@@ -118,19 +147,7 @@ def run_with_restart():
                     app.bot_data.setdefault('owned_workers',[]).append(task)
                     return task
 
-                async def watch_instance():
-                    while True:
-                        await asyncio.sleep(1)
-                        stop = _instance_lock is not None and _instance_lock.stop_requested()
-                        try:
-                            healthy = await asyncio.wait_for(app.bot_data['poller_lease'].healthy(), 3)
-                        except Exception:
-                            healthy = False
-                        if stop or not healthy:
-                            logger.info('Остановка Арти: %s', 'команда перезапуска/остановки' if stop else 'потеря блокировки poller')
-                            app.stop_running()
-                            return
-                spawn_worker(watch_instance())
+                spawn_worker(watch_instance(app))
 
                 # L-03: воркеры под супервизором — упавший автоматически перезапустится.
                 # REL-01: раздельные воркеры по типам медиа (image/video/music).
@@ -146,6 +163,8 @@ def run_with_restart():
                 logger.info("Watchdog vclone FSM запущен (supervised).")
                 from bot.media_jobs import maintenance_worker as media_maintenance
                 spawn_worker(run_supervised(media_maintenance, 'media_spool_cleanup'))
+                from utils.location_manager import maintenance_worker as location_maintenance
+                spawn_worker(run_supervised(location_maintenance, 'location_retention'))
                 from organizer.runtime import worker as organizer_worker
                 spawn_worker(run_supervised(organizer_worker,'native_organizer',app.bot))
                 from cognition.runtime import get_runtime
@@ -302,6 +321,11 @@ def run_with_restart():
                 close_loop=False,
                 allowed_updates=telegram.Update.ALL_TYPES
             )
+
+            if application.bot_data.get('stop_reason') == 'lease_lost':
+                # run_polling has finished post_stop/post_shutdown here. Rebuild
+                # the pool/runtime and reacquire exclusivity before polling again.
+                raise PollerLeaseLost('poller_lease_lost')
             
             logger.info("Бот штатно остановлен")
             break

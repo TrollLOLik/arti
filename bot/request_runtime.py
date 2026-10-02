@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from bot.request_store import RequestStore
 
 CURRENT_REQUEST = contextvars.ContextVar('arti_request', default=None)
+_running_requests = {}
 logger = logging.getLogger(__name__)
 
 
@@ -176,52 +177,76 @@ async def _send(method, args, kwargs, channel):
         raise DeliveryUnknown()
     if row['state'] != 'prepared':
         raise DeliverySuppressed()
-    # Always use the original persisted payload after interruption.
-    prepared = await decode_value(row['payload'])
-    if prepared['channel'] != channel:
-        raise DeliverySuppressed()
-    # Open staged bytes only after the request/namespace ownership check. The
-    # descriptor, never a local path or copied 50 MiB blob, is the durable intent.
+    from telegram.error import RetryAfter
+    from cognition.delivery import definite_rejection, DeliveryRejected
+    from utils.async_cleanup import await_owned
     from contextlib import ExitStack
-    files = ExitStack()
-    try:
-        for key, value in list(prepared['kwargs'].items()):
-            if isinstance(value, dict) and '_arti_spooled_file' in value:
-                if set(value) != {'_arti_spooled_file'} or key not in ('audio','video','voice','document'):
-                    raise DeliverySuppressed()
-                from bot.media_jobs import spool
-                descriptor = value['_arti_spooled_file']
-                await store().assert_resources(job['id'], job['token'], [descriptor['namespace']])
-                prepared['kwargs'][key] = files.enter_context(spool().open_verified(descriptor))
-        if await _media_context_busy(job):
-            raise MediaContextBusy()
-        if not await store().begin_send(job['id'], job['token'], ordinal):
+    while True:
+        # RetryAfter survives process death. The same ordinal and original body
+        # are fenced again after the delay; cancellation here is safe to release.
+        retry_at = row.get('retry_at')
+        if retry_at:
+            await asyncio.sleep(max(0, (retry_at-datetime.now(timezone.utc)).total_seconds()))
+        from materials.runtime import guard_current
+        await guard_current(kwargs.get('chat_id', args[0] if args else None))
+        prepared = await decode_value(row['payload'])
+        if prepared['channel'] != channel:
             raise DeliverySuppressed()
-    except BaseException:
-        files.close()
-        raise
-    started = time.monotonic()
-    try:
-        result = await send_with_receipt(method, prepared['args'], prepared['kwargs'], prepared['channel'])
-        def minimal_receipt(value):
-            if value is True: return True
-            if isinstance(value, (tuple, list)): return [minimal_receipt(item) for item in value]
-            mid = getattr(value, 'message_id', None)
-            if mid is None: raise DeliveryUnknown()
-            return {'message_id': mid}
-        receipt = minimal_receipt(result)
-        if not await store().finish_send(job['id'], job['token'], ordinal, 'delivered', receipt):
-            raise DeliveryUnknown()
-    except BaseException:
+        files = ExitStack()
         try:
-            await asyncio.shield(store().finish_send(job['id'], job['token'], ordinal, 'delivery_unknown'))
-        except Exception:
-            pass  # The durable sending marker remains non-retryable on recovery.
-        raise
-    finally:
-        files.close()
-    diagnostic(job, 'delivery', started)
-    return result
+            for key, value in list(prepared['kwargs'].items()):
+                if isinstance(value, dict) and '_arti_spooled_file' in value:
+                    if set(value) != {'_arti_spooled_file'} or key not in ('audio','video','voice','document'):
+                        raise DeliverySuppressed()
+                    from bot.media_jobs import spool
+                    descriptor = value['_arti_spooled_file']
+                    await store().assert_resources(job['id'], job['token'], [descriptor['namespace']])
+                    prepared['kwargs'][key] = files.enter_context(spool().open_verified(descriptor))
+            if await _media_context_busy(job):
+                raise MediaContextBusy()
+            if not await store().begin_send(job['id'], job['token'], ordinal):
+                raise DeliverySuppressed()
+            started = time.monotonic()
+            try:
+                result = await send_with_receipt(method, prepared['args'], prepared['kwargs'], prepared['channel'])
+            except BaseException as exc:
+                if definite_rejection(exc):
+                    delay = None
+                    if isinstance(exc, RetryAfter):
+                        delay = exc.retry_after
+                        delay = delay.total_seconds() if hasattr(delay, 'total_seconds') else float(delay)
+                    row = await await_owned(store().reject_send(job['id'], job['token'], ordinal, retry_seconds=delay))
+                    if row is None:
+                        raise DeliverySuppressed() from None
+                    if delay is not None:
+                        diagnostic(job, 'rate_limited', started)
+                        continue
+                    raise DeliveryRejected() from None
+                try:
+                    await await_owned(store().finish_send(job['id'], job['token'], ordinal, 'delivery_unknown'))
+                except Exception:
+                    pass  # The sending marker remains nonretryable on recovery.
+                raise
+            def minimal_receipt(value):
+                if value is True: return True
+                if isinstance(value, (tuple, list)): return [minimal_receipt(item) for item in value]
+                mid = getattr(value, 'message_id', None)
+                if mid is None: raise DeliveryUnknown()
+                return {'message_id': mid}
+            try:
+                receipt = minimal_receipt(result)
+                if not await store().finish_send(job['id'], job['token'], ordinal, 'delivered', receipt):
+                    raise DeliveryUnknown()
+            except BaseException:
+                try:
+                    await await_owned(store().finish_send(job['id'], job['token'], ordinal, 'delivery_unknown'))
+                except Exception:
+                    pass
+                raise
+            diagnostic(job, 'delivery', started)
+            return result
+        finally:
+            files.close()
 
 
 async def _heartbeat(job, execution):
@@ -260,7 +285,8 @@ async def _execute(job, bot):
 
 
 async def worker(bot, kinds):
-    from cognition.delivery import DeliveryUnknown, DeliverySuppressed
+    from cognition.delivery import DeliveryUnknown, DeliverySuppressed, DeliveryRejected
+    from utils.async_cleanup import await_owned
     from cognition.repositories import SuppressedEvidence
     from materials.types import MaterialError
     while True:
@@ -273,6 +299,7 @@ async def worker(bot, kinds):
         job['_send_lock'] = asyncio.Lock()
         token = CURRENT_REQUEST.set(job)
         execution = asyncio.create_task(_execute(job, bot))
+        _running_requests[job['id']] = execution
         from bot.queue import register_running_task, unregister_running_task
         register_running_task(job['chat_id'], execution)
         progress = asyncio.create_task(_progress(job, bot))
@@ -290,11 +317,16 @@ async def worker(bot, kinds):
             await store().finish(job['id'], job['token'], 'failed', 'deadline_exceeded')
             diagnostic(job, 'deadline_exceeded', started)
         except asyncio.CancelledError:
-            execution.cancel()
-            await asyncio.gather(execution, return_exceptions=True)
-            await asyncio.shield(store().release(job['id'], job['token']))
+            async def release_cancelled():
+                execution.cancel()
+                await asyncio.gather(execution, return_exceptions=True)
+                await store().release(job['id'], job['token'])
+            await await_owned(release_cancelled())
             if asyncio.current_task().cancelling():
                 raise
+        except DeliveryRejected:
+            await store().finish(job['id'], job['token'], 'failed', 'telegram_rejected')
+            diagnostic(job, 'failed', started, error_code='telegram_rejected')
         except MediaContextBusy:
             await store().release(job['id'],job['token'],delay_seconds=1)
             diagnostic(job,'waiting_for_source_rebuild',started)
@@ -320,11 +352,14 @@ async def worker(bot, kinds):
             outcome = await store().status(job['id'])
             diagnostic(job, outcome['state'] if outcome else 'unconfirmed', started)
         finally:
+            _running_requests.pop(job['id'], None)
             unregister_running_task(job['chat_id'], execution)
             heartbeat.cancel()
             progress.cancel()
-            await asyncio.gather(heartbeat, progress, return_exceptions=True)
-            CURRENT_REQUEST.reset(token)
+            try:
+                await await_owned(asyncio.gather(heartbeat, progress, return_exceptions=True))
+            finally:
+                CURRENT_REQUEST.reset(token)
         if job['kind'] in ('image', 'video', 'music'):
             from config import MUSIC_COOLDOWN
             await asyncio.sleep(MUSIC_COOLDOWN if job['kind'] == 'music' else 2)
@@ -347,6 +382,8 @@ async def request_status(update, context):
               'delivery_unknown':'отправка не подтверждена; автоматического повтора не будет'}
     label = 'истёк срок ожидания' if row.get('error_code') == 'deadline_exceeded' else labels.get(row['state'], row['state'])
     text=f"Запрос {row['id']}: {label}."
+    if row['state'] in ('queued','running','paused'):
+        text+=f"\nОтмена своего запроса: /cancel {row['id']}"
     markup=None
     if row['kind'] in ('dubbing','vclone'):
         from bot.media_retention import Retention
@@ -359,6 +396,26 @@ async def request_status(update, context):
             text+=f"\nДанные доступны до {row['deadline_at'].isoformat()}. Прерванный вызов мог уже завершиться у провайдера. Повтор может заново использовать GPU или платный API."
             markup=InlineKeyboardMarkup([[InlineKeyboardButton('Повторить генерацию (возможны расходы)',callback_data='media_retry:'+row['id'])]])
     await update.effective_message.reply_text(text,reply_markup=markup)
+
+
+async def cancel_own_request(update, context):
+    message=update.effective_message
+    topic=getattr(message,'message_thread_id',None) or (-1 if update.effective_chat.type=='private' else 0)
+    id=context.args[0] if context.args else None
+    stopped=0
+    if id is None:
+        from cognition.telegram_scope import cancel_pending_intake
+        stopped=await cancel_pending_intake(update.effective_chat.id,topic,update.effective_user.id)
+    row=await store().cancel_owned(id,update.effective_chat.id,topic,update.effective_user.id)
+    if not row:
+        await message.reply_text('Подготовка твоих входящих сообщений отменена.' if stopped else 'Активный собственный запрос не найден в этом чате или теме.')
+        return
+    execution=_running_requests.get(row['id'])
+    if execution: execution.cancel()
+    text=f"Запрос {row['id']} отменён."
+    if row['state']=='delivery_unknown':
+        text+=' Отправка уже начиналась; её результат не подтверждён, автоматического повтора не будет.'
+    await message.reply_text(text)
 
 
 async def _notice(job, bot, ordinal, text):

@@ -27,10 +27,8 @@ class JobQueue:
             async with conn.transaction():
                 context = await conn.fetchrow("""
                     SELECT c.id FROM cognitive_contexts c
-                    WHERE (c.worker_lease_until IS NULL OR c.worker_lease_until<=NOW())
-                      AND ($1::bigint IS NULL OR c.id=$1)
-                      AND EXISTS (
-                        SELECT 1 FROM cognitive_jobs j JOIN cognitive_events e ON e.context_id=j.context_id AND e.id=j.event_id
+                    CROSS JOIN LATERAL (
+                        SELECT j.id,j.available_at FROM cognitive_jobs j JOIN cognitive_events e ON e.context_id=j.context_id AND e.id=j.event_id
                         WHERE j.context_id=c.id AND e.suppressed_at IS NULL
                           AND (NOT c.rebuilding OR j.kind='rebuild')
                           AND j.attempts<j.max_attempts AND j.available_at<=NOW()
@@ -41,8 +39,15 @@ class JobQueue:
                               AND (older.kind!='replay' OR j.kind='replay')
                               AND (oe.observed_at<e.observed_at OR (oe.observed_at=e.observed_at AND older.id<j.id))
                           ))
-                      )
-                    ORDER BY c.id FOR UPDATE OF c SKIP LOCKED LIMIT 1
+                        ORDER BY CASE WHEN j.kind='rebuild' THEN -1 WHEN j.kind='replay' THEN 1 ELSE 0 END,e.observed_at,j.id
+                        LIMIT 1
+                    ) head
+                    WHERE (c.worker_lease_until IS NULL OR c.worker_lease_until<=NOW())
+                      AND ($1::bigint IS NULL OR c.id=$1)
+                    -- Rank ready head jobs by queue age, not permanent context
+                    -- IDs: fresh work in busy old chats cannot starve another
+                    -- chat's already eligible job. Context-local order is intact.
+                    ORDER BY head.available_at,head.id,c.id FOR UPDATE OF c SKIP LOCKED LIMIT 1
                 """,context_id)
                 if not context:
                     return None

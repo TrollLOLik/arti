@@ -16,6 +16,17 @@ class DeliverySuppressed(Exception):
     pass
 
 
+class DeliveryRejected(DeliverySuppressed):
+    """Telegram explicitly rejected the operation; no delivery occurred."""
+
+
+def definite_rejection(exc):
+    # BadRequest subclasses NetworkError in PTB. Check concrete API responses,
+    # never the NetworkError parent: a timeout may follow successful delivery.
+    from telegram.error import BadRequest, Forbidden, InvalidToken, RetryAfter, ChatMigrated
+    return isinstance(exc, (BadRequest, Forbidden, InvalidToken, RetryAfter, ChatMigrated))
+
+
 async def send_with_receipt(method,args,kwargs,channel):
     turn=CURRENT_TURN.get()
     token=None
@@ -80,12 +91,39 @@ async def _send_with_receipt(method,args,kwargs,channel):
                 raise DeliveryUnknown()
             if row['status']=='cancelled':
                 raise DeliverySuppressed()
+            if object_value(row['payload']) != payload:
+                # A rejected/prepared identity cannot become a different
+                # fallback body just because a caller reuses the ordinal.
+                raise DeliverySuppressed()
+        if row.get('retry_at') and row['retry_at'] > datetime.now(timezone.utc):
+            from telegram.error import RetryAfter
+            turn.send_ordinal -= 1
+            raise RetryAfter(max(0, (row['retry_at'] - datetime.now(timezone.utc)).total_seconds()))
         await conn.execute("UPDATE cognitive_outbox SET status='sending',updated_at=NOW() WHERE id=$1",row['id'])
         if getattr(turn,'group_candidate_id',None):
             await conn.execute('UPDATE group_candidates SET outbox_id=$2 WHERE id=$1',turn.group_candidate_id,row['id'])
     try:
         result = await method(*args,**kwargs)
     except BaseException as exc:
+        if definite_rejection(exc):
+            from telegram.error import RetryAfter
+            from utils.async_cleanup import await_owned
+            retry = isinstance(exc, RetryAfter)
+            delay = exc.retry_after if retry else None
+            if hasattr(delay, 'total_seconds'): delay = delay.total_seconds()
+            if delay is not None: delay = float(delay)
+            async def reject():
+                async with runtime.pool.acquire() as conn:
+                    await conn.execute("""UPDATE cognitive_outbox SET status=$2,
+                        retry_at=CASE WHEN $3::double precision IS NULL THEN NULL ELSE NOW()+make_interval(secs=>$3) END,
+                        payload=CASE WHEN $3::double precision IS NULL THEN NULL ELSE payload END,
+                        updated_at=NOW() WHERE id=$1 AND status='sending'""",
+                        row['id'], 'prepared' if retry else 'cancelled', delay)
+            await await_owned(reject())
+            # Re-attempt the same cognitive identity, not a new action.
+            if retry:
+                turn.send_ordinal -= 1
+            raise
         turn.delivery_blocked = True
         async with runtime.pool.acquire() as conn:
             await conn.execute("UPDATE cognitive_outbox SET status='delivery_unknown',updated_at=NOW() WHERE id=$1 AND status='sending'",row['id'])

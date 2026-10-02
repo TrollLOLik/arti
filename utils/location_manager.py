@@ -1,23 +1,26 @@
 """
 Менеджер геолокации пользователей.
-DB-first хранение (PostgreSQL) + in-memory кеш + Nominatim reverse geocoding.
-TTL: 4 часа для live-геопозиций, 2 часа для статических.
+Хранение и согласие ограничены пользователем, чатом и темой.
+TTL: 30 минут после последней явно полученной геопозиции.
 """
 import time
 import logging
 import asyncio
+import math
+import uuid
 
 import aiohttp
 
-from database.models import UserLocation as UserLocationModel
+from utils import location_store
+from utils.location_scope import LOCATION_TTL_SECONDS, location_scope_key, expire_pending_map_requests
 
 logger = logging.getLogger(__name__)
 
-# In-memory кеш для быстрого доступа: {user_id: {"lat": float, "lng": float, "city": str, "address": str, "timestamp": float, "live": bool}}
+# Keys are (chat_id, topic_id, user_id), never a global user ID.
 _location_cache = {}
 
-LIVE_TTL_SECONDS = 4 * 60 * 60      # 4 часа для live-локаций
-STATIC_TTL_SECONDS = 2 * 60 * 60    # 2 часа для статических
+LIVE_TTL_SECONDS = LOCATION_TTL_SECONDS
+STATIC_TTL_SECONDS = LOCATION_TTL_SECONDS
 
 # REL-05: троттлинг обратного геокодирования (Nominatim usage policy: ~1 req/s).
 # Live-геолокация шлёт апдейты каждые несколько секунд — без троттлинга легко
@@ -25,9 +28,17 @@ STATIC_TTL_SECONDS = 2 * 60 * 60    # 2 часа для статических
 # и глобально разносим запросы минимум на GEOCODE_GLOBAL_SPACING секунд.
 GEOCODE_MIN_INTERVAL = 120.0
 GEOCODE_GLOBAL_SPACING = 1.1
-_last_geocode_at: dict = {}            # user_id -> monotonic
+_last_geocode_at: dict = {}            # scope key -> monotonic
 _geocode_global_lock = None            # ленивый asyncio.Lock
 _geocode_last_global = 0.0
+_geocode_tasks = set()
+_geocoding_enabled = True
+
+
+def _geocode_done(task):
+    _geocode_tasks.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.warning('Location geocoding task failed')
 
 
 async def _reverse_geocode(lat: float, lng: float) -> dict:
@@ -77,132 +88,136 @@ async def _reverse_geocode(lat: float, lng: float) -> dict:
                     or addr_details.get("state")
                 )
 
-                logger.info(f"🌍 Nominatim: {city} | {address}")
                 return {"city": city, "address": address}
     except asyncio.TimeoutError:
         logger.warning("Nominatim: таймаут")
     except Exception as e:
-        logger.warning(f"Nominatim: ошибка геокодирования: {e}")
+        logger.warning("Nominatim: ошибка геокодирования")
 
     return {"city": None, "address": None}
 
 
-async def set_user_location(user_id: int, lat: float, lng: float, is_live: bool = False):
-    """
-    Сохраняет геопозицию в БД и кеш, затем запускает фоновое геокодирование.
-    """
-    now = time.time()
-    ttl = LIVE_TTL_SECONDS if is_live else STATIC_TTL_SECONDS
+def _fresh(sample):
+    stamp = sample.get('timestamp') if isinstance(sample, dict) else None
+    return isinstance(stamp, (int, float)) and 0 <= time.time() - stamp < LOCATION_TTL_SECONDS
 
-    # REL-05: решаем, нужно ли геокодировать (троттлинг per-user).
+
+def _public_location(sample):
+    return {key: sample.get(key) for key in ('lat', 'lng', 'city', 'address')}
+
+
+def _expire_cache():
+    for key, sample in list(_location_cache.items()):
+        if not isinstance(key, tuple) or len(key) != 3 or not _fresh(sample):
+            _location_cache.pop(key, None)
+            _last_geocode_at.pop(key, None)
+
+
+async def set_user_location(user_id: int, lat: float, lng: float, is_live: bool = False,
+                            *, chat_id=None, scope=None, shared_at=None):
+    """Save only an explicit share in the receiving scope; never renew old input."""
+    key = location_scope_key(user_id, chat_id=chat_id, scope=scope)
+    if key is None or not math.isfinite(lat) or not math.isfinite(lng) or not (-90 <= lat <= 90 and -180 <= lng <= 180):
+        return False
+    if shared_at is None:
+        shared_at = time.time()
+    elif hasattr(shared_at, 'timestamp'):
+        shared_at = shared_at.timestamp()
+    _expire_cache()
+    prev = _location_cache.get(key) or {}
+    if not _fresh({'timestamp': shared_at}) or prev.get('timestamp', 0) > shared_at:
+        return False
     mono = time.monotonic()
-    should_geocode = (mono - _last_geocode_at.get(user_id, 0.0)) >= GEOCODE_MIN_INTERVAL
-
-    # Сохраняем в БД без адреса (сначала)
+    should_geocode = mono - _last_geocode_at.get(key, -GEOCODE_MIN_INTERVAL) >= GEOCODE_MIN_INTERVAL
+    sample = dict(lat=lat, lng=lng, city=None if should_geocode else prev.get('city'),
+                  address=None if should_geocode else prev.get('address'),
+                  timestamp=shared_at, live=is_live, sample_id=uuid.uuid4().hex)
+    # Publish before an await, so an older concurrent sample cannot replace it.
+    _location_cache[key] = sample
     try:
-        await UserLocationModel.save(user_id, lat, lng, address=None, city=None)
-    except Exception as e:
-        logger.error(f"Ошибка сохранения локации в БД: {e}")
-
-    # Если геокодирование сейчас пропускаем — сохраняем ранее определённый адрес,
-    # чтобы не «обнулять» город/адрес на каждом live-апдейте.
-    prev = _location_cache.get(user_id) or {}
-    carry_city = None if should_geocode else prev.get("city")
-    carry_address = None if should_geocode else prev.get("address")
-
-    # Обновляем in-memory кеш
-    _location_cache[user_id] = {
-        "lat": lat,
-        "lng": lng,
-        "city": carry_city,
-        "address": carry_address,
-        "timestamp": now,
-        "live": is_live,
-        "ttl": ttl,
-    }
-    logger.info(f"📍 Геопозиция пользователя {user_id} обновлена: {lat:.5f}, {lng:.5f} (live={is_live})")
-
-    # Фоновое геокодирование (с троттлингом — Nominatim usage policy).
-    if should_geocode:
-        _last_geocode_at[user_id] = mono
-        asyncio.create_task(_do_geocoding(user_id, lat, lng))
+        saved = await location_store.save(key, sample)
+        if saved is None:
+            if _location_cache.get(key) is sample:
+                _location_cache.pop(key, None)
+            return False
+    except Exception:
+        logger.warning('Location persistence unavailable; scoped cache only')
+    if should_geocode and _geocoding_enabled and _location_cache.get(key) is sample:
+        _last_geocode_at[key] = mono
+        task = asyncio.create_task(_do_geocoding(key, sample))
+        _geocode_tasks.add(task)
+        task.add_done_callback(_geocode_done)
+    return True
 
 
-async def _do_geocoding(user_id: int, lat: float, lng: float):
-    """Фоновая задача: получить адрес и обновить БД + кеш."""
-    result = await _reverse_geocode(lat, lng)
-    city = result.get("city")
-    address = result.get("address")
-
+async def _do_geocoding(key, sample):
+    """A late address may update only the same unexpired sample, without renewal."""
+    result = await _reverse_geocode(sample['lat'], sample['lng'])
+    if not _fresh(sample) or _location_cache.get(key) is not sample:
+        return
+    city, address = result.get('city'), result.get('address')
     if city or address:
         try:
-            await UserLocationModel.update_address(user_id, address, city)
-        except Exception as e:
-            logger.error(f"Ошибка обновления адреса в БД: {e}")
-
-        # Обновляем кеш
-        cache = _location_cache.get(user_id)
-        if cache:
-            cache["city"] = city
-            cache["address"] = address
-            logger.info(f"🌍 Адрес для {user_id} обновлён: {city}")
+            await location_store.update_address(key, sample['sample_id'], city=city, address=address)
+        except Exception:
+            logger.warning('Location address persistence unavailable')
+        if _fresh(sample) and _location_cache.get(key) is sample:
+            sample.update(city=city, address=address)
 
 
-async def get_user_location(user_id: int) -> dict | None:
-    """
-    Возвращает геопозицию {"lat", "lng", "city", "address"} если не протухла.
-    Порядок: кеш → БД (с TTL).
-    """
-    now = time.time()
-
-    # 1. Проверяем in-memory кеш
-    cache = _location_cache.get(user_id)
+async def get_user_location(user_id: int, *, chat_id=None, scope=None) -> dict | None:
+    """Return only a fresh share in this exact scope, preserving its original age."""
+    key = location_scope_key(user_id, chat_id=chat_id, scope=scope)
+    _expire_cache()
+    if key is None:
+        return None
+    cache = _location_cache.get(key)
     if cache:
-        age = now - cache["timestamp"]
-        ttl = cache.get("ttl", STATIC_TTL_SECONDS)
-        if age <= ttl:
-            return {
-                "lat": cache["lat"],
-                "lng": cache["lng"],
-                "city": cache.get("city"),
-                "address": cache.get("address"),
-            }
-        else:
-            del _location_cache[user_id]
-            logger.info(f"📍 Кеш локации {user_id} протух ({age:.0f}с)")
-
-    # 2. Проверяем БД (4-часовой TTL по умолчанию)
+        return _public_location(cache)
     try:
-        db_loc = await UserLocationModel.get_with_ttl(user_id, ttl_seconds=LIVE_TTL_SECONDS)
-        if db_loc:
-            _location_cache[user_id] = {
-                "lat": db_loc["lat"],
-                "lng": db_loc["lng"],
-                "city": db_loc.get("city"),
-                "address": db_loc.get("address"),
-                "timestamp": now,
-                "live": False,
-                "ttl": STATIC_TTL_SECONDS,
-            }
-            logger.info(f"📍 Локация {user_id} восстановлена из БД")
-            return {
-                "lat": db_loc["lat"],
-                "lng": db_loc["lng"],
-                "city": db_loc.get("city"),
-                "address": db_loc.get("address"),
-            }
-    except Exception as e:
-        logger.error(f"Ошибка чтения локации из БД: {e}")
-
+        sample = await location_store.get(key)
+        if sample and _fresh(sample):
+            # A newer share may have arrived while the read was in flight.
+            cache = _location_cache.get(key)
+            if cache and _fresh(cache) and cache['timestamp'] >= sample['timestamp']:
+                return _public_location(cache)
+            _location_cache[key] = sample
+            return _public_location(sample)
+    except Exception:
+        logger.warning('Location lookup unavailable')
     return None
 
 
-async def get_user_location_context(user_id: int) -> str:
+async def maintenance_worker():
+    """Read-time expiry is immediate; physical cleanup runs at least each minute."""
+    global _geocoding_enabled
+    _geocoding_enabled = True
+    try:
+        while True:
+            _expire_cache()
+            expire_pending_map_requests()
+            await location_store.expire()
+            await asyncio.sleep(60)
+    finally:
+        _geocoding_enabled = False
+        tasks = tuple(_geocode_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            from utils.async_cleanup import await_owned
+            await await_owned(asyncio.gather(*tasks, return_exceptions=True))
+
+
+async def get_user_location_context(user_id: int, *, chat_id=None, scope=None) -> str:
     """
     Формирует строку с локацией для вставки в системный промпт.
     Пустая строка, если локации нет.
     """
-    loc = await get_user_location(user_id)
+    loc = await get_user_location(user_id, chat_id=chat_id, scope=scope)
+    return format_location_context(loc)
+
+
+def format_location_context(loc) -> str:
     if not loc:
         return ""
 
@@ -216,5 +231,3 @@ async def get_user_location_context(user_id: int) -> str:
         f"Если запрос связан с местами, маршрутами, расстояниями, досугом или навигацией — "
         f"используй эти данные как точку отсчёта."
     )
-# REL-06/L-05: удалены неиспользуемые clear_user_location (писала «Null Island» 0,0
-# вместо удаления) и cleanup_expired — мёртвый код, нигде не вызывался.

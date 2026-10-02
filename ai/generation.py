@@ -127,13 +127,17 @@ async def generate_response_stream(
     else:
         actual_role = custom_system_prompt if custom_system_prompt else ARTI_SYSTEM_PROMPT
 
-        # --- 0. ИНЖЕКТ ГЕОЛОКАЦИИ В СИСТЕМНЫЙ ПРОМПТ (всегда, если есть) ---
-        # Добавляем в начало, чтобы не затирать инструкции по форматированию HTML
+        # Revalidate at the provider boundary. A passed-in coordinate dict is
+        # not proof that it was shared in this receiving user/chat/topic scope.
+        from utils.location_manager import get_user_location, format_location_context
+        scoped_location = None
         if user_id is not None:
-            from utils.location_manager import get_user_location_context
-            location_context = await get_user_location_context(user_id)
-            if location_context:
-                actual_role = location_context + "\n\n" + actual_role
+            scoped_location = await get_user_location(user_id, chat_id=chat_id)
+        if user_location is not None:
+            user_location = scoped_location
+        location_context = format_location_context(scoped_location)
+        if location_context:
+            actual_role = location_context + "\n\n" + actual_role
 
     # --- ДИНАМИЧЕСКИЕ НАВЫКИ (SKILLS) ---
     from ai.skills import get_active_skills_instructions
@@ -245,7 +249,7 @@ async def generate_response_stream(
         active_tools = [types.Tool(google_search=types.GoogleSearch())]
         
     if user_location:
-        logger.info(f"🗺 Активирован Google Maps Grounding для координат {user_location['lat']}, {user_location['lng']}.")
+        logger.info('Google Maps grounding enabled for scoped location')
         # Для заземления на картах лучше всего подходит 2.0-flash
         
         if active_tools is None:
@@ -360,4 +364,3 @@ async def generate_response_stream(
             else:
                 logger.error("Все попытки генерации провалены.")
                 return ERROR_RESPONSE_GENERIC, False, [], []
-

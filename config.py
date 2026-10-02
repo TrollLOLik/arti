@@ -216,7 +216,7 @@ pending_photo_action = ScopedDict()
 # {(chat_id, user_id): {"text": str, "file_name": str, "message_id": int, "bot_message_id": int}}
 pending_doc_action = ScopedDict()
 
-# Ожидание геолокации для возобновления запроса
+# Ожидание геолокации: utils.location_scope хранит chat/topic/user/mode + исходный TTL.
 pending_map_requests = ScopedDict()
 
 # L-17: user_game_state удалён — нигде не использовался.

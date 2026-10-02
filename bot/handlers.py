@@ -1473,16 +1473,21 @@ async def handle_location_message(update: Update, context: ContextTypes.DEFAULT_
     user_name = user.first_name or user.username
 
     from utils.location_manager import set_user_location
+    from cognition.scope import from_update
+    location_scope = from_update(update, 0)
 
     lat = message.location.latitude
     lng = message.location.longitude
 
     is_live = message.location.live_period is not None
-    await set_user_location(user_id, lat, lng, is_live=is_live)
+    shared_at = getattr(message, 'edit_date', None) if update.edited_message else getattr(message, 'date', None)
+    if not await set_user_location(user_id, lat, lng, is_live=is_live,
+                                   chat_id=chat_id, scope=location_scope, shared_at=shared_at):
+        return
 
     # Если это edited_message (обновление live location) — тихо обновляем кеш
     if update.edited_message:
-        logger.debug(f"📍 Live-геопозиция обновлена для {user_id}: {lat:.5f}, {lng:.5f}")
+        logger.debug('Live location updated in receiving scope')
         return
 
     # Для первого сообщения — отвечаем пользователю
@@ -1496,7 +1501,8 @@ async def handle_location_message(update: Update, context: ContextTypes.DEFAULT_
             "<i>ловит сигнал, подключается к спутнику в реальном времени</i>\n\n"
             "<blockquote>«Трансляция принята! 📡 Теперь я вижу тебя на радаре. "
             "Спрашивай что угодно — где поесть, куда сходить, как добраться — "
-            "пока трансляция работает, мои данные будут актуальными!»</blockquote>",
+            "в этом чате и теме. Каждый сигнал действует 30 минут; "
+            "новое обновление продлевает этот срок.»</blockquote>",
             parse_mode='HTML'
         )
     else:
@@ -1505,20 +1511,21 @@ async def handle_location_message(update: Update, context: ContextTypes.DEFAULT_
             "<blockquote>«📍 Координаты приняты! Теперь я знаю, где ты прячешься. "
             "Спрашивай — где поесть, ближайшая аптека, куда сходить — "
             "я найду всё в округе!\n\n"
-            "...геопозиция будет активна 30 минут.»</blockquote>",
+            "...геопозиция будет активна 30 минут только в этом чате и теме.»</blockquote>",
             parse_mode='HTML'
         )
     
-    logger.info(f"📍 Получена {'live ' if is_live else ''}геопозиция от {user_name} ({user_id}): {lat:.5f}, {lng:.5f}")
+    logger.info('Location received in current chat/topic')
 
     # --- АВТОМАТИЧЕСКОЕ ВОЗОБНОВЛЕНИЕ ЗАПРОСА ---
-    from config import pending_map_requests
-    pending_prompt = pending_map_requests.pop(user_id, None)
+    from utils.location_scope import pop_pending_map_request
+    pending_prompt = pop_pending_map_request(user_id, chat_id=chat_id, scope=location_scope,
+                                            mode='rp' if rp_mode_state.get(chat_id) else 'default')
     
     if pending_prompt:
         # Небольшая задержка для естественности
         await asyncio.sleep(1)
-        logger.info(f"🔄 Автоматически возобновляю запрос для {user_id}: {pending_prompt}")
+        logger.info('Resuming pending maps request in its original scope')
         await enqueue_reply(
             chat_id, user_id, user_name, pending_prompt, 
             message.message_id, context, is_voice=False
@@ -1534,6 +1541,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if isinstance(context.error,Conflict):
         logger.error('Polling stopped: another consumer or webhook uses this token.',
                      exc_info=context.error,extra={'arti_event':'polling_conflict_stop'})
+        context.application.bot_data['stop_reason'] = 'polling_conflict'
         context.application.stop_running()
         return
     logger.error("Exception while handling an update:", exc_info=context.error)
