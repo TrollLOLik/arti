@@ -137,3 +137,14 @@ python -m tools.cognition_admin verify-copy
 У первых трёх команд нет вызовов тестового провайдера. Последняя создаёт локальную
 копию в `arti_cognition_copy_<uuid>` и удаляет ровно её после проверки.
 Существующие неподтверждённые данные не превращаются в достоверную историю Арти.
+
+
+## MEMORY correctness audit follow-up (2026-10-02 UTC)
+
+- Query-aware current beliefs follow correction lineage beyond the last-16 window; historical sources keep supersession and validity metadata.
+- Source observation/event timestamps, uncertainty and author/modality reach final prompts without inferring narrated-event dates.
+- A separate public observed-source path retains exact audience, scene, retention, opt-out and erasure fences, with inclusion/send-time revalidation. Private owner filters are unchanged.
+- Recall accessibility and source-aged fidelity are separated; empty retrieval and replay cannot reset quality.
+- Existing long prefix-only traces gain offset-keyed local semantic windows and a bounded raw-source lexical fallback, preserving quotation framing and original-age decay.
+- Final exact aggregate: 838/838 passed; real pinned MiniLM run: 8/8 passed; 48 new regressions. No providers, production data or real Telegram traffic.
+- Remaining boundaries: public recall is lexical; maximum-length sources use sampled semantic windows; live interpretation and answer quality were not evaluated. Details and verification commands: [MEMORY_CORRECTNESS.md](MEMORY_CORRECTNESS.md).

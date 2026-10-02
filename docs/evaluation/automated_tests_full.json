@@ -1,11 +1,11 @@
 {
   "model_version": "cognition-2026-09-30.4",
-  "tests": 470,
-  "passed": 470,
+  "tests": 838,
+  "passed": 838,
   "failures": [],
   "errors": [],
   "skipped": [],
-  "duration_seconds": 638.9380186999915,
+  "duration_seconds": 308.70153618100085,
   "database": "disposable arti_cognition_test_<uuid>",
   "provider_calls": 0,
   "working_database_mutated": false

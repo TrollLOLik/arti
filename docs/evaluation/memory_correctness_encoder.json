@@ -1,0 +1,18 @@
+{
+  "tests": 8,
+  "passed": 8,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "duration_seconds": 19.641,
+  "encoder_revision": "faf4aa4225822f3bc6376869cb1164e8e3feedd0",
+  "encoder": "real pinned multilingual MiniLM, local CPU",
+  "interpretations": "recorded synthetic fixtures",
+  "answer_generation_calls": 0,
+  "provider_calls": 0,
+  "production_database_mutated": false,
+  "scope": "retrieval, correction lineage, temporal prompt grounding, fidelity, source chunks and erasure",
+  "limitations": [
+    "Not an evaluation of live LLM interpretation or generated answer accuracy."
+  ]
+}

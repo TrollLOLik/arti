@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 MODEL = 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
 REPOSITORY = 'Qdrant/paraphrase-multilingual-MiniLM-L12-v2-onnx-Q'
 REVISION = 'faf4aa4225822f3bc6376869cb1164e8e3feedd0'
-VERSION = 'minilm-multilingual-384:'+REVISION+':mean-v1'
+VERSION = 'minilm-multilingual-384:'+REVISION+':source-chunks-v2'
 FILES = ('model_optimized.onnx','config.json','special_tokens_map.json','tokenizer.json','tokenizer_config.json')
 
 
@@ -137,8 +137,12 @@ class SemanticIndex:
 
     async def backfill(self, limit=4):
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch('''SELECT a.id,a.context_id,a.revision,a.payload,c.suppression_epoch
+            rows = await conn.fetch('''SELECT a.id,a.context_id,a.revision,a.payload,c.suppression_epoch,e.payload AS source_payload
                 FROM cognitive_artifacts a JOIN cognitive_contexts c ON c.id=a.context_id
+                JOIN cognitive_events e ON e.context_id=a.context_id AND e.id=(a.payload->>'event_id')::bigint
+                    AND e.owner_id IS NOT DISTINCT FROM a.owner_id
+                    AND e.source_id=a.payload->>'source_id'
+                    AND e.suppressed_at IS NULL AND e.payload IS NOT NULL
                 WHERE a.kind='trace' AND a.model_version=$1 AND a.suppressed_at IS NULL AND a.payload IS NOT NULL
                 AND c.authority='active' AND NOT c.rebuilding AND a.projection_epoch=c.suppression_epoch
                 AND NOT EXISTS(SELECT 1 FROM cognitive_semantic_vectors v WHERE v.context_id=a.context_id AND v.artifact_id=a.id AND v.embedding_model=$2)
@@ -146,23 +150,41 @@ class SemanticIndex:
                 ORDER BY a.id LIMIT $3''', MODEL_VERSION, VERSION, min(16, limit))
         if not rows:
             return 0
-        payloads = [object_value(r['payload']) for r in rows]
-        vectors = await self.encoder.encode([p['gist'][:2400]+'\n'+p.get('interpretation','')[:800] for p in payloads], timeout=5)
+        from cognition.source_chunks import source_chunks
+        prepared = []
+        total_chunks = 0
+        for row in rows:
+            p = object_value(row['payload'])
+            source = object_value(row['source_payload'])['text']
+            # Keep existing short-source ranking. Long utterances get independent
+            # windows so a meaningful tail is not averaged into filler or lost.
+            chunks = source_chunks(source) if len(source)>420 else [(0,None,p['gist'][:2400]+'\n'+p.get('interpretation','')[:800])]
+            if prepared and total_chunks+len(chunks)>32:
+                break
+            prepared.append((row,chunks))
+            total_chunks += len(chunks)
+        texts = [text for _,chunks in prepared for _,_,text in chunks]
+        vectors = await self.encoder.encode(texts, timeout=5)
         if vectors is None:
             return 0
+        offset = 0
         count = 0
-        for row, vector in zip(rows, vectors):
-            vector = validated_vector(vector)
+        for row,chunks in prepared:
+            chunk_vectors = vectors[offset:offset+len(chunks)]; offset += len(chunks)
             async with self.pool.acquire() as conn, conn.transaction():
-                # Same lock order as forget: no computed vector can resurrect erased text.
+                # Same lock order as forget: a delayed encoding cannot resurrect
+                # source text, and all windows for this revision commit together.
                 await conn.fetchval('SELECT revision FROM cognitive_contexts WHERE id=$1 FOR UPDATE', row['context_id'])
-                result = await conn.execute('''INSERT INTO cognitive_semantic_vectors(context_id,artifact_id,embedding_model,vector)
-                    SELECT a.context_id,a.id,$3,$4::double precision[] FROM cognitive_artifacts a JOIN cognitive_contexts c ON c.id=a.context_id
-                    WHERE a.id=$1 AND a.revision=$2 AND a.model_version=$5 AND a.suppressed_at IS NULL AND a.payload IS NOT NULL
-                    AND NOT c.rebuilding AND c.suppression_epoch=$6 AND a.projection_epoch=c.suppression_epoch
-                    AND NOT EXISTS(SELECT 1 FROM cognitive_provenance p JOIN cognitive_events e ON e.id=p.source_event_id WHERE p.artifact_id=a.id AND e.suppressed_at IS NOT NULL)
-                    ON CONFLICT DO NOTHING''',row['id'],row['revision'],VERSION,vector,MODEL_VERSION,row['suppression_epoch'])
-                count += int(result.rsplit(' ', 1)[-1])
+                inserted = 0
+                for (start,end,_), vector in zip(chunks,chunk_vectors):
+                    result = await conn.execute('''INSERT INTO cognitive_semantic_vectors(context_id,artifact_id,embedding_model,vector,chunk_start,chunk_end)
+                        SELECT a.context_id,a.id,$3,$4::double precision[],$7,$8 FROM cognitive_artifacts a JOIN cognitive_contexts c ON c.id=a.context_id
+                        WHERE a.id=$1 AND a.revision=$2 AND a.model_version=$5 AND a.suppressed_at IS NULL AND a.payload IS NOT NULL
+                        AND NOT c.rebuilding AND c.authority='active' AND c.suppression_epoch=$6 AND a.projection_epoch=c.suppression_epoch
+                        AND NOT EXISTS(SELECT 1 FROM cognitive_provenance p JOIN cognitive_events e ON e.id=p.source_event_id WHERE p.artifact_id=a.id AND (e.suppressed_at IS NOT NULL OR e.payload IS NULL))
+                        ON CONFLICT DO NOTHING''',row['id'],row['revision'],VERSION,validated_vector(vector),MODEL_VERSION,row['suppression_epoch'],start,end)
+                    inserted += int(result.rsplit(' ', 1)[-1])
+                count += bool(inserted)
         return count
 
     async def search(self, cid, owner, query, limit=48):
@@ -171,15 +193,36 @@ class SemanticIndex:
             return []
         vector = validated_vector(vectors[0])
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch('''SELECT a.*,arti_semantic_dot(v.vector,$5::double precision[]) AS semantic_score
+            rows = await conn.fetch('''SELECT * FROM (
+                SELECT DISTINCT ON(a.id) a.*,v.chunk_start,v.chunk_end,e.payload AS source_payload,
+                    arti_semantic_dot(v.vector,$5::double precision[]) AS semantic_score
                 FROM cognitive_semantic_vectors v JOIN cognitive_artifacts a ON a.context_id=v.context_id AND a.id=v.artifact_id
                 JOIN cognitive_contexts c ON c.id=a.context_id
+                JOIN cognitive_events e ON e.context_id=a.context_id AND e.id=(a.payload->>'event_id')::bigint
+                    AND e.owner_id IS NOT DISTINCT FROM a.owner_id AND e.source_id=a.payload->>'source_id'
                 WHERE a.context_id=$1 AND a.owner_id IS NOT DISTINCT FROM $2 AND a.kind='trace'
                 AND a.model_version=$3 AND v.embedding_model=$4 AND a.suppressed_at IS NULL AND a.payload IS NOT NULL
+                AND e.suppressed_at IS NULL AND e.payload IS NOT NULL
                 AND NOT c.rebuilding AND a.projection_epoch=c.suppression_epoch
-                AND NOT EXISTS(SELECT 1 FROM cognitive_provenance p JOIN cognitive_events e ON e.id=p.source_event_id WHERE p.artifact_id=a.id AND e.suppressed_at IS NOT NULL)
-                ORDER BY semantic_score DESC,a.id DESC LIMIT $6''',cid,owner,MODEL_VERSION,VERSION,vector,min(64,limit))
-        return [{**dict(r),'payload':object_value(r['payload'])} for r in rows if r['semantic_score']>=.42]
+                AND NOT EXISTS(SELECT 1 FROM cognitive_provenance p JOIN cognitive_events e ON e.id=p.source_event_id WHERE p.artifact_id=a.id AND (e.suppressed_at IS NOT NULL OR e.payload IS NULL))
+                ORDER BY a.id,semantic_score DESC,v.chunk_start) ranked
+                ORDER BY semantic_score DESC,id DESC LIMIT $6''',cid,owner,MODEL_VERSION,VERSION,vector,min(64,limit))
+        from cognition.source_chunks import chunk_trace
+        result = []
+        for row in rows:
+            if row['semantic_score']<.42:
+                continue
+            item = dict(row)
+            p = object_value(item['payload'])
+            source_event = object_value(item.pop('source_payload'))
+            source = source_event['text']
+            if item['chunk_end'] is not None:
+                p = chunk_trace(p,source,item['chunk_start'],item['chunk_end'])
+                p['author_id'] = 'arti' if source_event['evidence']['origin']=='delivered_action' else source_event.get('actor_id')
+                p['audience'] = source_event.get('audience')
+            item['payload'] = p
+            result.append(item)
+        return result
 
     async def run(self):
         from ai.intent_semantics import EXAMPLES

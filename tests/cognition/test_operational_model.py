@@ -311,10 +311,12 @@ class OperationalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         r = await self.runtime.memory.relationship(cid,1)
         self.assertEqual(r['dimensions']['reliability'],{'alpha':1.,'beta':1.})
 
-    async def test_archive_recovers_unencoded_tail_but_not_deleted_source(self):
+    async def test_source_windows_and_archive_recover_tail_but_not_deleted_source(self):
         cid,eid,ev = await self.observe('x '*300+'UNENCODED_TAIL',1)
         ordinary = await self.runtime.memory.retrieve(cid,1,'UNENCODED_TAIL',self.at,'ordinary')
-        self.assertNotIn('UNENCODED_TAIL',str(ordinary))
+        self.assertIn('UNENCODED_TAIL',str(ordinary))
+        self.assertTrue(ordinary[0]['source_chunk'])
+        self.assertFalse(ordinary[0]['details'][0]['verbatim_verified'])
         archived = await self.runtime.memory.retrieve(cid,1,'UNENCODED_TAIL',self.at,'archive',archive=True)
         self.assertIn('UNENCODED_TAIL',str(archived))
         await forget_cognitive_sources(self.pool,cid,1,[ev.evidence.source_id])

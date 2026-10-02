@@ -74,6 +74,8 @@ class CognitiveRuntime:
         self.prepare_budget = prepare_budget
         self.foreground = set()
         self.memory = MemoryRepository(pool,semantic)
+        from cognition.public_memory import PublicMemoryRepository
+        self.public_memory = PublicMemoryRepository(pool)
         self.reappraisal = ReappraisalRepository(pool)
         self.jobs = JobQueue(pool)
         self.worker = CognitiveWorker(self.jobs,self.handle_job)
@@ -292,7 +294,8 @@ class CognitiveRuntime:
                 raw = await self.memory.candidates(cid,event.evidence.owner_id,event.text,limit=32)
                 words = __import__('cognition.memory_dynamics',fromlist=['tokens']).tokens(event.text)
                 raw.sort(key=lambda r:-(.55*len(words & __import__('cognition.memory_dynamics',fromlist=['tokens']).tokens(r['payload']['gist']))/max(1,len(words))+.45*r.get('semantic_score',0.)))
-                memories = [dict(source_id=r['payload']['source_id'],text=r['payload']['gist'][:400],interpretation=r['payload']['interpretation']) for r in raw[:8]]
+                memories = [dict(source_id=r['payload']['source_id'],text=r['payload']['gist'][:400],interpretation=r['payload']['interpretation'],
+                    **{k:r['payload'].get(k) for k in ('observed_at','occurred_at','modality','source_prefix','evidence_status')}) for r in raw[:8]]
                 pending = await self.memory.open_intentions(cid,event.evidence.owner_id,event.text)
                 intentions = [{k:r['payload'].get(k) for k in ('key','description','actor_id','deadline','status','source_id')} for r in pending]
                 from cognition.sensory import acoustic_context
@@ -438,8 +441,14 @@ class CognitiveRuntime:
                        disclosure=min(.35,plan.disclosure*view['dimensions']['openness']['value']*2))
         plan = replace(plan,warmth=min(1.,max(0.,plan.warmth+implicit)),
                        directness=min(1.,max(0.,plan.directness-implicit/2)))
-        memories = await self.memory.retrieve(cid,owner,text,self.clock(),event.event_id,mood=affect(state)['mood_valence'])
-        beliefs = await self.memory.artifacts(cid,owner,'belief',limit=16)
+        public = event.audience.kind in ('group','topic')
+        if public:
+            memories = await self.public_memory.retrieve(cid,event.context,text,self.clock(),event.event_id,
+                requester=owner,expected_epoch=ctx['suppression_epoch'],exclude_event_ids=[eid])
+            beliefs = []
+        else:
+            memories = await self.memory.retrieve(cid,owner,text,self.clock(),event.event_id,mood=affect(state)['mood_valence'])
+            beliefs = await self.memory.beliefs_for_query(cid,owner,text,memories,limit=16)
         memory,ids = memory_for_prompt(memories,beliefs)
         # Inclusion is recorded later by the final prompt assembler.
         async with self.pool.acquire() as conn,conn.transaction():
@@ -450,8 +459,9 @@ class CognitiveRuntime:
                                         implicit_cue=cue,implicit_expression_bias=implicit),owner,[eid])
         turn = PreparedTurn(self,cid,eid,event,plan,memory,ctx['suppression_epoch'],ctx['authority'],bool(delivered))
         turn.preferences = preferences
-        if event.audience.kind in ('group','topic'):
-            turn.memory = ''
+        if public:
+            turn.public_memory_ids = ids
+            turn.supporting_event_ids = [r['event_id'] for r in memories if r['artifact_id'] in ids]
             turn.expression = replace(turn.expression,disclosure=0.)
         CURRENT_TURN.set(turn)
         return turn
@@ -481,7 +491,13 @@ class CognitiveRuntime:
         return replace(advance(state,max(state.last_at,self.clock())),applied_groups=frozenset())
 
     async def mark_included(self,turn,artifact_ids):
-        await self.memory.record_retrieval(turn.context_id,turn.event.evidence.owner_id,turn.event.event_id,'included',sorted(artifact_ids),self.clock())
+        if turn.event.audience.kind in ('group','topic'):
+            ids,sources = await self.public_memory.record_retrieval(turn.context_id,turn.event.context,
+                turn.event.evidence.owner_id,turn.event.event_id,'included',sorted(artifact_ids),self.clock(),expected_epoch=turn.epoch)
+            turn.public_memory_ids = ids
+            turn.supporting_event_ids = sources
+        else:
+            await self.memory.record_retrieval(turn.context_id,turn.event.evidence.owner_id,turn.event.event_id,'included',sorted(artifact_ids),self.clock())
 
     async def set_authority(self,cid,authority):
         if self.strict and authority != 'active':
