@@ -56,17 +56,13 @@ class MenuStore:
         async with self.pool.acquire() as conn:
             return self.decode(await conn.fetchrow('SELECT * FROM arti_menu_sessions WHERE id=$1', id))
 
-    async def public_entry(self,chat_id,topic_id,scope_key):
-        async with self.pool.acquire() as conn:
-            return self.decode(await conn.fetchrow('''SELECT * FROM arti_menu_sessions
-                WHERE chat_id=$1 AND topic_id=$2 AND scope_key=$3 AND screen='home'
-                AND status='active' AND state->>'shared'='true' AND expires_at>NOW()
-                ORDER BY updated_at DESC LIMIT 1''',chat_id,topic_id,scope_key))
-
     async def open(self, chat_id, topic_id, user_id, scope_key):
         async with self.pool.acquire() as conn:
             # Clear expired drafts, including retained Telegram file handles.
-            await conn.execute("DELETE FROM arti_menu_sessions WHERE expires_at<NOW()-INTERVAL '1 day'")
+            # Renew the target in place: deleting it here would also delete the
+            # just-consumed request and let a redelivery create a second panel.
+            await conn.execute("DELETE FROM arti_menu_sessions WHERE expires_at<NOW()-INTERVAL '1 day' "
+                               "AND (chat_id,topic_id,user_id)<>($1,$2,$3)",chat_id,topic_id,user_id)
             row = await conn.fetchrow('''INSERT INTO arti_menu_sessions(id,chat_id,topic_id,user_id,scope_key)
                 VALUES($1,$2,$3,$4,$5) ON CONFLICT(chat_id,topic_id,user_id)
                 DO UPDATE SET scope_key=EXCLUDED.scope_key,state='{}',actions='{}',screen='home',content_hash=NULL,

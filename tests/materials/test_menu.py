@@ -28,6 +28,7 @@ def update_for(user=7, chat=55, topic=-1, text='/menu', message_id=1, group=Fals
 def context_for():
     bot=NS(send_message=AsyncMock(return_value=NS(message_id=80,chat=NS(id=55))),
         edit_message_text=AsyncMock(return_value=NS(message_id=80,chat=NS(id=55))),
+        edit_message_reply_markup=AsyncMock(return_value=True),
         send_document=AsyncMock(return_value=NS(message_id=81,chat=NS(id=55))),
         get_me=AsyncMock(return_value=NS(id=99)), id=99,username='arti')
     return NS(bot=bot,user_data={},chat_data={},bot_data={},application=NS())
@@ -420,7 +421,7 @@ class MenuSQLTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('menu-callback:actual-human-click',source)
         self.assertNotIn(':80:user',source)
 
-    async def test_shared_home_is_reused_when_another_member_opens_menu(self):
+    async def test_explicit_group_menu_opens_own_fresh_panel_without_editing_other_user(self):
         from bot.menu import menu_command
         store,panel,actor=await self.setup_panel(group=True)
         with patch('materials.runtime.actor_for_current',AsyncMock(return_value=actor)):
@@ -428,10 +429,94 @@ class MenuSQLTests(unittest.IsolatedAsyncioTestCase):
         other=AccessContext(actor.scope,8,'user:8')
         CURRENT_SCOPE.set(TransportScope(-55,4,'supergroup',8))
         update=update_for(user=8,chat=-55,topic=4,group=True,message_id=9)
+        before=await store.get(-55,4,7)
+        self.context.bot.send_message.return_value=NS(message_id=91,chat=NS(id=-55))
         with patch('bot.menu.pool_for_menu',return_value=self.pool),patch('materials.runtime.actor_for_current',AsyncMock(return_value=other)):
             await menu_command(update,self.context)
+        self.assertEqual(2,self.context.bot.send_message.await_count)
+        self.assertEqual(91,(await store.get(-55,4,8))['message_id'])
+        self.assertEqual(before['revision'],(await store.get(-55,4,7))['revision'])
+        self.context.bot.edit_message_reply_markup.assert_not_awaited()
+
+    async def test_explicit_reopen_is_new_message_but_redelivery_and_navigation_are_not(self):
+        from bot.menu import menu_command
+        store,panel,actor=await self.setup_panel()
+        old_token=next(iter(panel.row['actions']))
+        self.context.bot.send_message.reset_mock()
+        self.context.bot.edit_message_text.reset_mock()
+        self.context.bot.send_message.side_effect=[NS(message_id=90,chat=NS(id=55)),NS(message_id=100,chat=NS(id=55))]
+        with patch('bot.menu.pool_for_menu',return_value=self.pool),patch('materials.runtime.actor_for_current',AsyncMock(return_value=actor)):
+            update=update_for(message_id=101)
+            await menu_command(update,self.context)
+            current=await store.get(55,-1,7)
+            self.assertEqual(90,current['message_id'])
+            self.context.bot.edit_message_text.assert_not_awaited()
+            self.context.bot.edit_message_reply_markup.assert_awaited_once_with(chat_id=55,message_id=80,reply_markup=None)
+            with self.assertRaises(MaterialError):
+                store.action(current,old_token,user_id=7,chat_id=55,topic_id=-1,message_id=80,scope_key=actor.scope.key)
+            await menu_command(update,self.context)
+            self.context.bot.send_message.assert_awaited_once()
+            await Controller(Panel(store,current,self.context.bot),update,self.context,actor).show('create')
+            self.assertEqual(90,self.context.bot.edit_message_text.await_args.kwargs['message_id'])
+            await menu_command(update_for(message_id=102),self.context)
+        self.assertEqual(2,self.context.bot.send_message.await_count)
+        self.assertEqual(100,(await store.get(55,-1,7))['message_id'])
+        self.assertEqual(90,self.context.bot.edit_message_reply_markup.await_args.kwargs['message_id'])
+
+    async def test_open_menu_abandons_native_image_flow_without_affecting_other_user(self):
+        from bot.menu import menu_command
+        import config
+        store,panel,actor=await self.setup_panel()
+        self.context.user_data['image_flow']=dict(chat_id=55,step='aspect_ratio')
+        with patch.dict(config.waiting_for_image_prompt,{},clear=True):
+            config.waiting_for_image_prompt[55][7]=True
+            config.waiting_for_image_prompt[55][8]=True
+            with patch('bot.menu.pool_for_menu',return_value=self.pool),patch('materials.runtime.actor_for_current',AsyncMock(return_value=actor)):
+                await menu_command(update_for(message_id=101),self.context)
+            self.assertNotIn('image_flow',self.context.user_data)
+            self.assertNotIn(7,config.waiting_for_image_prompt[55])
+            self.assertTrue(config.waiting_for_image_prompt[55][8])
+            self.assertNotIn('pending',(await store.get(55,-1,7))['state'])
+
+    async def test_expired_session_reopen_redelivery_still_sends_once(self):
+        from bot.menu import menu_command
+        store,panel,actor=await self.setup_panel()
+        await self.pool.execute("UPDATE arti_menu_sessions SET expires_at=NOW()-INTERVAL '3 days' WHERE id=$1",panel.row['id'])
+        self.context.bot.send_message.reset_mock()
+        self.context.bot.send_message.return_value=NS(message_id=90,chat=NS(id=55))
+        with patch('bot.menu.pool_for_menu',return_value=self.pool),patch('materials.runtime.actor_for_current',AsyncMock(return_value=actor)):
+            update=update_for(message_id=101)
+            await menu_command(update,self.context)
+            await menu_command(update,self.context)
         self.context.bot.send_message.assert_awaited_once()
-        self.assertIsNone(await store.get(-55,4,8))
+        self.assertEqual(90,(await store.get(55,-1,7))['message_id'])
+
+    async def test_old_menu_cleanup_failure_does_not_block_fresh_open(self):
+        from bot.menu import menu_command
+        store,panel,actor=await self.setup_panel()
+        self.context.bot.send_message.return_value=NS(message_id=90,chat=NS(id=55))
+        self.context.bot.edit_message_reply_markup.side_effect=TimedOut()
+        with patch('bot.menu.pool_for_menu',return_value=self.pool),patch('materials.runtime.actor_for_current',AsyncMock(return_value=actor)):
+            await menu_command(update_for(message_id=101),self.context)
+        row=await store.get(55,-1,7)
+        self.assertEqual(90,row['message_id']); self.assertEqual('active',row['status'])
+        self.assertEqual(2,self.context.bot.send_message.await_count)
+        self.context.bot.edit_message_reply_markup.assert_awaited_once()
+
+    async def test_cancel_discards_durable_legacy_snapshot_so_it_cannot_restore_input(self):
+        from bot.commands import handle_cancel_command
+        from bot.menu import is_menu_input
+        store,panel,actor=await self.setup_panel()
+        until=(datetime.now(timezone.utc)+timedelta(minutes=10)).isoformat()
+        await store.save(panel.row,state=dict(pending='legacy',input_until=until,expects_text=True,
+            legacy_snapshot=dict(config=dict(waiting_for_image_prompt=True))))
+        update=update_for(text='/cancel',message_id=101)
+        update.message=update.effective_message=NS(from_user=update.effective_user,message_id=101,reply_text=AsyncMock())
+        with patch('bot.menu.pool_for_menu',return_value=self.pool),patch('bot.queue.cancel_chat_generation'):
+            await handle_cancel_command(update,self.context)
+            self.assertFalse(await is_menu_input(update_for(text='обычный разговор',message_id=102)))
+        row=await store.get(55,-1,7)
+        self.assertEqual({},row['state']); self.assertEqual({},row['actions'])
 
     async def test_native_input_router_stops_second_handler_and_does_not_observe_llm(self):
         from bot.menu import menu_input

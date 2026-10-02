@@ -452,6 +452,8 @@ async def handle_cancel_command(update: Update, context: ContextTypes.DEFAULT_TY
     if update.effective_chat.type!='private' and not await is_admin(update.effective_user,chat_id,context):
         await update.message.reply_text('Остановить запросы всего чата может только администратор. Свою задачу останови в её карточке.')
         return
+    from bot.menu import cancel_menu_input
+    await cancel_menu_input(update,context)
     
     # Сбрасываем все состояния ожидания
     waiting_for_image_prompt[chat_id][user_id] = False

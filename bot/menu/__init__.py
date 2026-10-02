@@ -7,7 +7,7 @@ from telegram.error import TelegramError
 from cognition.scope import CURRENT_SCOPE
 from materials.types import MaterialError
 from .store import MenuStore
-from .panel import Panel
+from .panel import Panel, native
 from .controller import Controller
 
 logger = logging.getLogger(__name__)
@@ -41,17 +41,6 @@ async def menu_command(update, context):
         await update.effective_message.reply_text('Меню станет доступно после запуска хранилища.')
         return
     store = MenuStore(pool)
-    current = await actor()
-    own = await store.get(scope.chat_id,scope.topic_id,current.user_id)
-    if scope.group and own is None:
-        common=await store.public_entry(scope.chat_id,scope.topic_id,current.scope.key)
-        if common:
-            async with store.locked(scope.chat_id,scope.topic_id,common['user_id']):
-                common=await store.by_id(common['id'])
-                if common['screen']=='home' and common['state'].get('shared') and common['status']=='active':
-                    if await store.consume(common,'message:'+str(update.effective_message.message_id)):
-                        await Controller(Panel(store,common,context.bot),update,context,current).show('home')
-                    return
     async with store.locked(scope.chat_id,scope.topic_id,update.effective_user.id):
         current = await actor()
         row = await store.get(scope.chat_id,scope.topic_id,current.user_id)
@@ -59,22 +48,43 @@ async def menu_command(update, context):
         request_id='message:'+str(update.effective_message.message_id)
         if row and not await store.consume(row,request_id):
             return
-        if row:
-            Controller(Panel(store,row,context.bot),update,context,current).clear_legacy()
+        previous_message_id = row['message_id'] if row else None
         row = await store.open(scope.chat_id,scope.topic_id,current.user_id,current.scope.key)
         if not existed:
             await store.consume(row,request_id)
-        if row['status'] in ('gone','closed') or row['message_id'] is None:
-            await store.save(row,message_id=None,status='new',content_hash=None)
+        # An explicit request must appear at the bottom of the conversation.
+        # Buttons continue editing this new panel; redelivery stays deduplicated.
+        await store.save(row,message_id=None,status='new',content_hash=None)
         panel = Panel(store,row,context.bot)
         controller = Controller(panel,update,context,current)
+        controller.clear_legacy(force=True)
         try:
-            # Only an explicit open may create/recover a missing panel.
-            text, buttons = __import__('bot.menu.views',fromlist=['SECTIONS']).SECTIONS['home']
-            await panel.render(text,buttons,screen='home',state=dict(shared=True),allow_create=True)
-            await controller.show('home')
+            await controller.show('home',allow_create=True)
         except TelegramError:
             logger.info('Menu opening outcome is unconfirmed; no automatic replacement')
+        # Old tokens are already invalid in SQL. Remove their visible buttons
+        # once; failure to clean an old message must not hide the new menu.
+        if previous_message_id is not None:
+            try:
+                await native(context.bot,'edit_message_reply_markup')(
+                    chat_id=scope.chat_id,message_id=previous_message_id,reply_markup=None)
+            except TelegramError:
+                logger.info('Previous menu buttons could not be removed; tokens revoked')
+
+
+async def cancel_menu_input(update, context):
+    # Commands invoked inside the panel already hold its lock and reset state.
+    if getattr(context.bot,'_menu_panel',None) is not None:
+        return
+    scope = CURRENT_SCOPE.get()
+    pool = pool_for_menu()
+    if not scope or pool is None or not update.effective_user or scope.sender_kind!='user':
+        return
+    store = MenuStore(pool)
+    async with store.locked(scope.chat_id,scope.topic_id,update.effective_user.id):
+        row = await store.get(scope.chat_id,scope.topic_id,update.effective_user.id)
+        if row and row['state'].get('pending') in ('legacy','form','confirm_form'):
+            await store.save(row,state={},actions={},content_hash=None)
 
 
 def public_action(row, action, scope, user_id):

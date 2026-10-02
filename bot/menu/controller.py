@@ -38,14 +38,14 @@ class Controller:
         message = bridge.MessageSurface(self, text=text)
         return await request_sources(service, self.actor, message)
 
-    async def render(self, text, buttons=(), *, screen=None, state=None):
+    async def render(self, text, buttons=(), *, screen=None, state=None, allow_create=False):
         from materials.runtime import actor_for_current
         current = await actor_for_current()
         if current.scope.key != self.actor.scope.key:
             self.actor = current
             await self.panel.store.save(self.panel.row,scope_key=current.scope.key)
         self.last_text = text
-        return await self.panel.render(text, buttons, screen=screen, state=state)
+        return await self.panel.render(text, buttons, screen=screen, state=state, allow_create=allow_create)
 
     async def capture(self, text, markup=None, parse_mode=None):
         # Existing media/model flows become inline choices in the same panel.
@@ -97,8 +97,8 @@ class Controller:
         for key, value in snapshot.get('config', {}).items():
             getattr(config, key)[self.actor.scope.chat_id].setdefault(self.actor.user_id, deepcopy(value))
 
-    def clear_legacy(self):
-        if self.panel.row['state'].get('pending') != 'legacy':
+    def clear_legacy(self, *, force=False):
+        if not force and self.panel.row['state'].get('pending') != 'legacy':
             return
         import config
         # Only clean temporary files belonging to this user's pending input.
@@ -137,7 +137,7 @@ class Controller:
                 return True
         return False
 
-    async def show(self, screen='home', page=0):
+    async def show(self, screen='home', page=0, *, allow_create=False):
         self.clear_legacy()
         if screen in views.SECTIONS:
             text, buttons = deepcopy(views.SECTIONS[screen])
@@ -154,7 +154,7 @@ class Controller:
                     text += '\n\n<i>Сохранённая работа с файлами пока не включена. Картинки, видео, музыка и общение доступны по настройкам чата.</i>'
                 elif not agents_enabled():
                     text += '\n\n<i>Проекты доступны. Исполнение агентских задач пока не включено.</i>'
-            return await self.render(text, buttons, screen=screen, state=state)
+            return await self.render(text, buttons, screen=screen, state=state,allow_create=allow_create)
         if screen == 'group':
             return await self.group_screen()
         if screen == 'projects':
