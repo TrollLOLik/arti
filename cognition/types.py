@@ -113,7 +113,7 @@ class CognitiveEvent:
             raise ValueError('Invalid event')
         if len(self.text) > 100000:
             raise ValueError('Event text budget exceeded')
-        if self.event_kind not in ('utterance','reaction','media_request','delivery','system','historical'):
+        if self.event_kind not in ('utterance','reaction','media_request','media_source','delivery','system','historical'):
             raise ValueError('Invalid event kind')
         if not isinstance(self.audience,AudienceScope) or not isinstance(self.addressed_to_arti,bool):
             raise ValueError('Invalid audience or addressing')

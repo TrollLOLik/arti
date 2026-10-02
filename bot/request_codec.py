@@ -21,7 +21,8 @@ class CodecError(ValueError):
         super().__init__(code)
 
 
-REQUEST_FIELDS = frozenset('type chat_id user_id user_name user_message message_id is_voice base64_image base64_images document_text video_file_id is_video_note prompt image_urls image_aspect_ratio image_resolution image_num_images video_model video_duration video_aspect_ratio style instrumental _cognitive_context _cognitive_source_ids _material_uses _derivative_uses _computation_uses _cognitive_turn _telegram_scope _request_mode _request_no_coalesce'.split())
+REQUEST_FIELDS = frozenset('type chat_id user_id user_name user_message message_id is_voice base64_image base64_images document_text video_file_id is_video_note prompt image_urls image_aspect_ratio image_resolution image_num_images video_model video_duration video_aspect_ratio style instrumental _cognitive_context _cognitive_source_ids _material_uses _derivative_uses _computation_uses _cognitive_turn _telegram_scope _request_mode _request_no_coalesce url input_media reference_media synthesis_text cleaned source_kind with_subs audio_only'.split())
+REQUEST_FIELDS = REQUEST_FIELDS | {'saved_voice_id','saved_voice_version'}
 # These are process-local bookkeeping, never input to the resumed operation.
 TRANSIENT_FIELDS = frozenset(('bot', 'context', 'enqueued_at', 'started_at'))
 TELEGRAM_TYPES = frozenset(('Message', 'ReplyParameters', 'MessageEntity', 'InputMediaPhoto',
@@ -205,18 +206,21 @@ async def _restore_turn(data):
     allowed={'context_id','event_id','epoch','authority','expression','memory','repeated_delivery','send_ordinal','delivery_blocked',*TURN_EXTRA}
     if set(data)-allowed: raise CodecError()
     async with runtime.pool.acquire() as conn:
-        row=await conn.fetchrow('''SELECT e.payload,c.suppression_epoch,c.authority,c.rebuilding
+        row=await conn.fetchrow('''SELECT e.payload,c.suppression_epoch,c.authority,c.rebuilding,
+                c.history_after_event_id,c.mode,c.scene_id,c.chat_id,c.topic_id
             FROM cognitive_events e JOIN cognitive_contexts c ON c.id=e.context_id
             WHERE e.context_id=$1 AND e.id=$2 AND e.suppressed_at IS NULL''',data['context_id'],data['event_id'])
+        if not row or row['rebuilding'] or row['authority']!=data['authority']: raise SuppressedEvidence()
+        extras={k:data[k] for k in TURN_EXTRA if k in data}
+        turn=PreparedTurn(runtime=runtime,event=load_event(row['payload']),**{k:v for k,v in data.items() if k not in TURN_EXTRA})
+        for k,v in extras.items(): setattr(turn,k,v)
+        if turn.event.event_kind=='media_request':
+            from bot.media_provenance import refresh_neutral_media
+            if not await refresh_neutral_media(conn,turn,row): raise SuppressedEvidence()
+        elif row['suppression_epoch']!=data['epoch']: raise SuppressedEvidence()
         support=data.get('supporting_event_ids',[])
-        if not row or row['rebuilding'] or row['suppression_epoch']!=data['epoch'] or row['authority']!=data['authority']:
-            raise SuppressedEvidence()
-        if support and await conn.fetchval('SELECT count(*) FROM cognitive_events WHERE context_id=$1 AND id=ANY($2::bigint[]) AND suppressed_at IS NULL',data['context_id'],support)!=len(set(support)):
-            raise SuppressedEvidence()
+        if support and await conn.fetchval('SELECT count(*) FROM cognitive_events WHERE context_id=$1 AND id=ANY($2::bigint[]) AND suppressed_at IS NULL',data['context_id'],support)!=len(set(support)): raise SuppressedEvidence()
         await runtime._validate_current_scene(conn,data['context_id'])
-    extras={k:data.pop(k) for k in TURN_EXTRA if k in data}
-    turn=PreparedTurn(runtime=runtime,event=load_event(row['payload']),**data)
-    for k,v in extras.items(): setattr(turn,k,v)
     return turn
 
 
@@ -268,7 +272,7 @@ async def _restore_use(kind,data):
 async def encode_request(request):
     if not isinstance(request,dict) or set(request)-REQUEST_FIELDS-TRANSIENT_FIELDS:
         raise CodecError('unsupported_durable_request_field')
-    if request.get('type') not in ('text','image','video','music'):
+    if request.get('type') not in ('text','image','video','music','dubbing','vclone'):
         raise CodecError('unsupported_durable_request_type')
     fence=None
     context=request.get('_cognitive_context')
@@ -288,13 +292,16 @@ async def encode_request(request):
 async def decode_request(payload,bot):
     if not isinstance(payload,dict) or set(payload)!={'codec','kind','value','fence'} or payload['codec']!=VERSION or payload['kind']!='request': raise CodecError()
     request=await decode_value(payload['value'])
-    if not isinstance(request,dict) or set(request)-REQUEST_FIELDS or request.get('type') not in ('text','image','video','music'): raise CodecError()
+    if not isinstance(request,dict) or set(request)-REQUEST_FIELDS or request.get('type') not in ('text','image','video','music','dubbing','vclone'): raise CodecError()
     scope=request.get('_telegram_scope'); context=request.get('_cognitive_context')
     if request.get('_request_mode',context.mode if context else 'default') not in ('default','rp'): raise CodecError('durable_mode_mismatch')
     if context and request.get('_request_mode',context.mode)!=context.mode: raise CodecError('durable_mode_mismatch')
     if scope and scope.chat_id!=request.get('chat_id'): raise CodecError('durable_scope_mismatch')
     if context and (context.chat_id!=request.get('chat_id') or scope and context.topic_id!=scope.topic_id): raise CodecError('durable_scope_mismatch')
     turn=request.get('_cognitive_turn')
+    if turn is not None and turn.event.event_kind=='media_request':
+        from bot.media_provenance import identity_for
+        if context is None or turn.event.evidence.source_id!=identity_for(request,context): raise CodecError('media_request_content_changed')
     if turn and (turn.event.context.chat_id!=request.get('chat_id') or scope and turn.event.context.topic_id!=scope.topic_id): raise CodecError('durable_scope_mismatch')
     for field in ('_material_uses','_derivative_uses','_computation_uses'):
         for use in request.get(field,()):
@@ -307,9 +314,14 @@ async def decode_request(payload,bot):
         runtime=get_runtime()
         if runtime is None: raise CodecError('durable_runtime_unavailable')
         async with runtime.pool.acquire() as conn:
-            row=await conn.fetchrow('SELECT id,suppression_epoch,rebuilding FROM cognitive_contexts WHERE persona_id=$1 AND chat_id=$2 AND mode=$3 AND scene_id=$4 AND topic_id=$5',*context.identity())
+            row=await conn.fetchrow('SELECT * FROM cognitive_contexts WHERE persona_id=$1 AND chat_id=$2 AND mode=$3 AND scene_id=$4 AND topic_id=$5',*context.identity())
             fence=payload['fence']
-            if not row or row['rebuilding'] or not isinstance(fence,dict) or set(fence)!={'context_id','epoch'} or row['id']!=fence['context_id'] or row['suppression_epoch']!=fence['epoch']: raise SuppressedEvidence()
+            refreshed=False
+            if turn is not None and turn.event.event_kind=='media_request':
+                from bot.media_provenance import refresh_neutral_media
+                refreshed=await refresh_neutral_media(conn,turn,row)
+                if not refreshed: raise SuppressedEvidence()
+            if not row or row['rebuilding'] or not isinstance(fence,dict) or set(fence)!={'context_id','epoch'} or row['id']!=fence['context_id'] or (row['suppression_epoch']!=fence['epoch'] and not refreshed): raise SuppressedEvidence()
             await runtime._validate_current_scene(conn,row['id'])
             ids=request.get('_cognitive_source_ids',[])
             if ids and await conn.fetchval('SELECT count(*) FROM cognitive_events WHERE context_id=$1 AND id=ANY($2::bigint[]) AND suppressed_at IS NULL',row['id'],ids)!=len(set(ids)): raise SuppressedEvidence()

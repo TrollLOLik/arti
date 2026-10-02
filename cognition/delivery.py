@@ -53,6 +53,9 @@ async def _send_with_receipt(method,args,kwargs,channel):
         payload['sticker_id'] = kwargs['sticker']
     async with runtime.pool.acquire() as conn,conn.transaction():
         ctx = await conn.fetchrow('SELECT * FROM cognitive_contexts WHERE id=$1 FOR UPDATE',turn.context_id)
+        if turn.event.event_kind=='media_request':
+            from bot.media_provenance import refresh_neutral_media
+            if not await refresh_neutral_media(conn,turn,ctx): raise DeliverySuppressed()
         permitted = await conn.fetchval('SELECT 1 FROM cognitive_events WHERE context_id=$1 AND id=$2 AND suppressed_at IS NULL',turn.context_id,turn.event_id)
         support=sorted(set(getattr(turn,'supporting_event_ids',())))
         if support:
@@ -131,8 +134,12 @@ async def _confirm_transaction(turn,row,receipt,messages,text,channel):
     chat_id = turn.event.context.chat_id
     async with runtime.pool.acquire() as conn,conn.transaction():
         context = await conn.fetchrow('SELECT * FROM cognitive_contexts WHERE id=$1 FOR UPDATE',turn.context_id)
+        media_valid=True
+        if turn.event.event_kind=='media_request':
+            from bot.media_provenance import refresh_neutral_media
+            media_valid=await refresh_neutral_media(conn,turn,context)
         permitted = await conn.fetchval('SELECT 1 FROM cognitive_events WHERE context_id=$1 AND id=$2 AND suppressed_at IS NULL',turn.context_id,turn.event_id)
-        if not permitted or context['rebuilding'] or context['suppression_epoch']!=turn.epoch or context['authority'] not in (('active','shadow') if turn.event.audience.kind in ('group','topic') else ('active',)):
+        if not media_valid or not permitted or context['rebuilding'] or context['suppression_epoch']!=turn.epoch or context['authority'] not in (('active','shadow') if turn.event.audience.kind in ('group','topic') else ('active',)):
             await conn.execute("UPDATE cognitive_outbox SET status='cancelled',payload=NULL,receipt_id=$2 WHERE id=$1",row['id'],receipt)
             return False
         changed = await conn.fetchval("UPDATE cognitive_outbox SET status='delivered',receipt_id=$2,updated_at=NOW() WHERE id=$1 AND status='sending' RETURNING id",row['id'],receipt)
