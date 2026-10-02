@@ -6,12 +6,13 @@ import httpx
 
 
 class SelectedModelClient:
-    def __init__(self, *, resolver=None, client=None, google_client=None, timeout=90):
+    def __init__(self, *, resolver=None, client=None, google_client=None, timeout=90, fast=False):
         self.resolver = resolver
         self.client = client
         self.google_client = google_client
         self.timeout = timeout
         self.owned = client is None
+        self.fast = fast
 
     async def model_for(self, chat_id):
         if self.resolver is None:
@@ -40,10 +41,16 @@ class SelectedModelClient:
                 system = '\n\n'.join(m['content'] for m in messages if m['role'] == 'system')
                 contents = [types.Content(role='model' if m['role'] == 'assistant' else 'user',
                     parts=[types.Part(text=m['content'])]) for m in messages if m['role'] != 'system']
+                thinking = None
+                if self.fast:
+                    if model.startswith(('gemini-3.1-flash-lite','gemini-3-flash')):
+                        thinking = types.ThinkingConfig(thinking_level='minimal')
+                    elif model.startswith('gemini-2.5-flash'):
+                        thinking = types.ThinkingConfig(thinking_budget=0)
                 try:
                     result = await client.aio.models.generate_content(model=model, contents=contents,
                         config=types.GenerateContentConfig(system_instruction=system, temperature=temperature,
-                            max_output_tokens=tokens, response_mime_type='application/json'))
+                            max_output_tokens=tokens, response_mime_type='application/json',thinking_config=thinking))
                 except (asyncio.CancelledError, httpx.TimeoutException):
                     raise
                 except Exception as exc:

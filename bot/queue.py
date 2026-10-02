@@ -97,9 +97,9 @@ async def run_supervised(coro_factory, name: str, *args, **kwargs):
 
 
 # REL-02: окно rolling-debounce склейки подряд идущих сообщений пользователя.
-# Снижено с 5с до 1.5с — серии сообщений всё ещё склеиваются, но одиночный вопрос
-# не ждёт лишние секунды до начала генерации.
-_DEBOUNCE_WINDOW_SEC = 1.5
+# Короткая пауза для серии сообщений; общий сбор не задерживает ответ дольше 2с.
+_DEBOUNCE_WINDOW_SEC = .6
+_DEBOUNCE_MAX_SEC = 2.
 
 
 def _llm_media_quota_ok(user_id) -> bool:
@@ -556,7 +556,7 @@ async def _media_queue_worker(queue: asyncio.Queue, worker_name: str):
         try:
             await sub_task
         except asyncio.CancelledError:
-            if sub_task.cancelled():
+            if sub_task.cancelled() and not asyncio.current_task().cancelling():
                 # Отменили саму под-задачу (через /cancel) — воркер продолжает работу.
                 logger.info(f"Медиа-воркер '{worker_name}': задача '{task.get('type')}' для чата {chat_id} была отменена.")
             else:
@@ -739,9 +739,13 @@ async def _user_text_worker(user_id: int):
         # Rolling debounce: ждём до _DEBOUNCE_WINDOW_SEC, каждое новое сообщение сбрасывает таймер
         extra_images = []
         extra_docs = []
+        debounce_deadline = asyncio.get_running_loop().time()+_DEBOUNCE_MAX_SEC
         while True:
             try:
-                extra = await asyncio.wait_for(queue.get(), timeout=_DEBOUNCE_WINDOW_SEC)
+                remaining = debounce_deadline-asyncio.get_running_loop().time()
+                if remaining<=0:
+                    break
+                extra = await asyncio.wait_for(queue.get(), timeout=min(_DEBOUNCE_WINDOW_SEC,remaining))
                 if extra.get('user_id')!=request.get('user_id') or extra['chat_id']!=request['chat_id'] or extra.get('_cognitive_context')!=request.get('_cognitive_context') or extra.get('_telegram_scope') and request.get('_telegram_scope') and extra['_telegram_scope'].topic_id!=request['_telegram_scope'].topic_id:
                     carry = extra
                     break
@@ -794,7 +798,7 @@ async def _user_text_worker(user_id: int):
             try:
                 await sub_task
             except asyncio.CancelledError:
-                if sub_task.cancelled():
+                if sub_task.cancelled() and not asyncio.current_task().cancelling():
                     # Отмена под-задачи (/cancel) — воркер продолжает работу.
                     logger.info(f"Текстовый воркер: задача для чата {chat_id} была отменена.")
                 else:
@@ -947,6 +951,12 @@ async def process_user_reply(request, bot):
     cognitive_turn.supporting_event_ids=request.get('_cognitive_source_ids',[])
     if cognitive_turn.repeated_delivery:
         return
+    from ai.intents import resolve_intent
+    import time
+    request['_intent'] = await resolve_intent(user_message,chat_id,
+        has_materials=bool(request.get('_material_uses') or document_text),
+        allow_work=enabled() and os.getenv('ARTI_AGENTS_ENABLED','0').lower() in ('1','true','yes'),
+        recent_maps=time.time()-_recent_map_sessions.get(user_id,0)<300) if mode!='rp' else {}
     from bot.agent_requests import handle_agent_request
     if enabled() and user_id and await handle_agent_request(request,bot):
         return
@@ -1021,28 +1031,9 @@ async def process_user_reply(request, bot):
         import time
         user_location = None
         if not base64_image and not video_file_id and not document_text:
-            from ai.generation import analyze_intent
             from utils.location_manager import get_user_location
 
-            intent = await analyze_intent(user_message)
-
-            # Follow-up heuristic: если предыдущий map-запрос был < 5 мин назад,
-            # или короткий вопрос при активной локации — форсировать карты
-            if not intent.get("maps"):
-                last_map_time = _recent_map_sessions.get(user_id)
-                if last_map_time and (time.time() - last_map_time) < 300:
-                    # Есть активная map-сессия
-                    location = await get_user_location(user_id)
-                    if location:
-                        intent["maps"] = True
-                        logger.info(f"🗺 Follow-up map session для {user_id}")
-                else:
-                    # Короткий вопрос + локация
-                    if len(user_message.strip()) < 40 and "?" in user_message:
-                        location = await get_user_location(user_id)
-                        if location:
-                            intent["maps"] = True
-                            logger.info(f"🗺 Heuristic map (короткий вопрос + локация) для {user_id}")
+            intent = request['_intent']
 
             if intent.get("maps"):
                 location = await get_user_location(user_id)
@@ -1116,6 +1107,7 @@ async def process_user_reply(request, bot):
             is_rp_mode=is_rp,
             memory_context=memory_context,
             expression_plan=cognitive_turn.expression,
+            request_intent=request['_intent'],
         )
         
         if uploaded_video_file:

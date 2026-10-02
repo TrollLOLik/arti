@@ -5,15 +5,14 @@ from types import SimpleNamespace
 from materials.types import MaterialError,EvidenceRef
 
 def intent(text):
-    if re.search(r'(?i)\b(?:сделай|создай|построй|подготовь)\b.*\b(?:инфографику|инфографика|схему|сравнение из файлов)\b',text): return 'artifact'
-    if re.match(r'(?i)^\s*(?:агент[:,]?\s*|выполни задачу[:,]\s*)',text): return 'task'
-    return None
+    from ai.intents import direct_intent
+    return direct_intent(text)[0]['work']
 
 async def handle_agent_request(request,bot):
     import os
     if os.getenv('ARTI_AGENTS_ENABLED','0').lower() not in ('1','true','yes'): return False
     if await reply_patch(request,bot): return True
-    kind=intent(request['user_message'])
+    kind=request['_intent'].get('work') if '_intent' in request else intent(request['user_message'])
     if not kind: return False
     from materials.runtime import actor_for_current,service_for_bot,guard_current,CURRENT_DERIVATIVE_USE,CURRENT_MATERIAL_USE
     from projects.repository import ProjectRepository

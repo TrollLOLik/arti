@@ -1,0 +1,67 @@
+{
+  "model": "gemini-3.1-flash-lite-preview",
+  "synthetic_only": true,
+  "suite": "development_smoke_not_holdout",
+  "provider_calls": 0,
+  "working_database_mutated": false,
+  "passed": 7,
+  "total": 7,
+  "cases": [
+    {
+      "case": 1,
+      "expected": "artifact",
+      "actual": "artifact",
+      "passed": true,
+      "provider": "not_called",
+      "duration_ms": 8
+    },
+    {
+      "case": 2,
+      "expected": "artifact",
+      "actual": "artifact",
+      "passed": true,
+      "provider": "not_called",
+      "duration_ms": 9
+    },
+    {
+      "case": 3,
+      "expected": "search",
+      "actual": "search",
+      "passed": true,
+      "provider": "not_called",
+      "duration_ms": 0
+    },
+    {
+      "case": 4,
+      "expected": "maps",
+      "actual": "maps",
+      "passed": true,
+      "provider": "not_called",
+      "duration_ms": 0
+    },
+    {
+      "case": 5,
+      "expected": "chat",
+      "actual": "chat",
+      "passed": true,
+      "provider": "not_called",
+      "duration_ms": 0
+    },
+    {
+      "case": 6,
+      "expected": "chat",
+      "actual": "chat",
+      "passed": true,
+      "provider": "not_called",
+      "duration_ms": 0
+    },
+    {
+      "case": 7,
+      "expected": "artifact",
+      "actual": "artifact",
+      "passed": true,
+      "provider": "not_called",
+      "duration_ms": 18
+    }
+  ]
+}

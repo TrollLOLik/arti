@@ -61,7 +61,7 @@ class PreparedTurn:
 
 
 class CognitiveRuntime:
-    def __init__(self,pool,interpreter,mode='active',clock=None,*,strict=False):
+    def __init__(self,pool,interpreter,mode='active',clock=None,*,strict=False,semantic=None,prepare_budget=3.):
         if mode not in ('shadow','active','legacy'):
             raise ValueError('Invalid cognitive authority')
         self.pool,self.interpreter,self.mode = pool,interpreter,mode
@@ -70,7 +70,10 @@ class CognitiveRuntime:
             raise ValueError('Production cognition is always active')
         self.clock = clock or (lambda:datetime.now(timezone.utc))
         self.repo = CognitiveRepository(pool)
-        self.memory = MemoryRepository(pool)
+        self.semantic = semantic
+        self.prepare_budget = prepare_budget
+        self.foreground = set()
+        self.memory = MemoryRepository(pool,semantic)
         self.reappraisal = ReappraisalRepository(pool)
         self.jobs = JobQueue(pool)
         self.worker = CognitiveWorker(self.jobs,self.handle_job)
@@ -87,6 +90,8 @@ class CognitiveRuntime:
             await self.activate_current_contexts()
         if start_worker and self.mode!='legacy':
             self.worker.start()
+            if self.semantic:
+                self.semantic.start()
         return self
 
     async def activate_current_contexts(self):
@@ -151,7 +156,12 @@ class CognitiveRuntime:
                 raise SuppressedEvidence()
 
     async def close(self):
+        for task in self.foreground:
+            task.cancel()
+        await asyncio.gather(*self.foreground,return_exceptions=True)
         await self.worker.stop()
+        if self.semantic:
+            await self.semantic.close()
         await self.groups.close()
         close = getattr(self.interpreter,'close',None)
         if close:
@@ -249,7 +259,8 @@ class CognitiveRuntime:
                         raise StaleRevision()
                     await self.jobs.finish(job['id'],job['lease_token'])
                 except InterpreterFailure as exc:
-                    await self.jobs.fail(job['id'],job['lease_token'],exc.code)
+                    code = exc.code if exc.code in ('timeout','provider_unavailable','invalid_perception','output_truncated') else 'provider_unavailable'
+                    await self.jobs.fail(job['id'],job['lease_token'],code)
                     raise
                 except BaseException:
                     await self.jobs.fail(job['id'],job['lease_token'],'internal_error')
@@ -278,9 +289,9 @@ class CognitiveRuntime:
             elif event.evidence.origin in (Origin.USER,Origin.DELIVERED_ACTION) and event.event_kind!='historical' and event.addressed_to_arti:
                 # Preliminary retrieval does not strengthen traces or supply a new
                 # external evidence group. The current event is not yet encoded.
-                raw = await self.memory.artifacts(cid,event.evidence.owner_id,'trace',limit=32,query=event.text)
+                raw = await self.memory.candidates(cid,event.evidence.owner_id,event.text,limit=32)
                 words = __import__('cognition.memory_dynamics',fromlist=['tokens']).tokens(event.text)
-                raw.sort(key=lambda r:-len(words & __import__('cognition.memory_dynamics',fromlist=['tokens']).tokens(r['payload']['gist'])))
+                raw.sort(key=lambda r:-(.55*len(words & __import__('cognition.memory_dynamics',fromlist=['tokens']).tokens(r['payload']['gist']))/max(1,len(words))+.45*r.get('semantic_score',0.)))
                 memories = [dict(source_id=r['payload']['source_id'],text=r['payload']['gist'][:400],interpretation=r['payload']['interpretation']) for r in raw[:8]]
                 pending = await self.memory.open_intentions(cid,event.evidence.owner_id,event.text)
                 intentions = [{k:r['payload'].get(k) for k in ('key','description','actor_id','deadline','status','source_id')} for r in pending]
@@ -363,18 +374,43 @@ class CognitiveRuntime:
         # The input may have been registered before debounce. Process every
         # earlier observation before preparing the latest response.
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch('''SELECT e.id FROM cognitive_events e WHERE context_id=$1 AND id<=$2 AND suppressed_at IS NULL AND origin IN ('user','delivered_action')
+            rows = [] if self.strict and self.worker.task is not None and not self.worker.task.done() else await conn.fetch('''SELECT e.id FROM cognitive_events e WHERE context_id=$1 AND id<=$2 AND suppressed_at IS NULL AND origin IN ('user','delivered_action')
                 AND NOT EXISTS(SELECT 1 FROM cognitive_effects f WHERE f.context_id=e.context_id AND f.event_id=e.id AND f.model_version=$3)
                 ORDER BY observed_at,id''',cid,eid,__import__('cognition.types',fromlist=['MODEL_VERSION']).MODEL_VERSION)
-        for r in rows:
+        async def catch_up():
+            if self.strict and self.worker.task is not None and not self.worker.task.done():
+                deadline = asyncio.get_running_loop().time()+self.prepare_budget
+                while asyncio.get_running_loop().time()<deadline:
+                    async with self.pool.acquire() as conn:
+                        ready = await conn.fetchval("SELECT 1 FROM cognitive_projection_effects WHERE event_id=$1 AND phase='encode' AND model_version=$2",eid,MODEL_VERSION)
+                    if ready:
+                        return
+                    await asyncio.sleep(.05)
+                return
             # Foreground processing shares the local serialization lock. A
             # production worker will reuse its already committed perception.
+            for r in rows:
+                try:
+                    await self.process(cid,r['id'])
+                except InterpreterFailure:
+                    # A provider failure supplies no user emotion or legacy delta.
+                    break
+        if self.strict:
+            # The observer remains durable and continues after the reply budget.
+            # Shielding avoids cancelling paid interpretation on every slow turn.
+            task = asyncio.create_task(catch_up(),name='cognitive-catch-up')
+            self.foreground.add(task)
+            def finished(t):
+                self.foreground.discard(t)
+                if not t.cancelled():
+                    t.exception()
+            task.add_done_callback(finished)
             try:
-                await self.process(cid,r['id'])
-            except InterpreterFailure:
-                # The durable observation remains pending. A temporary provider
-                # failure supplies no user emotion and no legacy fallback delta.
-                break
+                await asyncio.wait_for(asyncio.shield(task),self.prepare_budget)
+            except asyncio.TimeoutError:
+                pass
+        else:
+            await catch_up()
         async with self.pool.acquire() as conn:
             if await conn.fetchval('SELECT rebuilding FROM cognitive_contexts WHERE id=$1',cid):
                 raise SuppressedEvidence()
@@ -387,7 +423,12 @@ class CognitiveRuntime:
         if source['suppressed_at'] is not None:
             raise SuppressedEvidence()
         p = Perception.from_dict(object_value(source['perception'])) if source['perception'] else Perception(event.event_id,PERCEPTION_VERSION,())
-        decision,plan = regulate(state,p.situation,relationship['preferences'],task_serious)
+        from ai.intents import channel_restrictions
+        preferences = {**relationship['preferences'],**channel_restrictions(text)}
+        decision,plan = regulate(state,p.situation,preferences,task_serious)
+        if not source['perception']:
+            # Do not express an earlier mood as a response to an unassessed event.
+            plan = replace(plan,sticker_mood=None,playfulness=0.,disclosure=0.,tone='calm and attentive',tts_style='neutral',cause_ids=())
         from cognition.relationships import relationship_view
         view = relationship_view(relationship,self.clock())
         cue = p.situation.topic.casefold().strip() if p.situation else ''
@@ -408,7 +449,7 @@ class CognitiveRuntime:
                                    dict(strategy=decision.strategy,expected_outcome=decision.expected_outcome,pending=decision.pending,
                                         implicit_cue=cue,implicit_expression_bias=implicit),owner,[eid])
         turn = PreparedTurn(self,cid,eid,event,plan,memory,ctx['suppression_epoch'],ctx['authority'],bool(delivered))
-        turn.preferences = dict(relationship['preferences'])
+        turn.preferences = preferences
         if event.audience.kind in ('group','topic'):
             turn.memory = ''
             turn.expression = replace(turn.expression,disclosure=0.)
@@ -464,8 +505,10 @@ async def start_runtime(pool,mode=None,interpreter=None):
     global _runtime
     if mode not in (None,'active'):
         raise ValueError('Production cognition is always active')
+    from cognition.semantic import SemanticIndex
+    semantic = SemanticIndex(pool) if interpreter is None else None
     interpreter = interpreter or SelectedModelInterpreter()
-    _runtime = await CognitiveRuntime(pool,interpreter,'active',strict=True).initialize()
+    _runtime = await CognitiveRuntime(pool,interpreter,'active',strict=True,semantic=semantic).initialize()
     return _runtime
 
 

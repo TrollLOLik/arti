@@ -1,0 +1,114 @@
+{
+  "model": "minilm-multilingual-384:faf4aa4225822f3bc6376869cb1164e8e3feedd0:mean-v1",
+  "synthetic_only": true,
+  "cases": 20,
+  "cold_batch_ms": 1837,
+  "warm_query_median_ms": 5.5,
+  "warm_query_max_ms": 9.86,
+  "semantic_recall_at_1": 0.8,
+  "semantic_recall_at_3": 0.95,
+  "lexical_recall_at_1": 0.1,
+  "hits_above_threshold": 15,
+  "details": [
+    {
+      "case": 1,
+      "rank": 1,
+      "score": 0.571
+    },
+    {
+      "case": 2,
+      "rank": 1,
+      "score": 0.591
+    },
+    {
+      "case": 3,
+      "rank": 1,
+      "score": 0.6168
+    },
+    {
+      "case": 4,
+      "rank": 1,
+      "score": 0.7707
+    },
+    {
+      "case": 5,
+      "rank": 1,
+      "score": 0.5965
+    },
+    {
+      "case": 6,
+      "rank": 2,
+      "score": 0.288
+    },
+    {
+      "case": 7,
+      "rank": 6,
+      "score": 0.2058
+    },
+    {
+      "case": 8,
+      "rank": 2,
+      "score": 0.3816
+    },
+    {
+      "case": 9,
+      "rank": 1,
+      "score": 0.4196
+    },
+    {
+      "case": 10,
+      "rank": 1,
+      "score": 0.5985
+    },
+    {
+      "case": 11,
+      "rank": 1,
+      "score": 0.6002
+    },
+    {
+      "case": 12,
+      "rank": 2,
+      "score": 0.5033
+    },
+    {
+      "case": 13,
+      "rank": 1,
+      "score": 0.5076
+    },
+    {
+      "case": 14,
+      "rank": 1,
+      "score": 0.5564
+    },
+    {
+      "case": 15,
+      "rank": 1,
+      "score": 0.3963
+    },
+    {
+      "case": 16,
+      "rank": 1,
+      "score": 0.5829
+    },
+    {
+      "case": 17,
+      "rank": 1,
+      "score": 0.6826
+    },
+    {
+      "case": 18,
+      "rank": 1,
+      "score": 0.5275
+    },
+    {
+      "case": 19,
+      "rank": 1,
+      "score": 0.6125
+    },
+    {
+      "case": 20,
+      "rank": 1,
+      "score": 0.457
+    }
+  ]
+}

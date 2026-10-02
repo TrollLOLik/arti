@@ -238,7 +238,7 @@ class OperationalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         turn = await self.runtime.prepare(10,1,'Remember this project.',1)
         from ai import generation
         create = AsyncMock(return_value=SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='Reply'))]))
-        fake = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        fake = SimpleNamespace(close=AsyncMock(),chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
         with patch.object(generation,'AsyncOpenAI',return_value=fake),patch.object(generation,'analyze_intent',new=AsyncMock(return_value={'web_search':False})):
             output = await generation.generate_response_stream(10,'Remember this project.','User','Recent dialogue',
                 model='synthetic-chat',custom_system_prompt='Be helpful.',memory_context=turn.memory,expression_plan=turn.expression)

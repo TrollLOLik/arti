@@ -1524,6 +1524,12 @@ async def handle_location_message(update: Update, context: ContextTypes.DEFAULT_
 # ============================================================================
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from telegram.error import Conflict
+    if isinstance(context.error,Conflict):
+        logger.error('Polling stopped: another consumer or webhook uses this token.',
+                     exc_info=context.error,extra={'arti_event':'polling_conflict_stop'})
+        context.application.stop_running()
+        return
     logger.error("Exception while handling an update:", exc_info=context.error)
 
 # ============================================================================

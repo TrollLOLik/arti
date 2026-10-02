@@ -8,11 +8,12 @@ logger = logging.getLogger(__name__)
 
 
 class CognitiveWorker:
-    def __init__(self,queue,handler,poll_seconds=.25):
+    def __init__(self,queue,handler,poll_seconds=.25,concurrency=4):
         self.queue,self.handler = queue,handler
         self.poll_seconds = poll_seconds
         self.stopping = asyncio.Event()
         self.task = None
+        self.concurrency = max(1,min(8,concurrency))
 
     def start(self):
         if self.task is None or self.task.done():
@@ -36,6 +37,16 @@ class CognitiveWorker:
                 raise StaleRevision()
 
     async def run(self):
+        # SQL leases serialize one context while other chats keep progressing.
+        lanes = [asyncio.create_task(self._lane(),name=f'cognitive-lane-{i}') for i in range(self.concurrency)]
+        try:
+            await asyncio.gather(*lanes)
+        finally:
+            for task in lanes:
+                task.cancel()
+            await asyncio.gather(*lanes,return_exceptions=True)
+
+    async def _lane(self):
         while not self.stopping.is_set():
             try:
                 await self._run()

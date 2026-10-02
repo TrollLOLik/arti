@@ -5,6 +5,7 @@ artifact/source permission checks. Encoding and consolidation commit together.
 """
 import hashlib
 import math
+from collections import Counter
 from dataclasses import asdict
 from datetime import datetime, timedelta
 
@@ -24,8 +25,9 @@ def key(kind,*parts):
 
 
 class MemoryRepository:
-    def __init__(self,pool):
+    def __init__(self,pool,semantic=None):
         self.pool = pool
+        self.semantic = semantic
 
     async def _put(self,conn,cid,kind,identity,payload,owner,sources,parents=()):
         sources = set(sources)
@@ -212,6 +214,19 @@ class MemoryRepository:
                 LIMIT $5''',cid,owner,MODEL_VERSION,kind,min(2000,limit),search)
         return [{**dict(r),'payload':object_value(r['payload'])} for r in rows]
 
+    async def candidates(self,cid,owner,query,limit=512):
+        rows = await self.artifacts(cid,owner,'trace',limit=limit,query=query)
+        if self.semantic is not None:
+            # Semantic search spans the permitted ledger, not just recent rows.
+            semantic = await self.semantic.search(cid,owner,query)
+            merged = {r['id']:r for r in rows}
+            merged.update({r['id']:r for r in semantic})
+            words = tokens(query)
+            rows = sorted(merged.values(),key=lambda r:-(
+                .55*len(words & tokens(r['payload']['gist']))/max(1,len(words))
+                +.45*r.get('semantic_score',0.)))
+        return rows
+
     async def open_intentions(self,cid,owner,query='',limit=16):
         search = ' OR '.join(sorted(tokens(query)))
         async with self.pool.acquire() as conn:
@@ -233,7 +248,8 @@ class MemoryRepository:
             return await self.archive_lookup(cid,owner,query,at,cycle_key,limit)
         words = tokens(query)
         qvector = lexical_vector(query)
-        traces = await self.artifacts(cid,owner,'trace',limit=512,query=query)
+        traces = await self.candidates(cid,owner,query)
+        topics = Counter(r['payload']['topic'] for r in traces)
         candidates = {}
         async with self.pool.acquire() as conn:
             # Vector model/version are part of every query and persisted key.
@@ -245,13 +261,15 @@ class MemoryRepository:
             t = row['payload']
             overlap = len(words & tokens(t['gist'])) / max(1,len(words))
             vector = max(0.,cosine(qvector,vectors.get(row['id'],[])))
-            competition = sum(1 for other in traces if other['id']!=row['id'] and other['payload']['topic']==t['topic'])/12
-            recollection = reconstruct(t,at,overlap,competition,archive)
+            semantic = row.get('semantic_score',0.)
+            cue = max(overlap,semantic)
+            competition = (topics[t['topic']]-1)/12
+            recollection = reconstruct(t,at,cue,competition,archive)
             accessible = max((d['accessibility'] for d in recollection['details']),default=.05)
             # Mood bias is small; no candidate is removed by its emotional sign.
             bias = max(-.05,min(.05,mood*t.get('emotional_valence',0.)*.05))
-            score = .55*overlap+.25*vector+.15*accessible+bias
-            candidates[row['id']] = dict(row=row,score=score,cue=overlap,recollection=recollection)
+            score = max(.55*overlap+.25*vector,.55*semantic+.20*overlap)+.15*accessible+bias
+            candidates[row['id']] = dict(row=row,score=score,cue=cue,recollection=recollection)
         activation = {i:max(0.,v['score']-.2) for i,v in candidates.items()}
         for _ in range(2):
             increment = {}
