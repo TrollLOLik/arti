@@ -847,7 +847,7 @@ async def photo_action_callback(update: Update, context: ContextTypes.DEFAULT_TY
     key = (chat_id, user_id)
     # L-07: если для этого пользователя нет ожидания — это либо чужая кнопка, либо
     # ожидание уже обработано. Тихо отвечаем и НЕ редактируем сообщение владельца.
-    if key not in pending_photo_action:
+    if key not in pending_photo_action or pending_photo_action[key].get('bot_message_id')!=query.message.message_id:
         await query.answer("Эта кнопка не для тебя или уже неактуальна.", show_alert=False)
         return
     pending = pending_photo_action.pop(key, None)
@@ -1507,7 +1507,7 @@ async def document_action_callback(update: Update, context: ContextTypes.DEFAULT
 
     key = (chat_id, user_id)
     # L-07: чужая/неактуальная кнопка — тихо отвечаем, не редактируя сообщение владельца.
-    if key not in pending_doc_action:
+    if key not in pending_doc_action or pending_doc_action[key].get('bot_message_id')!=query.message.message_id:
         await query.answer("Эта кнопка не для тебя или уже неактуальна.", show_alert=False)
         return
     pending = pending_doc_action.pop(key, None)

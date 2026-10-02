@@ -374,7 +374,11 @@ async def start(update, context):
 
     await set_responses_enabled(chat_id, True)
     logger.info(f"Бот включен в чате {chat_id}.")
-    await update.message.reply_text(random.choice(START_RESPONSES), parse_mode='HTML')
+    if getattr(context.bot,'_menu_panel',None) is not None:
+        await update.message.reply_text('Ответы включены. Я на связи.')
+    else:
+        from bot.menu import menu_command
+        await menu_command(update,context)
 
 
 # ============================================================================
@@ -433,67 +437,8 @@ async def clear_context(update, context):
 # ============================================================================
 
 async def arti_commands(update, context):
-    chat_id = update.effective_chat.id
-
-    if not await is_responses_enabled(chat_id):
-        return
-
-    if not await handle_spam_protection(update, context, "arti_commands"):
-        return
-
-    commands_list = (
-        "<i>Касается пальцами банта на шее, выводя голографическую панель управления на экран терминала. Свечение в её звёздчатых радужках становится ярче.</i>\n\n"
-        "<blockquote>«Подключаю терминал... Доступ к ядру Арти санкционирован. Вот полный список моих системных команд и модулей, субъект:»</blockquote>\n\n"
-        "📡 <b>ЦЕНТР УПРАВЛЕНИЯ АРТИ</b>\n"
-        "──────────────────────────────\n"
-        "🧠 <b>Основные и Ментальные команды:</b>\n"
-        "• /start — Инициализировать сознание Арти\n"
-        "• /stop — Перевести системы в спящий режим\n"
-        "• /clear_context — Полностью очистить оперативную память текущего чата\n"
-        "• /my_profile — Вывести твоё секретное досье / RPG Character Sheet\n"
-        "• /forget [тема] — Интерактивно стереть воспоминание из долгосрочной памяти\n"
-        "• /model — Переключить модель мышления (⚡Быстрая / 🧠Умная)\n"
-        "• /cancel — Экстренно свернуть активные медиа-потоки\n"
-        "• /rp — Активировать режим глубокого ролевого погружения (только в ЛС)\n\n"
-        "🎨 <b>Модули генерации медиа:</b>\n"
-        "• /image — Синтезировать изображение по текстовому описанию\n"
-        "• /video — Сгенерировать кинематографичный видеоряд\n"
-        "• /music — Сочинить музыкальную композицию (пошаговый конструктор)\n"
-        "• /dataset — Показать таблицы и качество данных во вложении (ответом на файл)\n"
-        "• /calc sum B2:B4 — Выполнить проверяемый расчёт по таблице\n"
-        "• /datafix B2 1300 — Подтвердить исправление ячейки, сохранив оригинал\n"
-        "• /transcript — Открыть временную расшифровку (ответом на аудио)\n"
-        "• /moment 1.4, /storyboard — Кадры видео (ответом на видео)\n"
-        "• /materials_find — Найти точные фрагменты материалов\n"
-        "• /material_review — Сохранить выбор варианта и причину\n"
-        "• /project — Личные и совместные проекты, роли и версии\n"
-        "• /artifact — Инфографика, точечные правки, версии и экспорт\n"
-        "• /task — Долговечные задачи, пауза, остановка и результат\n"
-        "• /decision, /assignment — Решения и добровольные обязательства проекта\n"
-        "• /procedure, /subscription — Подтверждённые способы работы и подписки\n"
-        "• /scenario — Учебные квесты, истории и визуальные обзоры\n"
-        "• /listen turn_1 — Переслушать исходный отрезок\n"
-        "• /transcript_fix — Подтвердить исправление текста расшифровки\n"
-    )
-
-    # CONF-01: голосовые/дубляжные команды показываем только когда TTS включён —
-    # иначе они отвечали бы «отключено» после прохождения всего диалога.
-    if TTS_ENABLED:
-        commands_list += (
-            "• /dub — Дублировать видео или аудио на русский язык (с субтитрами)\n"
-            "• /vclone (или /steal) — Скопировать голос из аудио-файла и озвучить им текст\n"
-            "• /voices — Показать реестр твоих сохранённых слепков голосов\n"
-            "• /voice_save — Извлечь и сохранить слепок голоса без озвучивания\n"
-            "• /voice_delete — Стереть сохранённый слепок голоса из базы\n"
-        )
-
-    commands_list += (
-        "\n🎲 <b>Развлекательные протоколы:</b>\n"
-        "• /rps — Сыграть с Арти в классическую «цу-е-фа» (Камень, Ножницы, Бумага)\n\n"
-        "──────────────────────────────\n"
-        "🛠 <b>Системный архитектор:</b> @DeallSign"
-    )
-    await update.message.reply_text(commands_list, parse_mode="HTML")
+    from bot.menu import menu_command
+    return await menu_command(update, context)
 
 
 # ============================================================================
@@ -504,6 +449,9 @@ async def handle_cancel_command(update: Update, context: ContextTypes.DEFAULT_TY
     """Отменяет текущие пошаговые запросы (музыка, фото, видео)."""
     chat_id = update.effective_chat.id
     user_id = update.message.from_user.id
+    if update.effective_chat.type!='private' and not await is_admin(update.effective_user,chat_id,context):
+        await update.message.reply_text('Остановить запросы всего чата может только администратор. Свою задачу останови в её карточке.')
+        return
     
     # Сбрасываем все состояния ожидания
     waiting_for_image_prompt[chat_id][user_id] = False
@@ -1256,23 +1204,12 @@ async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("❌ Только админы могут менять модель.", show_alert=True)
         return
 
+    flow = context.user_data.get("model_flow")
+    if not flow or flow.get('menu_message_id')!=query.message.message_id:
+        await query.answer('Это чужой или устаревший выбор модели. Открой своё меню.',show_alert=True)
+        return
     await query.answer()
     data = query.data
-
-    if "model_flow" not in context.user_data:
-        context.user_data["model_flow"] = {
-            "page": 0,
-            "query": None,
-            "provider": None,
-            "speed": None,
-            "intelligence": None,
-            "menu_message_id": query.message.message_id,
-            "menu_mode": "list",
-            "pings": {}
-        }
-        
-    flow = context.user_data["model_flow"]
-    flow["menu_message_id"] = query.message.message_id
 
     if data == "model_noop":
         return
@@ -2730,7 +2667,7 @@ async def vclone_clean_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     # Requirement 6.3: проверяем что юзер совпадает с инициатором (state-owner)
     # и что мы действительно ждём решение по чистке.
-    if not state or state.get("step") != "cleanup_choice":
+    if not state or state.get("step") != "cleanup_choice" or not query.message or state.get('bot_message_id')!=query.message.message_id:
         try:
             await query.answer("Эта кнопка уже неактуальна.", show_alert=False)
         except Exception:
@@ -2945,7 +2882,7 @@ async def vclone_save_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     state = vclone_save_flow_state.get(chat_id, {}).get(user_id)
-    if not isinstance(state, dict):
+    if not isinstance(state, dict) or not query.message or state.get('bot_message_id')!=query.message.message_id:
         await query.answer("Уже неактуально.", show_alert=False)
         return
 

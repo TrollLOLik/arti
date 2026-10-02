@@ -9,14 +9,14 @@ from artifacts.revisions import ArtifactRepository
 from projects.repository import ProjectRepository
 
 async def request_sources(service,actor,message):
-    source=f'telegram:{message.chat_id}:{message.message_id}:user'
+    source=getattr(message,'_menu_request_source',None) or f'telegram:{message.chat_id}:{message.message_id}:user'
     asset=await service.ingest((message.text or message.caption or 'Explicit workflow request').encode(),'request.txt',actor,source,source)
     id,bundle=await service.extract(asset['id'],actor); b=bundle.blocks[0]
     from cognition.runtime import get_runtime
     runtime=get_runtime()
     if runtime:
         from cognition.types import AudienceScope,Origin
-        await runtime.ingest(actor.scope.chat_id,actor.user_id,message.text or message.caption or 'Workflow request',str(message.message_id),actor.scope.mode,context=await runtime.context(actor.scope.chat_id,actor.scope.mode,actor.scope.topic_id),origin=Origin.USER,audience=AudienceScope('private' if actor.scope.chat_type=='private' else ('topic' if actor.scope.topic_id>0 else 'group'),actor.scope.chat_id,actor.scope.topic_id))
+        await runtime.ingest(actor.scope.chat_id,actor.user_id,message.text or message.caption or 'Workflow request',str(getattr(message,'_menu_event_id',message.message_id)),actor.scope.mode,context=await runtime.context(actor.scope.chat_id,actor.scope.mode,actor.scope.topic_id),origin=Origin.USER,audience=AudienceScope('private' if actor.scope.chat_type=='private' else ('topic' if actor.scope.topic_id>0 else 'group'),actor.scope.chat_id,actor.scope.topic_id))
     return [EvidenceRef(asset['id'],1,id,b.block_id,b.locator)]
 
 class WorkCards:
@@ -26,7 +26,7 @@ class WorkCards:
         actions=[]
         async with self.pool.acquire() as conn:
             await conn.execute('DELETE FROM arti_work_actions WHERE expires_at<NOW()')
-            for name,label in [('sources','Источники'),('format','Формат'),('json','Спецификация'),('pdf','PDF'),('png','Карточки'),('svg','SVG'),('accept','Принять'),('reject','Отклонить')]:
+            for name,label in [('sources','Источники'),('format','Формат'),('json','Данные (JSON)'),('pdf','Для печати (PDF)'),('png','Картинки (PNG)'),('svg','Для редактора (SVG)'),('accept','Принять'),('reject','Отклонить')]:
                 id=uuid.uuid4().hex
                 await conn.execute('INSERT INTO arti_work_actions(id,realm,owner_id,scope_key,artifact_id,revision,action,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',id,actor.realm,actor.user_id,actor.scope.key,row['id'],row['revision'],name,datetime.now(timezone.utc)+timedelta(days=2))
                 actions.append(InlineKeyboardButton(label,callback_data='work:'+id))
@@ -82,7 +82,7 @@ class WorkCards:
         text=self.task_text(row); kwargs=dict(chat_id=actor.scope.chat_id,text=text,reply_markup=markup)
         if actor.scope.topic_id>0: kwargs['message_thread_id']=actor.scope.topic_id
         result=await self.send(actor,row['project_id'],row['id'],row['revision'],key,bot.send_message,kwargs,guard)
-        if row['owner_id']==actor.user_id:
+        if row['owner_id']==actor.user_id and getattr(bot,'_menu_panel',None) is None:
             async with self.pool.acquire() as conn:
                 await conn.execute("INSERT INTO arti_processing_cards(task_id,realm,owner_id,scope_key,message_id,content_hash) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(task_id) DO UPDATE SET message_id=EXCLUDED.message_id,content_hash=EXCLUDED.content_hash,status='active',updated_at=NOW() WHERE arti_processing_cards.owner_id=EXCLUDED.owner_id AND arti_processing_cards.realm=EXCLUDED.realm AND arti_processing_cards.scope_key=EXCLUDED.scope_key",row['id'],actor.realm,actor.user_id,actor.scope.key,result.message_id,sha256(text.encode()).hexdigest())
         return result

@@ -24,7 +24,13 @@ class CognitiveUpdateProcessor(BaseUpdateProcessor):
             # Voice/video require transcription first. Their handler registers
             # that observation; a placeholder must not replace its exact text.
             text = getattr(message,'text',None) or getattr(message,'caption',None)
-            if text and text.split()[0].split('@')[0] in ('/forget','/clear_context','/rp','/charge','/my_profile','/memory_archive','/stop','/start','/cancel','/proactivity','/quiet'):
+            # Callback text belongs to the bot's panel, not the human clicking it.
+            # Menu inputs are control data; business handlers retain actual consent.
+            from bot.menu import is_menu_input
+            menu_input = await is_menu_input(update,getattr(runtime,'pool',None))
+            if getattr(update,'callback_query',None) or menu_input:
+                text = None
+            if text and text.split()[0].split('@')[0] in ('/menu','/arti_commands','/forget','/clear_context','/rp','/charge','/my_profile','/memory_archive','/stop','/start','/cancel','/proactivity','/quiet'):
                 # Control/diagnostic requests may contain the very topic being
                 # erased. They are not new autobiographical evidence.
                 text = None

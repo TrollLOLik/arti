@@ -587,6 +587,24 @@ async def music_worker():
     await _media_queue_worker(music_queue, "music")
 
 
+def _real_menu_context(context):
+    if getattr(context,'_menu_real_context',None) is not None:
+        return context._menu_real_context
+    # Some legacy photo paths build SimpleNamespace(bot=...) themselves.
+    bot=getattr(context,'bot',None)
+    if getattr(bot,'_menu_panel',None) is not None:
+        return bot.controller.context
+    return context
+
+
+def _detach_menu_context(task):
+    if task.get('context') is not None:
+        task['context']=_real_menu_context(task['context'])
+    bot=task.get('bot')
+    if getattr(bot,'_menu_panel',None) is not None:
+        task['bot']=bot.real_bot
+
+
 async def enqueue_generation(task: dict, bot, chat_id):
     from materials.runtime import CURRENT_MATERIAL_USE
     task['_material_uses'] = CURRENT_MATERIAL_USE.get()
@@ -605,6 +623,9 @@ async def enqueue_generation(task: dict, bot, chat_id):
         return
 
     queue_pos = queue.qsize() + 1
+    # Menu navigation is short-lived; a queued result uses the real transport and
+    # cannot overwrite whichever menu screen the user opens afterwards.
+    _detach_menu_context(task)
     await queue.put(task)
 
     type_emoji = {"image": "🎨", "video": "🎬", "music": "🎵"}.get(task_type, "⏳")
@@ -615,6 +636,7 @@ async def enqueue_generation(task: dict, bot, chat_id):
 
 
 async def enqueue_reply(chat_id, user_id, user_name, user_message, message_id, context, is_voice=True, base64_image=None, document_text=None, video_file_id=None, is_video_note=False):
+    context=_real_menu_context(context)
     from cognition.scope import CURRENT_SCOPE
     scope=CURRENT_SCOPE.get()
     if scope and scope.group and scope.sender_kind=='chat':
@@ -1740,6 +1762,7 @@ async def dubbing_worker():
 
 
 async def enqueue_dubbing(task: dict, bot, chat_id):
+    _detach_menu_context(task)
     from cognition.scope import CURRENT_SCOPE
     from cognition.runtime import CURRENT_TURN
     task['_telegram_scope']=CURRENT_SCOPE.get()
@@ -2074,6 +2097,7 @@ async def vclone_worker():
 
 
 async def enqueue_vclone(task: dict, bot, chat_id):
+    _detach_menu_context(task)
     from cognition.scope import CURRENT_SCOPE
     from cognition.runtime import CURRENT_TURN
     task['_telegram_scope']=CURRENT_SCOPE.get()

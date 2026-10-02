@@ -97,6 +97,11 @@ def run_with_restart():
                     runtime=await start_runtime(connection._pool)
                     runtime.bot_id=app.bot.id
                     runtime.bot_username=app.bot.username
+                    from bot.menu import install
+                    try:
+                        await install(app.bot)
+                    except telegram.error.TelegramError:
+                        logger.warning('Не удалось настроить кнопку Telegram; /menu остаётся доступна.')
                     logger.info("База данных инициализирована")
                 except Exception as e:
                     logger.error(f"Ошибка при инициализации БД: {e}", exc_info=True)
@@ -168,6 +173,10 @@ def run_with_restart():
             )
 
             # Регистрируем хендлеры команд
+            from bot.menu import menu_command,menu_callback,menu_input
+            application.add_handler(CommandHandler(['menu','arti_commands'],menu_command))
+            application.add_handler(CallbackQueryHandler(menu_callback,pattern='^menu:'))
+            application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND,menu_input),group=-20)
             application.add_handler(CommandHandler("clear_context", clear_context))
             from bot.group_commands import proactivity_command,quiet_command
             application.add_handler(CommandHandler('proactivity',proactivity_command))
@@ -197,7 +206,6 @@ def run_with_restart():
             application.add_handler(CommandHandler('listen',listen_command))
             from bot.commands import handle_memory_archive_command
             application.add_handler(CommandHandler("memory_archive",handle_memory_archive_command))
-            application.add_handler(CommandHandler("arti_commands", arti_commands))
             application.add_handler(CommandHandler("cancel", handle_cancel_command))
             application.add_handler(CommandHandler("start", start))
             application.add_handler(CommandHandler("stop", stop))

@@ -15,7 +15,7 @@ async def project_command(update,context):
         if not args: args=['show']
         if args[0]=='new' and len(args) in (2,3):
             from hashlib import sha256
-            id=sha256(f'project-command:{actor.realm}:{actor.user_id}:{message.message_id}'.encode()).hexdigest()[:32]
+            id=sha256(f'project-command:{actor.realm}:{actor.user_id}:{getattr(message,"_menu_event_id",message.message_id)}'.encode()).hexdigest()[:32]
             p=await repo.create(actor,args[1],args[2] if len(args)==3 else '',id=id)
         elif args[0]=='list' and len(args)==1:
             projects=await repo.list(actor)

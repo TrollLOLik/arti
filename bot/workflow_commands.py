@@ -32,6 +32,7 @@ def workflow_summary(row):
 
 async def workflow_command(update,context):
     message=update.effective_message
+    request_id=getattr(message,'_menu_event_id',message.message_id)
     if not enabled(): await message.reply_text('Долговечная работа отключена.'); return
     try:
         actor=await actor_for_current(); service=await service_for_bot(); projects=ProjectRepository(service.repository); generic=WorkflowRepository(service.repository)
@@ -79,7 +80,7 @@ async def workflow_command(update,context):
             elif len(args)==2 and args[0]=='run':
                 from agents.tasks import TaskRepository
                 plan,procedure=await repo.instantiate(args[1],actor,await read_json(message,context))
-                task=await TaskRepository(service.repository,registry).create(actor,procedure['project_id'],plan,await request_sources(service,actor,message),id=sha256(f'procedure-run:{actor.realm}:{message.message_id}'.encode()).hexdigest()[:32])
+                task=await TaskRepository(service.repository,registry).create(actor,procedure['project_id'],plan,await request_sources(service,actor,message),id=sha256(f'procedure-run:{actor.realm}:{getattr(message,"_menu_event_id",message.message_id)}'.encode()).hexdigest()[:32])
                 await message.reply_text('Запуск сохранён: '+task['id']); return
             elif len(args)==3 and args[0]=='revise': row=await repo.revise_confirmed(args[1],actor,int(args[2]),await read_json(message,context),confirmed=True,origin='user')
             elif len(args)==3 and args[0]=='propose':
@@ -88,7 +89,7 @@ async def workflow_command(update,context):
                 async def proposal_guard(): await repo.derivatives.load(proposal,actor,'procedure_proposal')
                 kwargs=dict(chat_id=actor.scope.chat_id,text=f'Предлагаемая правка {proposal}. Принятый способ работы продолжает действовать.\nПринять: /procedure approve {args[1]} {args[2]} {proposal}')
                 if actor.scope.topic_id>0: kwargs['message_thread_id']=actor.scope.topic_id
-                await WorkCards(service).send(actor,current['project_id'],proposal,int(args[2]),f'procedure-proposal:{actor.realm}:{message.message_id}',context.bot.send_message,kwargs,proposal_guard); return
+                await WorkCards(service).send(actor,current['project_id'],proposal,int(args[2]),f'procedure-proposal:{actor.realm}:{request_id}',context.bot.send_message,kwargs,proposal_guard); return
             elif len(args)==4 and args[0]=='approve': row=await repo.approve_change(args[1],actor,int(args[2]),args[3],await request_sources(service,actor,message))
         elif command=='subscription':
             from agents.subscriptions import SubscriptionRepository
@@ -103,7 +104,7 @@ async def workflow_command(update,context):
                 from agents.runtime import deliver_task
                 from agents.tasks import TaskRepository
                 tasks=TaskRepository(service.repository,registry); task=await tasks.get(details['last_result']['task_id'],actor)
-                await deliver_task(service,tasks,task,context.bot,f'subscription-download:{actor.realm}:{message.message_id}',reader=actor); return
+                await deliver_task(service,tasks,task,context.bot,f'subscription-download:{actor.realm}:{request_id}',reader=actor); return
         elif command=='scenario':
             from projects.learning import LearningRepository
             repo=LearningRepository(service.repository)
@@ -113,7 +114,7 @@ async def workflow_command(update,context):
             elif len(args)==2 and args[0]=='visual':
                 from bot.work_cards import WorkCards
                 row=await repo.visualize(args[1],actor,sources=await request_sources(service,actor,message))
-                await WorkCards(service).show(row,actor,context.bot,f'scenario-visual:{actor.realm}:{message.message_id}'); return
+                await WorkCards(service).show(row,actor,context.bot,f'scenario-visual:{actor.realm}:{request_id}'); return
         if row is None: raise MaterialError('workflow_command_invalid')
         from bot.work_cards import WorkCards
         async def guard():
@@ -126,5 +127,5 @@ async def workflow_command(update,context):
             body=canonical(dict(id=row['id'],revision=row['revision'],status=row['status'],body=row['body'],sources=refs)).encode(); file=BytesIO(body); file.name=command+'.json'
             kwargs.update(document=file,caption=f"{command} {row['id']}; версия {row['revision']}"); method=context.bot.send_document
         else: kwargs['text']=workflow_summary(row); method=context.bot.send_message
-        await WorkCards(service).send(actor,row['project_id'],row['id'],row['revision'],f'workflow-command:{actor.realm}:{message.message_id}',method,kwargs,guard)
+        await WorkCards(service).send(actor,row['project_id'],row['id'],row['revision'],f'workflow-command:{actor.realm}:{request_id}',method,kwargs,guard)
     except (MaterialError,ValueError,TypeError,KeyError): await message.reply_text('Нужны актуальная версия, входные данные и права проекта.\n'+HELP)
