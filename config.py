@@ -138,7 +138,7 @@ MEDIA_RATE_LIMIT = int(os.getenv("MEDIA_RATE_LIMIT", "6"))
 MEDIA_RATE_WINDOW = int(os.getenv("MEDIA_RATE_WINDOW", "300"))
 # TTS_ENABLED управляет голосовыми фичами: озвучка ответов, /vclone, /steal, /dub,
 # /voice_save. По умолчанию выкл — включать только если подняты TTS-бэкенды
-# (VoxCPM Demo/локальный/Fish). Настраивается через .env: TTS_ENABLED=True.
+# (VoxCPM2 Demo/локальный). Настраивается через .env: TTS_ENABLED=True.
 TTS_ENABLED = os.getenv("TTS_ENABLED", "False").strip().lower() == "true"
 MEMORY_CONSOLIDATION_AUTO = False  # Retired engine; cognition owns memory.
 # Применять план консолидации (объединение дублей фактов + перенос знаний в Wiki),

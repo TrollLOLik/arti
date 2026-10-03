@@ -124,7 +124,7 @@ async def run_dubbing(
         "--dub-plan", str(dub_plan_path),
         "--no-review-pause",
         "--stage", "full",
-        "--tts-backend", "voxcpm-demo",
+        "--tts-backend", os.getenv("VOXCPM_TTS_BACKEND", "voxcpm-demo"),
     ])
     if audio_only:
         cmd.append("--audio-only")

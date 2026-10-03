@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import io
 import json
 import logging
@@ -152,15 +151,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gemini-fallback-model", default="gemini-3-flash-preview")
     parser.add_argument("--translation-batch-size", type=int, default=20)
     parser.add_argument("--dub-sample-rate", type=int, default=48000)
-    parser.add_argument("--tts-backend", choices=["fish", "omnivoice", "voxcpm-demo"], default="voxcpm-demo", help="TTS backend: VoxCPM Demo Space (default), local OmniVoice/VoxCPM, or Fish Speech")
-    parser.add_argument("--fish-url", default="http://127.0.0.1:8080/v1/tts", help="Fish Speech /v1/tts endpoint")
-    parser.add_argument("--omnivoice-url", default="http://localhost:8000/generate")
-    parser.add_argument("--omnivoice-timeout", type=float, default=120.0)
+    parser.add_argument("--tts-backend", choices=["voxcpm-local", "voxcpm-demo"], default=os.getenv("VOXCPM_TTS_BACKEND", "voxcpm-demo"), help="VoxCPM2 endpoint to use first")
+    parser.add_argument("--voxcpm-url", default=os.getenv("VOXCPM_URL", "http://localhost:8000/generate"))
+    parser.add_argument("--voxcpm-timeout", type=float, default=float(os.getenv("VOXCPM_TIMEOUT", "120")))
+    parser.add_argument("--voxcpm-steps", type=int, default=10)
+    parser.add_argument("--voxcpm-clone-mode", choices=["reference", "prompt"], default=os.getenv("VOXCPM_CLONE_MODE", "reference"), help="Reference-only cloning tolerates ASR timing errors; prompt requires an exact transcript")
     parser.add_argument("--voxcpm-demo-space", default="openbmb/VoxCPM-Demo", help="HF Space for VoxCPM Demo (gradio_client)")
     parser.add_argument("--voxcpm-demo-cfg", type=float, default=2.0, help="cfg_value_input for Demo Space")
     parser.add_argument("--voxcpm-demo-denoise", action="store_true", help="Enable denoise=True for Demo Space")
     parser.add_argument("--voxcpm-demo-normalize", action="store_true", help="Enable do_normalize=True for Demo Space")
-    parser.add_argument("--reference-min-seconds", type=float, default=3.0)
+    parser.add_argument("--reference-min-seconds", type=float, default=5.0)
+    parser.add_argument("--reference-max-seconds", type=float, default=12.0)
+    parser.add_argument("--reference-boundary-guard", type=float, default=0.25)
+    parser.add_argument("--reference-similarity", type=float, default=0.78)
+    parser.add_argument("--reference-speaker-margin", type=float, default=0.08)
+    parser.add_argument("--reference-embedding-model", default="pyannote/wespeaker-voxceleb-resnet34-LM")
     parser.add_argument("--separator-model", default="mel_band_roformer_karaoke_becruily.ckpt")
     parser.add_argument("--separator-segment-size", type=int, default=256)
     parser.add_argument("--separator-overlap", type=int, default=8)
@@ -186,7 +191,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tts-shorten-trigger", type=float, default=1.25, help="Shorten the line when raw TTS duration exceeds the slot by this factor")
     parser.add_argument("--snap-window", type=float, default=0.4, help="Max seconds each phrase boundary may shift towards real silence on the vocals track")
     parser.add_argument("--no-snap-boundaries", action="store_true", help="Disable snapping phrase boundaries to silence on the vocals track")
-    parser.add_argument("--per-phrase-reference", action="store_true", help="Crop a fresh TTS reference around every phrase instead of one cached reference per speaker")
     parser.add_argument("--cookies", default=None, help="Path to cookies file for yt-dlp (e.g. exported from browser)")
     parser.add_argument("--cookies-from-browser", default=None, help="Browser to extract cookies from (e.g. chrome, firefox, edge)")
     parser.add_argument("--dub-plan", default="outputs/dub_plan.json")
@@ -194,7 +198,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--subtitles-output", default=None, help="Path for generated animated .ass subtitles")
     parser.add_argument("--subtitle-font", default="Montserrat SemiBold")
     parser.add_argument("--subtitle-font-size", type=int, default=44)
-    parser.add_argument("--no-review-pause", action="store_true")
+    parser.add_argument("--no-review-pause", action="store_true", default=True)
+    parser.add_argument("--review-pause", action="store_false", dest="no_review_pause", help="Optionally pause to edit the dub plan; automatic mode is the default")
     parser.add_argument("--stage", choices=["full", "prepare", "polish", "tts"], default="full")
     parser.add_argument("--keep-temp", action="store_true")
     return parser.parse_args()
@@ -1296,7 +1301,8 @@ def normalize_audio(input_path: Path, output_path: Path, target_dbfs: float = -2
     if audio.dBFS == float("-inf"):
         audio.export(output_path, format="wav")
         return output_path
-    normalized = audio.apply_gain(target_dbfs - audio.dBFS)
+    gain = min(target_dbfs - audio.dBFS, -1.0 - audio.max_dBFS)
+    normalized = audio.apply_gain(gain)
     normalized.export(output_path, format="wav")
     return output_path
 
@@ -1418,96 +1424,14 @@ def process_phrase_audio(
     pad_or_clip(current_path, processed_path, duration, sample_rate)
 
 
-def speaker_intervals(turns: list[SpeakerTurn], speaker: str) -> list[tuple[float, float]]:
-    # Returns sorted diarization intervals for one speaker.
-    return sorted((turn.start, turn.end) for turn in turns if turn.speaker == speaker and turn.end > turn.start)
 
 
-def find_reference_bounds(phrase: Phrase, turns: list[SpeakerTurn], min_duration: float) -> tuple[float, float]:
-    # Expands phrase bounds inside the same speaker region without crossing into another speaker.
-    if phrase.speaker == "UNKNOWN" or not turns:
-        return phrase.start, phrase.end
-    intervals = speaker_intervals(turns, phrase.speaker)
-    best_interval = None
-    best_overlap = 0.0
-    for start, end in intervals:
-        overlap = max(0.0, min(phrase.end, end) - max(phrase.start, start))
-        if overlap > best_overlap:
-            best_interval = (start, end)
-            best_overlap = overlap
-    if best_interval is not None:
-        start, end = best_interval
-        target_start = max(start, phrase.start)
-        target_end = min(end, phrase.end)
-        deficit = max(0.0, min_duration - (target_end - target_start))
-        before = min(deficit / 2, target_start - start)
-        target_start -= before
-        deficit -= before
-        after = min(deficit, end - target_end)
-        target_end += after
-        deficit -= after
-        if deficit > 0:
-            target_start -= min(deficit, target_start - start)
-        return max(start, target_start), min(end, target_end)
-    return phrase.start, phrase.end
 
 
-def text_for_window(words: list[WordTiming], start: float, end: float, fallback: str) -> str:
-    # Joins words whose timing overlaps [start, end]. Falls back to phrase text if empty.
-    selected = [w.text for w in words if w.end > start and w.start < end]
-    text = normalize_text(" ".join(selected))
-    return text or fallback
 
 
-def words_fully_inside(words: list[WordTiming], start: float, end: float, slack: float = 0.05) -> list[WordTiming]:
-    # Only words whose audio is fully contained in [start, end]. Prompt text for
-    # voice-cloning TTS must exactly match the reference audio: a word that is cut
-    # off in the clip but present in the text gets spoken aloud before the target
-    # line (reference text leaking into every generated phrase).
-    return [w for w in words if w.start >= start - slack and w.end <= end + slack]
 
 
-def crop_reference_audio(
-    audio_path: Path,
-    phrase: Phrase,
-    turns: list[SpeakerTurn],
-    words: list[WordTiming],
-    reference_dir: Path,
-    min_duration: float,
-    sample_rate: int,
-) -> tuple[Path, str]:
-    # Creates a speaker-safe reference WAV for OmniVoice and matching prompt text.
-    reference_dir.mkdir(parents=True, exist_ok=True)
-    ref_start, ref_end = find_reference_bounds(phrase, turns, min_duration)
-    contained = words_fully_inside(words, ref_start, ref_end)
-    snapped_start = max(ref_start, contained[0].start - 0.1) if contained else ref_start
-    snapped_end = min(ref_end, contained[-1].end + 0.1) if contained else ref_end
-    if contained and snapped_end - snapped_start >= min_duration * 0.5:
-        # Snap clip bounds to word edges so the audio matches ref_text exactly.
-        ref_start, ref_end = snapped_start, snapped_end
-        ref_text = normalize_text(" ".join(w.text for w in contained))
-    else:
-        # Too few fully-contained words: keep the full clip for voice cloning and
-        # send no prompt text rather than text that mismatches the audio.
-        ref_text = ""
-    output_path = reference_dir / f"ref_{phrase.id:05d}_{phrase.speaker}.wav"
-    stream = ffmpeg.input(str(audio_path), ss=max(0.0, ref_start), t=max(0.01, ref_end - ref_start)).output(
-        str(output_path),
-        acodec="pcm_s16le",
-        ac=1,
-        ar=sample_rate,
-    )
-    run_ffmpeg(stream)
-    logging.info(
-        "Reference %s: speaker=%s %.2fs-%.2fs (%.2fs), text=%r",
-        output_path.name,
-        phrase.speaker,
-        ref_start,
-        ref_end,
-        ref_end - ref_start,
-        ref_text[:80],
-    )
-    return output_path, ref_text
 
 
 def _save_tts_response(content: bytes, output_path: Path, sample_rate: int) -> None:
@@ -1532,98 +1456,25 @@ def _save_tts_response(content: bytes, output_path: Path, sample_rate: int) -> N
     sf.write(output_path, audio, sr or sample_rate, subtype="PCM_16")
 
 
-def generate_fish_audio(
-    text: str,
-    ref_audio_path: Path,
-    ref_text: str,
-    output_path: Path,
-    args: argparse.Namespace,
-) -> None:
-    # Calls local Fish Speech /v1/tts with base64-encoded reference audio + reference text.
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    if not text:
-        sf.write(output_path, np.zeros(1, dtype=np.float32), args.dub_sample_rate, subtype="PCM_16")
-        return
-    audio_b64 = base64.b64encode(ref_audio_path.read_bytes()).decode("utf-8")
-    payload = {
-        "text": text,
-        "format": "wav",
-        "references": [{"audio": audio_b64, "text": ref_text or ""}],
-        "latency": "normal",
-    }
-    try:
-        response = requests.post(args.fish_url, json=payload, timeout=args.omnivoice_timeout)
-        response.raise_for_status()
-    except requests.Timeout as exc:
-        raise RuntimeError(f"Fish Speech request timed out after {args.omnivoice_timeout}s") from exc
-    except requests.RequestException as exc:
-        status = exc.response.status_code if exc.response is not None else "no response"
-        body = exc.response.text[:500] if exc.response is not None else str(exc)
-        raise RuntimeError(f"Fish Speech request failed ({status}): {body}") from exc
-    content_type = response.headers.get("content-type", "").lower()
-    if "application/json" in content_type:
+
+
+def generate_tts_audio(text: str, ref_audio_path: Path, ref_text: str,
+                       output_path: Path, args: argparse.Namespace) -> None:
+    """Only VoxCPM2 endpoints; never change the model family for a segment."""
+    functions = {"voxcpm-demo": generate_voxcpm_demo_audio,
+                 "voxcpm-local": generate_voxcpm_local_audio}
+    if args.tts_backend not in functions:
+        raise ValueError("Unsupported VoxCPM2 endpoint")
+    secondary = "voxcpm-local" if args.tts_backend == "voxcpm-demo" else "voxcpm-demo"
+    last_error = None
+    for backend in (args.tts_backend, secondary):
         try:
-            error_payload = response.json()
-        except ValueError:
-            error_payload = response.text[:500]
-        raise RuntimeError(f"Fish Speech returned JSON instead of audio: {error_payload}")
-    _save_tts_response(response.content, output_path, args.dub_sample_rate)
-
-
-def generate_tts_audio(
-    text: str,
-    ref_audio_path: Path,
-    ref_text: str,
-    output_path: Path,
-    args: argparse.Namespace,
-) -> None:
-    """Диспетчер TTS-бекендов с автоматическим per-segment фоллбэком.
-
-    Иерархия фоллбэков (в порядке убывания приоритета по `--tts-backend`):
-      voxcpm-demo -> omnivoice (local) -> fish
-      omnivoice   -> voxcpm-demo -> fish
-      fish        -> voxcpm-demo -> omnivoice
-
-    Если выбранный бэкенд упал на этом сегменте — пробуем следующий,
-    чтобы один сетевой сбой/таймаут не валил весь дубляж.
-    """
-    primary = args.tts_backend
-    chain_map = {
-        "voxcpm-demo": ["voxcpm-demo", "omnivoice", "fish"],
-        "omnivoice":   ["omnivoice", "voxcpm-demo", "fish"],
-        "fish":        ["fish", "voxcpm-demo", "omnivoice"],
-    }
-    chain = chain_map.get(primary, [primary])
-
-    backend_funcs = {
-        "voxcpm-demo": generate_voxcpm_demo_audio,
-        "omnivoice":   generate_omnivoice_audio,
-        "fish":        generate_fish_audio,
-    }
-
-    last_error: Exception | None = None
-    for backend in chain:
-        fn = backend_funcs.get(backend)
-        if fn is None:
-            continue
-        try:
-            fn(text, ref_audio_path, ref_text, output_path, args)
-            if backend != primary:
-                logging.warning(
-                    "TTS segment fell back to '%s' (primary '%s' failed)",
-                    backend, primary,
-                )
+            functions[backend](text, ref_audio_path, ref_text, output_path, args)
             return
         except Exception as exc:
             last_error = exc
-            logging.warning(
-                "TTS backend '%s' failed for segment: %s", backend, str(exc)[:200],
-            )
-            continue
-
-    raise RuntimeError(
-        f"All TTS backends failed for segment ({chain}): {last_error}"
-    ) from last_error
+            logging.warning("VoxCPM2 endpoint %s failed: %s", backend, str(exc)[:200])
+    raise RuntimeError(f"Both VoxCPM2 endpoints failed: {last_error}") from last_error
 
 
 # --- Persistent gradio_client for VoxCPM Demo Space (videotrans-side) ---
@@ -1645,7 +1496,7 @@ def _vtrans_get_demo_client(args: argparse.Namespace, force_reconnect: bool = Fa
         logging.warning("VoxCPM Demo: re-connecting to %s ...", args.voxcpm_demo_space)
     else:
         logging.info("VoxCPM Demo: connecting to %s ...", args.voxcpm_demo_space)
-    _VTRANS_DEMO_CLIENT = Client(args.voxcpm_demo_space)
+    _VTRANS_DEMO_CLIENT = Client(args.voxcpm_demo_space, httpx_kwargs={"timeout": min(30.0, args.voxcpm_timeout)})
     logging.info("VoxCPM Demo: client ready")
     return _VTRANS_DEMO_CLIENT
 
@@ -1669,7 +1520,7 @@ def generate_voxcpm_demo_audio(
     """VoxCPM Demo Space (HF) через gradio_client.
 
     Демо-Space периодически даёт SSL handshake timeout / network errors —
-    делаем 3 попытки с экспоненциальным бэкоффом и переподключением
+    делаем 3 ограниченные по времени попытки с переподключением
     клиента. При финальном провале перебрасываем исключение, чтобы
     верхний уровень мог переключиться на следующий бэкенд.
     """
@@ -1687,21 +1538,29 @@ def generate_voxcpm_demo_audio(
 
     last_error: Exception | None = None
     result_path = None
-    max_attempts = 15
+    max_attempts = 3
+    prompt = ref_text if args.voxcpm_clone_mode == "prompt" else ""
+    if args.voxcpm_clone_mode == "prompt" and not prompt:
+        raise ValueError("Prompt cloning requires an exact reference transcript")
     for attempt in range(1, max_attempts + 1):
         try:
             client = _vtrans_get_demo_client(args, force_reconnect=(attempt > 1))
-            result_path = client.predict(
+            job = client.submit(
                 text_input=body or text,
-                control_instruction=direction,
+                control_instruction=direction if not prompt else "",
                 reference_wav_path_input=handle_file(str(ref_audio_path.resolve())),
-                use_prompt_text=bool(ref_text),
-                prompt_text_input=ref_text or "",
+                use_prompt_text=bool(prompt),
+                prompt_text_input=prompt,
                 cfg_value_input=float(args.voxcpm_demo_cfg),
                 do_normalize=bool(args.voxcpm_demo_normalize),
                 denoise=bool(args.voxcpm_demo_denoise),
                 api_name="/generate",
             )
+            try:
+                result_path = job.result(timeout=args.voxcpm_timeout)
+            except Exception:
+                job.cancel()
+                raise
             if result_path:
                 break
             last_error = RuntimeError("empty result")
@@ -1732,129 +1591,100 @@ def generate_voxcpm_demo_audio(
     _save_tts_response(content, output_path, args.dub_sample_rate)
 
 
-def generate_omnivoice_audio(text: str, ref_audio_path: Path, ref_text: str, output_path: Path, args: argparse.Namespace) -> None:
-    # Calls local VoxCPM2 server (FastAPI) with multipart/form-data: text=Form, ref_audio=File.
+def generate_voxcpm_local_audio(text: str, ref_audio_path: Path, ref_text: str,
+                                output_path: Path, args: argparse.Namespace) -> None:
+    """The project's local VoxCPM2 multipart endpoint."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if not text:
         sf.write(output_path, np.zeros(1, dtype=np.float32), args.dub_sample_rate, subtype="PCM_16")
         return
-    try:
-        with open(ref_audio_path, "rb") as ref_file:
-            response = requests.post(
-                args.omnivoice_url,
-                data={"text": text},
-                files={"ref_audio": (ref_audio_path.name, ref_file, "audio/wav")},
-                headers={"Accept": "audio/wav"},
-                timeout=args.omnivoice_timeout,
-            )
-        response.raise_for_status()
-    except requests.Timeout as exc:
-        raise RuntimeError(f"OmniVoice request timed out after {args.omnivoice_timeout}s") from exc
-    except requests.RequestException as exc:
-        status = exc.response.status_code if exc.response is not None else "no response"
-        body = exc.response.text[:500] if exc.response is not None else str(exc)
-        raise RuntimeError(f"OmniVoice request failed ({status}): {body}") from exc
-    content_type = response.headers.get("content-type", "").lower()
-    if "application/json" in content_type:
-        try:
-            error_payload = response.json()
-        except ValueError:
-            error_payload = response.text[:500]
-        raise RuntimeError(f"OmniVoice returned JSON instead of audio: {error_payload}")
+    prompt = ref_text if args.voxcpm_clone_mode == "prompt" else ""
+    if args.voxcpm_clone_mode == "prompt" and not prompt:
+        raise ValueError("Prompt cloning requires an exact reference transcript")
+    _, body = _strip_voxcpm_direction(text)
+    payload = {
+        "text": body if prompt else text,
+        "prompt_text": prompt,
+        "use_prompt_text": str(bool(prompt)).lower(),
+        "clone_mode": args.voxcpm_clone_mode,
+        "cfg_value": str(args.voxcpm_demo_cfg),
+        "inference_timesteps": str(args.voxcpm_steps),
+        "normalize": str(bool(args.voxcpm_demo_normalize)).lower(),
+        "denoise": str(bool(args.voxcpm_demo_denoise)).lower(),
+    }
+    with ref_audio_path.open("rb") as reference:
+        response = requests.post(
+            args.voxcpm_url, data=payload,
+            files={"ref_audio": (ref_audio_path.name, reference, "audio/wav")},
+            headers={"Accept": "audio/wav"}, timeout=args.voxcpm_timeout,
+        )
+    response.raise_for_status()
+    if "application/json" in response.headers.get("content-type", "").lower():
+        raise RuntimeError("VoxCPM2 returned JSON instead of audio")
     _save_tts_response(response.content, output_path, args.dub_sample_rate)
 
 
+def speaker_turns_from_words(words: list[WordTiming]) -> list[SpeakerTurn]:
+    """ASR labels only propose windows when diarization is unavailable.
+
+    The bank still verifies the audio with embeddings; ASR is never evidence
+    of reference purity or a transcript for VoxCPM2.
+    """
+    turns: list[SpeakerTurn] = []
+    for word in sorted(words, key=lambda word: word.start):
+        speaker = str(word.speaker or "UNKNOWN")
+        if speaker == "UNKNOWN" or word.end <= word.start:
+            continue
+        if turns and turns[-1].speaker == speaker and word.start - turns[-1].end <= 0.5:
+            previous = turns[-1]
+            turns[-1] = SpeakerTurn(previous.start, max(previous.end, word.end), speaker)
+        else:
+            turns.append(SpeakerTurn(word.start, word.end, speaker))
+    return turns
+
+
 def build_speaker_references(
-    speaker_turns: list[SpeakerTurn],
-    words: list[WordTiming],
-    source_audio_path: Path,
-    reference_dir: Path,
-    args: argparse.Namespace,
+    speaker_turns: list[SpeakerTurn], words: list[WordTiming],
+    source_audio_path: Path, reference_dir: Path, args: argparse.Namespace,
+    original_audio_path: Path | None = None,
 ) -> dict[str, tuple[Path, str]]:
-    # One cached reference per speaker keeps the cloned voice timbre stable across
-    # phrases (per-phrase crops give the TTS a different prompt every time).
-    references: dict[str, tuple[Path, str]] = {}
-    if not speaker_turns:
-        return references
-    reference_dir.mkdir(parents=True, exist_ok=True)
-    min_dur = max(2.0, args.reference_min_seconds)
-    max_dur = 8.0
-    for speaker in sorted({turn.speaker for turn in speaker_turns}):
-        best_turn: SpeakerTurn | None = None
-        best_score = -1.0
-        for turn in speaker_turns:
-            if turn.speaker != speaker:
-                continue
-            duration = turn.end - turn.start
-            if duration < min_dur:
-                continue
-            turn_words = [w for w in words if w.start >= turn.start - 0.05 and w.end <= turn.end + 0.05]
-            if not turn_words:
-                continue
-            confidences = [w.confidence for w in turn_words if w.confidence is not None]
-            avg_conf = sum(confidences) / len(confidences) if confidences else 0.5
-            score = min(duration, max_dur) + 3.0 * avg_conf
-            if score > best_score:
-                best_score = score
-                best_turn = turn
-        if best_turn is None:
-            continue
-        ref_start = best_turn.start
-        ref_end = min(best_turn.end, best_turn.start + max_dur)
-        contained = words_fully_inside(words, ref_start, ref_end)
-        if not contained:
-            continue
-        ref_start = max(ref_start, contained[0].start - 0.1)
-        ref_end = min(ref_end, contained[-1].end + 0.1)
-        if ref_end - ref_start < min_dur * 0.5:
-            continue
-        ref_text = normalize_text(" ".join(w.text for w in contained))
-        output_path = reference_dir / f"speaker_ref_{speaker}.wav"
-        stream = ffmpeg.input(str(source_audio_path), ss=max(0.0, ref_start), t=max(0.01, ref_end - ref_start)).output(
-            str(output_path),
-            acodec="pcm_s16le",
-            ac=1,
-            ar=args.dub_sample_rate,
-        )
-        run_ffmpeg(stream)
-        normalized = normalize_audio(output_path, reference_dir / f"speaker_ref_{speaker}_norm.wav")
-        references[speaker] = (normalized, ref_text)
-        logging.info(
-            "Cached speaker reference %s: %.2fs-%.2fs (%.2fs), text=%r",
-            speaker, ref_start, ref_end, ref_end - ref_start, ref_text[:80],
-        )
+    """Build an acoustic bank. ASR text and word edges never crop its audio."""
+    try:
+        from .reference_bank import BankConfig, build_bank
+    except ImportError:
+        from reference_bank import BankConfig, build_bank
+    config = BankConfig(
+        min_seconds=args.reference_min_seconds, max_seconds=args.reference_max_seconds,
+        guard_seconds=args.reference_boundary_guard, similarity=args.reference_similarity,
+        speaker_margin=args.reference_speaker_margin, embedding_model=args.reference_embedding_model,
+    )
+    sources = {"vocals": source_audio_path}
+    if original_audio_path is not None:
+        sources["original"] = original_audio_path
+    references = build_bank(speaker_turns, sources, reference_dir, config)
+    logging.info("Verified reference bank: %d speakers, report: %s", len(references), reference_dir / "bank.json")
     return references
 
 
 def resolve_tts_reference(
-    translated: TranslatedPhrase,
-    source_audio_path: Path,
-    speaker_turns: list[SpeakerTurn],
-    words: list[WordTiming],
-    reference_dir: Path,
-    args: argparse.Namespace,
+    translated: TranslatedPhrase, source_audio_path: Path,
+    speaker_turns: list[SpeakerTurn], words: list[WordTiming],
+    reference_dir: Path, args: argparse.Namespace,
     speaker_references: dict[str, tuple[Path, str]] | None = None,
 ) -> tuple[Path, str]:
     if translated.reference_audio_path is not None:
         reference_path = validate_reference_audio_path(translated.reference_audio_path, translated.phrase.id)
-        reference_text = translated.reference_text or translated.phrase.text
+        reference_text = translated.reference_text if args.voxcpm_clone_mode == "prompt" else ""
+        if args.voxcpm_clone_mode == "prompt" and not reference_text:
+            raise ValueError("Prompt cloning requires an exact reference transcript")
         normalized_path = reference_dir / f"manual_ref_{translated.phrase.id:05d}_norm.wav"
         return normalize_audio(reference_path, normalized_path), reference_text
-    voice = translated.tts_voice.strip()
-    if voice and voice != "default_voice.pt":
-        logging.info("TTS voice label for segment %d: %s", translated.phrase.id, voice)
     if speaker_references and translated.phrase.speaker in speaker_references:
         return speaker_references[translated.phrase.speaker]
-    ref_path, ref_text = crop_reference_audio(
-        audio_path=source_audio_path,
-        phrase=translated.phrase,
-        turns=speaker_turns,
-        words=words,
-        reference_dir=reference_dir,
-        min_duration=args.reference_min_seconds,
-        sample_rate=args.dub_sample_rate,
+    raise RuntimeError(
+        f"No verified reference for speaker {translated.phrase.speaker}; "
+        f"see {reference_dir / 'bank.json'}. Ambiguous audio will not be used."
     )
-    return normalize_audio(ref_path, reference_dir / f"{ref_path.stem}_norm.wav"), ref_text
 
 
 def synthesize_and_sync(
@@ -1867,15 +1697,25 @@ def synthesize_and_sync(
     source_audio_path: Path,
     speaker_turns: list[SpeakerTurn],
     words: list[WordTiming],
+    original_audio_path: Path | None = None,
+    speaker_references: dict[str, tuple[Path, str]] | None = None,
 ) -> list[TranslatedPhrase]:
     safety_margin = 0.05
     trailing_gap = 2.0
     synced: list[TranslatedPhrase] = []
-    speaker_references: dict[str, tuple[Path, str]] = {}
-    if not args.per_phrase_reference:
-        speaker_references = build_speaker_references(
-            speaker_turns, words, source_audio_path, reference_dir, args,
-        )
+    automatic_speakers = {item.phrase.speaker for item in phrases
+                          if not item.skip_tts and item.reference_audio_path is None}
+    if automatic_speakers:
+        if args.voxcpm_clone_mode != "reference":
+            raise ValueError("Automatic references use transcript-free cloning; prompt mode needs manually verified transcripts")
+        if speaker_references is None:
+            speaker_references = build_speaker_references(
+                speaker_turns or speaker_turns_from_words(words), words,
+                source_audio_path, reference_dir, args, original_audio_path,
+            )
+        missing = automatic_speakers - speaker_references.keys()
+        if missing:
+            raise RuntimeError(f"No verified voice references for {sorted(missing)}; see {reference_dir / 'bank.json'}")
     for index, translated in enumerate(phrases, start=1):
         phrase = translated.phrase
         if translated.skip_tts:
@@ -1951,6 +1791,8 @@ def synthesize_and_sync(
                     current_text = shortened
                     continue
             break
+        if raw_duration > runaway_limit:
+            raise RuntimeError(f"VoxCPM2 produced invalid audio after retries for segment {phrase.id}")
         process_phrase_audio(
             raw_path=raw_path,
             processed_path=processed_path,
@@ -2190,8 +2032,8 @@ def run_pipeline(args: argparse.Namespace) -> None:
     raw_tts_dir = work_dir / "tts_raw"
     processed_tts_dir = work_dir / "tts_processed"
     audio_temp_dir = work_dir / "audio_temp"
-    reference_dir = work_dir / "references"
     output_path = Path(args.output)
+    reference_dir = output_path.parent / "reference_bank"
     subtitles_path = Path(args.subtitles_output) if args.subtitles_output else output_path.with_suffix(".ass")
     summary_path = Path(args.summary_output)
     transcript_path = output_path.parent / "transcript_original.json"
@@ -2201,6 +2043,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     dub_plan_path = Path(args.dub_plan)
     dub_track_path = work_dir / "russian_dub_only.wav"
     final_audio_path = work_dir / "final_video_audio.wav"
+    speaker_references = None
 
     if args.stage != "tts":
         if args.input_file:
@@ -2239,16 +2082,22 @@ def run_pipeline(args: argparse.Namespace) -> None:
         save_json(diarization_path, [turn.to_json() for turn in speaker_turns])
         logging.info("Diarization turns saved: %s", diarization_path)
 
+        if args.voxcpm_clone_mode == "reference":
+            speaker_references = build_speaker_references(
+                speaker_turns or speaker_turns_from_words(words), words, vocals_path,
+                reference_dir, args, original_audio_path=source_audio_path,
+            )
+
         translated = translate_phrases(phrases, args)
         save_dub_plan(dub_plan_path, translated)
         save_json(translation_path, [phrase.to_json() for phrase in translated])
         logging.info("Dub plan saved: %s", dub_plan_path)
         logging.info("Russian transcript saved: %s", translation_path)
         if args.stage == "prepare":
-            logging.info("Transcription complete. Please review %s; set 'tts_voice' labels and optional 'reference_audio_path', then run with --stage tts.", dub_plan_path)
+            logging.info("Preparation complete: %s; automatic references: %s. Run with --stage tts to synthesize.", dub_plan_path, reference_dir)
             return
         if not args.no_review_pause:
-            input(f"Transcription complete. Please review {dub_plan_path}; set 'tts_voice' labels and optional 'reference_audio_path', then press Enter to continue to TTS generation.")
+            input(f"Review {dub_plan_path}; optional reference_audio_path overrides are supported. Press Enter to synthesize.")
     else:
         video_path = find_downloaded_video(downloads_dir)
         source_audio_path = audio_dir / "source_separator.wav"
@@ -2268,6 +2117,8 @@ def run_pipeline(args: argparse.Namespace) -> None:
         vocals_path,
         speaker_turns,
         words,
+        original_audio_path=source_audio_path,
+        speaker_references=speaker_references,
     )
     save_json(translation_path, [phrase.to_json() for phrase in synced])
 

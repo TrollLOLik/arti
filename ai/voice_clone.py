@@ -10,7 +10,7 @@
     extract_reference  → validate_reference  → run_separator (опционально)
     → normalize_text_via_llm → synthesize_with_clone → cleanup_vclone_files
 
-TTS-бэкенды (Demo Space → локальный VoxCPM → Fish Speech) переиспользуются
+TTS-бэкенды VoxCPM2 (Demo Space → локальный сервер) переиспользуются
 из ``ai.tts``: сегментация через ``_split_body_sentences``, очистка тэгов
 направления через локальный ``sanitize_direction`` поверх
 ``_NATIVE_VOXCPM_TAGS``.
@@ -34,7 +34,6 @@ from ai.dubbing import VIDEOTRANS_DIR, VIDEOTRANS_PYTHON
 from ai.generation import generate_response_stream
 from ai.tts import (
     _NATIVE_VOXCPM_TAGS,
-    _generate_fish,
     _generate_voxcpm_demo,
     _generate_voxcpm_local,
     _split_body_sentences,
@@ -639,7 +638,7 @@ async def synthesize_with_clone(
 ) -> Path | None:
     """Синтезирует речь по тексту на голосе из ``reference``.
 
-    Каскад бэкендов (Demo Space → локальный VoxCPM → Fish Speech)
+    Каскад VoxCPM2 (Demo Space → локальный сервер)
     переиспользуется из ``ai.tts``. Текст разбивается через
     ``_split_body_sentences``; эмоции передаются как direction;
     итоговые WAV-куски склеиваются через ``pydub`` в один файл внутри
@@ -652,7 +651,7 @@ async def synthesize_with_clone(
         direction: Описание эмоции на английском (извлечено из скобок).
 
     Returns:
-        Path к итоговому WAV или ``None``, если все три бэкенда упали.
+        Path к итоговому WAV или ``None``, если оба сервера VoxCPM2 упали.
     """
     if not text or not text.strip():
         logger.error("vclone.synthesize: пустой текст, нечего озвучивать")
@@ -699,43 +698,18 @@ async def synthesize_with_clone(
             if ok:
                 used_backends.add("voxcpm-demo")
 
-            # 2. Локальный VoxCPM — direction НЕ встраивается, пропускаем если есть direction.
+            # 2. Локальный VoxCPM2 использует инструкции в начале текста.
             if not ok:
                 logger.warning(
                     "vclone.synthesize: Demo Space упал на сегменте %d, пробую локальный VoxCPM",
                     idx,
                 )
-                # Локальный VoxCPM не поддерживает отдельный параметр direction, поэтому не используем его
-                # если direction задан, пропускаем этот бэкенд
-                if not direction:
-                    ok = await asyncio.to_thread(
-                        _generate_voxcpm_local,
-                        body,
-                        wav_path,
-                        reference,
-                        "",
-                    )
-                    if ok:
-                        used_backends.add("voxcpm-local")
-
-            # 3. Fish Speech — без direction, без [native_tag] (Fish их не понимает).
-            if not ok:
-                logger.warning(
-                    "vclone.synthesize: локальный VoxCPM упал на сегменте %d, пробую Fish Speech",
-                    idx,
+                local_text = f"({direction}) {body}" if direction else body
+                ok = await asyncio.to_thread(
+                    _generate_voxcpm_local, local_text, wav_path, reference, "",
                 )
-                fish_body = re.sub(r"\[[^\]]+\]", "", body)
-                fish_body = re.sub(r"\s+", " ", fish_body).strip()
-                if fish_body:
-                    ok = await asyncio.to_thread(
-                        _generate_fish,
-                        fish_body,
-                        wav_path,
-                        reference,
-                        "",
-                    )
-                    if ok:
-                        used_backends.add("fish")
+                if ok:
+                    used_backends.add("voxcpm-local")
 
             if not ok or not wav_path.exists():
                 logger.error(

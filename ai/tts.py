@@ -6,14 +6,11 @@ Text-to-Speech для Арти.
      основной путь. Через gradio_client, отличное качество.
   2. **Локальный VoxCPM2** (``localhost:8000/generate``) — второй
      фоллбэк, если Demo Space недоступен/упал/HF-rate-limit.
-  3. **Fish Speech S2 Pro** (``localhost:8080/v1/tts``) — последний
-     фоллбэк.
 
 Различия по передаче direction в этих бэкендах:
   * Demo Space — ``control_instruction`` это **отдельный параметр**,
     содержит сырое описание без скобок (``warm aristocratic tone``).
   * Локальный VoxCPM — ``(...)`` встраивается в начало ``text``.
-  * Fish Speech — ни то, ни другое; подаём чистый текст.
 
 VoxCPM использует ДВЕ системы скобок:
   * ``(...)`` — Control Instruction (общая интонация).
@@ -31,7 +28,6 @@ from __future__ import annotations
 
 import os
 import re
-import base64
 import shutil
 import subprocess
 import threading
@@ -51,16 +47,14 @@ VOXCPM_DEMO_CFG = float(os.getenv("VOXCPM_DEMO_CFG", "2.0"))
 VOXCPM_DEMO_DENOISE = os.getenv("VOXCPM_DEMO_DENOISE", "0").strip() not in ("0", "false", "False", "")
 VOXCPM_DEMO_NORMALIZE = os.getenv("VOXCPM_DEMO_NORMALIZE", "0").strip() not in ("0", "false", "False", "")
 VOXCPM_DEMO_TIMEOUT = float(os.getenv("VOXCPM_DEMO_TIMEOUT", "180"))
+VOXCPM_CLONE_MODE = os.getenv("VOXCPM_CLONE_MODE", "reference")
 
 # --- VoxCPM2 локальный (второй фоллбэк) ---
 VOXCPM_LOCAL_URL = os.getenv("VOXCPM_URL", "http://localhost:8000/generate")
-VOXCPM_LOCAL_CFG = os.getenv("VOXCPM_CFG_VALUE", "2.5")
-VOXCPM_LOCAL_STEPS = os.getenv("VOXCPM_INFERENCE_TIMESTEPS", "30")
+VOXCPM_LOCAL_CFG = os.getenv("VOXCPM_CFG_VALUE", "2.0")
+VOXCPM_LOCAL_STEPS = os.getenv("VOXCPM_INFERENCE_TIMESTEPS", "10")
 VOXCPM_LOCAL_MAX_LENGTH = os.getenv("VOXCPM_MAX_LENGTH", "2048")
 VOXCPM_LOCAL_TIMEOUT = float(os.getenv("VOXCPM_TIMEOUT", "120"))
-
-# --- Fish Speech (последний фоллбэк) ---
-FISH_URL = os.getenv("FISH_URL", "http://127.0.0.1:8080/v1/tts")
 
 # --- Референс для zero-shot voice cloning (общий для всех бекендов) ---
 REF_PATH = Path("sample.wav")
@@ -216,7 +210,7 @@ def _extract_blockquote_segments(raw: str) -> list[str]:
 
 
 def _prepare_segments(raw: str) -> list[str]:
-    """Готовит список финальных строк для подачи в локальный VoxCPM/Fish.
+    """Готовит список финальных строк для подачи в локальный VoxCPM2.
 
     Каждая строка имеет вид:
     ``(описательный_direction) тело [native_tag] продолжение``
@@ -282,7 +276,7 @@ def _get_demo_client(force_reconnect: bool = False):
                 logger.warning(f"VoxCPM Demo: переподключаюсь к {VOXCPM_DEMO_SPACE}...")
             else:
                 logger.info(f"VoxCPM Demo: подключаюсь к {VOXCPM_DEMO_SPACE}...")
-            _demo_client = Client(VOXCPM_DEMO_SPACE)
+            _demo_client = Client(VOXCPM_DEMO_SPACE, httpx_kwargs={"timeout": min(30.0, VOXCPM_DEMO_TIMEOUT)})
             logger.info("VoxCPM Demo: клиент готов")
             return _demo_client
         except Exception as exc:
@@ -314,13 +308,12 @@ def _generate_voxcpm_demo(
 
     :param reference_path: пользовательский референс. None → fallback на
         модульный ``REF_PATH`` (старое поведение, обратно-совместимо).
-    :param prompt_text: текст референса. None → fallback на модульный
-        ``PROMPT_TEXT``. Пустая строка ``""`` → передаём
-        ``use_prompt_text=False`` (для пользовательских голосов, у которых
-        нет согласованного prompt'а).
+    :param prompt_text: точный текст референса. None использует
+        ``PROMPT_TEXT`` только при ``VOXCPM_CLONE_MODE=prompt``.
+        По умолчанию и при пустой строке используем аудио без транскрипта.
     """
     ref = reference_path if reference_path is not None else REF_PATH
-    ptext = prompt_text if prompt_text is not None else PROMPT_TEXT
+    ptext = prompt_text if prompt_text is not None else (PROMPT_TEXT if VOXCPM_CLONE_MODE == "prompt" else "")
 
     if not ref.exists():
         logger.error(f"Файл референса {ref} не найден")
@@ -337,7 +330,7 @@ def _generate_voxcpm_demo(
     use_pt = ptext != ""
     ref_label = f" [ref={ref.name}]" if ref != REF_PATH else ""
 
-    max_attempts = 15
+    max_attempts = 3
     last_error: Optional[Exception] = None
     result_path = None
 
@@ -356,9 +349,9 @@ def _generate_voxcpm_demo(
                 + (f" [direction='{direction}']" if direction else "")
                 + ref_label
             )
-            result_path = client.predict(
+            job = client.submit(
                 text_input=body,
-                control_instruction=direction or "",
+                control_instruction=(direction or "") if not use_pt else "",
                 reference_wav_path_input=handle_file(str(ref.resolve())),
                 use_prompt_text=use_pt,
                 prompt_text_input=ptext,
@@ -367,6 +360,11 @@ def _generate_voxcpm_demo(
                 denoise=VOXCPM_DEMO_DENOISE,
                 api_name="/generate",
             )
+            try:
+                result_path = job.result(timeout=VOXCPM_DEMO_TIMEOUT)
+            except Exception:
+                job.cancel()
+                raise
             if result_path:
                 break
             last_error = RuntimeError("empty result")
@@ -422,11 +420,14 @@ def _generate_voxcpm_local(
 
     :param reference_path: пользовательский референс. None → fallback на
         модульный ``REF_PATH``.
-    :param prompt_text: текст референса. None → fallback на модульный
-        ``PROMPT_TEXT``.
+    :param prompt_text: точный текст референса. None использует
+        ``PROMPT_TEXT`` только при ``VOXCPM_CLONE_MODE=prompt``.
+        По умолчанию используем аудио без транскрипта.
     """
     ref = reference_path if reference_path is not None else REF_PATH
-    ptext = prompt_text if prompt_text is not None else PROMPT_TEXT
+    ptext = prompt_text if prompt_text is not None else (PROMPT_TEXT if VOXCPM_CLONE_MODE == "prompt" else "")
+    if ptext:
+        _, text_with_direction = _split_first_direction(text_with_direction)
 
     if not ref.exists():
         logger.error(f"Файл референса {ref} не найден")
@@ -441,11 +442,13 @@ def _generate_voxcpm_local(
                 "text": text_with_direction,
                 "max_length": VOXCPM_LOCAL_MAX_LENGTH,
                 "prompt_text": ptext,
+                "use_prompt_text": str(bool(ptext)).lower(),
+                "clone_mode": "prompt" if ptext else "reference",
                 "reference_wav_path": str(ref.resolve()),
                 "cfg_value": VOXCPM_LOCAL_CFG,
                 "inference_timesteps": VOXCPM_LOCAL_STEPS,
-                "normalize": True,
-                "denoise": True,
+                "normalize": str(VOXCPM_DEMO_NORMALIZE).lower(),
+                "denoise": str(VOXCPM_DEMO_DENOISE).lower(),
             }
             files = {"ref_audio": (ref.name, ref_file, "audio/wav")}
 
@@ -486,72 +489,6 @@ def _generate_voxcpm_local(
 
     return True
 
-
-# ============================================================================
-# Fish Speech backend (legacy fallback)
-# ============================================================================
-
-def _generate_fish(
-    text: str,
-    wav_path: Path,
-    reference_path: Path | None = None,
-    prompt_text: str | None = None,
-) -> bool:
-    """Резервный путь через Fish Speech. Эмоции в круглых скобках Fish обычно
-    воспринимает корректно, отдельной конвертации не требуется.
-
-    :param reference_path: пользовательский референс. None → fallback на
-        модульный ``REF_PATH``.
-    :param prompt_text: текст референса. None → fallback на модульный
-        ``PROMPT_TEXT``.
-    """
-    ref = reference_path if reference_path is not None else REF_PATH
-    ptext = prompt_text if prompt_text is not None else PROMPT_TEXT
-
-    if not ref.exists():
-        logger.error(f"Файл референса {ref} не найден")
-        return False
-
-    ref_label = f" [ref={ref.name}]" if ref != REF_PATH else ""
-
-    try:
-        import requests
-        with open(ref, "rb") as f:
-            audio_b64 = base64.b64encode(f.read()).decode("utf-8")
-
-        payload = {
-            "text": text,
-            "format": "wav",
-            "references": [
-                {"audio": audio_b64, "text": ptext},
-            ],
-            "latency": "low",
-            "chunk_length": 200,
-            "repetition_penalty": 2.0,
-        }
-
-        logger.info(
-            f"Fish TTS (fallback): '{text[:60]}{'...' if len(text) > 60 else ''}'"
-            + ref_label
-        )
-        response = requests.post(FISH_URL, json=payload, timeout=60)
-    except Exception as exc:
-        logger.error(f"Fish TTS connection error: {exc}")
-        return False
-
-    if response.status_code != 200:
-        logger.error(f"Fish TTS HTTP {response.status_code}: {response.text[:300]}")
-        return False
-
-    try:
-        with open(wav_path, "wb") as f:
-            f.write(response.content)
-    except Exception as exc:
-        logger.error(f"Не удалось записать Fish ответ в {wav_path}: {exc}")
-        return False
-    return True
-
-
 # ============================================================================
 # Публичная функция
 # ============================================================================
@@ -583,7 +520,6 @@ def text_to_speech_telegram(text: str) -> Optional[str]:
     Иерархия бэкендов:
       1. VoxCPM Demo Space (HF) — основной
       2. VoxCPM локальный (если развёрнут)
-      3. Fish Speech S2 Pro
 
     Возвращает путь к OGG-файлу или None при ошибке.
     """
@@ -621,19 +557,6 @@ def text_to_speech_telegram(text: str) -> Optional[str]:
                 ok = _generate_voxcpm_local(local_text, wav_path)
                 if ok:
                     used_backends.add("voxcpm-local")
-
-            # 3. Fish Speech (последний шанс)
-            if not ok:
-                logger.warning(
-                    f"Локальный VoxCPM segment {idx} не отработал — пробую Fish Speech"
-                )
-                # Fish не понимает direction и [native_tag], подаём чистый текст.
-                fish_body = re.sub(r"\[[^\]]+\]", "", body)
-                fish_body = _clean_quotes_and_spaces(fish_body)
-                if fish_body:
-                    ok = _generate_fish(fish_body, wav_path)
-                    if ok:
-                        used_backends.add("fish")
 
             if not ok or not wav_path.exists():
                 logger.error(f"TTS segment {idx} провалился на всех бэкендах, прерываю")
