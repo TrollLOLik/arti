@@ -30,7 +30,7 @@ TELEGRAM_TYPES = frozenset(('Message', 'ReplyParameters', 'MessageEntity', 'Inpu
     'InlineKeyboardButton', 'ReplyKeyboardMarkup', 'KeyboardButton', 'ReplyKeyboardRemove',
     'ForceReply', 'LinkPreviewOptions', 'ReactionTypeEmoji', 'ReactionTypeCustomEmoji'))
 TURN_EXTRA = ('supporting_event_ids', 'group_candidate_id', 'group_lease_token',
-              'group_policy_revision', 'group_frame_revision', 'preferences')
+              'group_policy_revision', 'group_frame_revision', 'preferences', 'retrieval_diagnostics', 'private_memory_ids')
 
 
 def _bounded(value):

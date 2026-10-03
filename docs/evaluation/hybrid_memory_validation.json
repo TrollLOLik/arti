@@ -1,0 +1,102 @@
+{
+  "scope": "Resumable token-complete memory indexing and authorized public hybrid retrieval",
+  "validated_at_utc": "2026-10-03T19:06:53.575304+00:00",
+  "baseline_commit": "df30528b15e1b638f9dd3f416a11e4eccab7350e",
+  "branch": "codex/memory-coverage-hybrid",
+  "code_fingerprint_sha256": "46013a87bb51fae831b1912bff780bf7dad5cf896bc9cf90614044e033ae8d3e",
+  "source_files": [
+    "ai/generation.py",
+    "bot/request_codec.py",
+    "cognition/delivery.py",
+    "cognition/diagnostics.py",
+    "cognition/memory_repository.py",
+    "cognition/migrations/033_semantic_coverage.sql",
+    "cognition/migrations/034_public_semantic.sql",
+    "cognition/public_memory.py",
+    "cognition/public_semantic.py",
+    "cognition/retrieval.py",
+    "cognition/runtime.py",
+    "cognition/semantic.py",
+    "cognition/source_chunks.py",
+    "tests/cognition/test_memory_correctness.py",
+    "tests/cognition/test_public_semantic.py",
+    "tests/cognition/test_request_codec.py",
+    "tests/cognition/test_retrieval_coverage.py",
+    "tests/cognition/test_semantic_coverage.py",
+    "tests/cognition/test_source_chunks.py",
+    "tools/verify_hybrid_memory.py"
+  ],
+  "full_suite": {
+    "command": "python -m tools.run_cognition_tests",
+    "tests": 940,
+    "passed": 940,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 362.851
+  },
+  "new_regressions": {
+    "private_semantic_coverage": 22,
+    "public_semantic": 25,
+    "source_windows": 21,
+    "retrieval_integration": 10,
+    "total": 78
+  },
+  "unchanged_videotrans_tests": {
+    "tests": 24,
+    "passed": 24,
+    "source_files_modified": false
+  },
+  "real_encoder": {
+    "report": "hybrid_memory_encoder.json",
+    "passed": true,
+    "legacy_regressions_report": "hybrid_memory_legacy_encoder.json",
+    "legacy_regressions_passed": 8,
+    "public_paraphrase_top3": "16/20 hybrid versus 1/20 lexical",
+    "exact_name_top1": "5/5 both hybrid and lexical",
+    "private_long_source_characters": 82324,
+    "indexed_windows": 153,
+    "contiguous": true,
+    "interior_paraphrase_found": true,
+    "tokenizer_exposure_cases": [
+      "Russian",
+      "CJK",
+      "Unicode normalization expansion"
+    ]
+  },
+  "independent_review": {
+    "blocking_findings_remaining": 0,
+    "scope": [
+      "tokenizer exposure",
+      "source ownership and recursive revocation",
+      "cursor/generation restart correctness",
+      "public/private separation",
+      "busy-context fairness",
+      "prompt and delivery fences"
+    ]
+  },
+  "validation_environment": {
+    "database": "disposable isolated PostgreSQL17, loopback-only",
+    "model": "pinned local multilingual MiniLM CPU",
+    "provider_calls": 0,
+    "real_conversations_read": 0,
+    "production_database_mutated": false,
+    "newly_required_test_dependency": "SoundFile0.14.0 installed from official PyPI into isolated venv; no application dependency or audio source changed"
+  },
+  "previous_attempts": {
+    "aggregate": "910 passed;2 videotrans import errors from missing SoundFile, resolved before definitive run",
+    "legacy_encoder": "one combined-process attempt ended137 after7 tests; final separate run passed8/8 after safe encoder resource cleanup"
+  },
+  "limitations": [
+    "Full input coverage is not perfect semantic recall;4/20 frozen public paraphrases remain misses and ranks are retained.",
+    "Tests use recorded synthetic interpretations, not live LLM interpretation or generated-answer quality.",
+    "Exact SQL ranking remains O(permitted vectors); bounded timeouts can return incomplete retrieval on production-sized ledgers.",
+    "Token-sized parts are pooled inside logical windows and may dilute small isolated semantic signals.",
+    "No production PostgreSQL, Telegram, external provider or paid API used; no deployment or merge performed."
+  ],
+  "publication": {
+    "pushed": false,
+    "merged": false,
+    "deployed": false
+  }
+}
