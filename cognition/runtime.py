@@ -45,6 +45,7 @@ class PreparedTurn:
     send_ordinal: int = 0
     delivery_blocked: bool = False
     preferences: dict = field(default_factory=dict)
+    retrieval_diagnostics: dict = field(default_factory=dict)
 
     @property
     def active(self):
@@ -75,7 +76,11 @@ class CognitiveRuntime:
         self.foreground = set()
         self.memory = MemoryRepository(pool,semantic)
         from cognition.public_memory import PublicMemoryRepository
-        self.public_memory = PublicMemoryRepository(pool)
+        from cognition.public_semantic import PublicSemanticIndex
+        public_index = PublicSemanticIndex(pool,semantic.encoder,clock=self.clock) if semantic is not None else None
+        if semantic is not None:
+            semantic.public_index = public_index
+        self.public_memory = PublicMemoryRepository(pool,semantic=public_index)
         self.reappraisal = ReappraisalRepository(pool)
         self.jobs = JobQueue(pool)
         self.worker = CognitiveWorker(self.jobs,self.handle_job)
@@ -459,6 +464,7 @@ class CognitiveRuntime:
                                         implicit_cue=cue,implicit_expression_bias=implicit),owner,[eid])
         turn = PreparedTurn(self,cid,eid,event,plan,memory,ctx['suppression_epoch'],ctx['authority'],bool(delivered))
         turn.preferences = preferences
+        turn.retrieval_diagnostics = dict(getattr(memories,'diagnostics',{}))
         if public:
             turn.public_memory_ids = ids
             turn.supporting_event_ids = [r['event_id'] for r in memories if r['artifact_id'] in ids]
@@ -497,6 +503,12 @@ class CognitiveRuntime:
             turn.public_memory_ids = ids
             turn.supporting_event_ids = sources
         else:
+            ids,sources=await self.memory.validate_retrieval(turn.context_id,turn.event.evidence.owner_id,
+                sorted(artifact_ids),expected_epoch=turn.epoch)
+            if set(ids)!=set(artifact_ids):
+                raise SuppressedEvidence()
+            turn.private_memory_ids=ids
+            turn.supporting_event_ids=sources
             await self.memory.record_retrieval(turn.context_id,turn.event.evidence.owner_id,turn.event.event_id,'included',sorted(artifact_ids),self.clock())
 
     async def set_authority(self,cid,authority):

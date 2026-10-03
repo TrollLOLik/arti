@@ -55,8 +55,22 @@ async def operational_metrics(pool):
         contexts = await conn.fetch('SELECT authority,COUNT(*) AS count FROM cognitive_contexts GROUP BY authority')
         group_states=await conn.fetch('SELECT status,COUNT(*) AS count FROM group_candidates GROUP BY status')
         group_reasons=await conn.fetch('SELECT reason,COUNT(*) AS count FROM group_decisions GROUP BY reason')
+        from cognition.semantic import VERSION
+        from cognition.public_semantic import PUBLIC_VERSION
+        semantic = {}
+        for scope,table,version in (('private','cognitive_semantic_progress',VERSION),
+                                    ('public','cognitive_public_semantic_progress',PUBLIC_VERSION)):
+            # Physical cache health only. Query-level diagnostics separately
+            # authorize and count the currently permitted audience/owner.
+            row=await conn.fetchrow(f'''SELECT count(*) AS tracked_sources,
+                count(*) FILTER(WHERE next_chunk=total_chunks) AS completed_sources,
+                coalesce(sum(next_chunk),0)::bigint AS indexed_chunks,
+                coalesce(sum(total_chunks),0)::bigint AS total_chunks
+                FROM {table} WHERE embedding_model=$1''',version)
+            semantic[scope]=dict(row)
         return dict(jobs={r['status']:r['count'] for r in jobs},deliveries={r['status']:r['count'] for r in deliveries},contexts={r['authority']:r['count'] for r in contexts},
                     group_candidates={r['status']:r['count'] for r in group_states},group_decisions={r['reason']:r['count'] for r in group_reasons},
+                    semantic_cache_progress=semantic,
                     rebuilding_contexts=await conn.fetchval('SELECT COUNT(*) FROM cognitive_contexts WHERE rebuilding'),
                     oldest_ready_job_seconds=await conn.fetchval("SELECT coalesce(EXTRACT(EPOCH FROM NOW()-MIN(available_at)),0)::double precision FROM cognitive_jobs WHERE status='pending' AND kind!='replay' AND available_at<=NOW()"),
                     private_owner_violations=await conn.fetchval('''SELECT COUNT(*) FROM cognitive_provenance p JOIN cognitive_artifacts a ON a.id=p.artifact_id

@@ -1,0 +1,161 @@
+{
+  "encoder": "minilm-multilingual-384:faf4aa4225822f3bc6376869cb1164e8e3feedd0:source-chunks-v4-token-complete",
+  "synthetic_only": true,
+  "provider_calls": 0,
+  "production_database_mutated": false,
+  "tokenizer_exposure": [
+    {
+      "case": "russian",
+      "source_characters": 640,
+      "original_tokens": 199,
+      "encoded_parts": 2,
+      "max_part_tokens": 128,
+      "model_token_limit": 128,
+      "exact_character_coverage": true
+    },
+    {
+      "case": "cjk",
+      "source_characters": 640,
+      "original_tokens": 278,
+      "encoded_parts": 3,
+      "max_part_tokens": 128,
+      "model_token_limit": 128,
+      "exact_character_coverage": true
+    },
+    {
+      "case": "unicode_expansion",
+      "source_characters": 640,
+      "original_tokens": 2562,
+      "encoded_parts": 21,
+      "max_part_tokens": 126,
+      "model_token_limit": 128,
+      "exact_character_coverage": true
+    }
+  ],
+  "public_cases": 20,
+  "public_recall_at_1": 0.7,
+  "public_recall_at_3": 0.8,
+  "public_ranks": [
+    1,
+    1,
+    1,
+    1,
+    2,
+    null,
+    null,
+    1,
+    null,
+    1,
+    1,
+    2,
+    1,
+    1,
+    null,
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "public_batches": 2,
+  "public_complete_coverage": true,
+  "public_comparison": {
+    "lexical": {
+      "paraphrase_recall_at_1": 0.05,
+      "paraphrase_recall_at_3": 0.05,
+      "paraphrase_ranks": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        1,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "exact_name_ranks": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "exact_name_recall_at_1": 1.0,
+      "query_median_ms": 5.596,
+      "query_max_ms": 13.062
+    },
+    "hybrid": {
+      "paraphrase_recall_at_1": 0.7,
+      "paraphrase_recall_at_3": 0.8,
+      "paraphrase_ranks": [
+        1,
+        1,
+        1,
+        1,
+        2,
+        null,
+        null,
+        1,
+        null,
+        1,
+        1,
+        2,
+        1,
+        1,
+        null,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "exact_name_ranks": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "exact_name_recall_at_1": 1.0,
+      "query_median_ms": 17.201,
+      "query_max_ms": 28.602
+    }
+  },
+  "private_source_characters": 82324,
+  "private_expected_chunks": 153,
+  "private_indexed_chunks": 153,
+  "private_batches": 5,
+  "private_contiguous_coverage": true,
+  "private_restart_complete": true,
+  "private_interior_paraphrase_found": true,
+  "private_query_diagnostics": {
+    "total_sources": 1,
+    "indexed_sources": 1,
+    "indexed_chunks": 153,
+    "total_chunks": 153,
+    "remaining_chunks": 0,
+    "status": "complete",
+    "semantic_status": "complete",
+    "scope": "private"
+  },
+  "private_query_matches": 1,
+  "private_query_ms": 33.662,
+  "private_best_score": 0.4489,
+  "duration_seconds": 16.528,
+  "limitations": [
+    "Synthetic retrieval evaluation; no live interpretation, answer generation, Telegram, production-size latency or universal paraphrase guarantee."
+  ],
+  "passed": true
+}

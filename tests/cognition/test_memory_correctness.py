@@ -7,7 +7,7 @@ from datetime import datetime,timedelta,timezone
 from cognition.prompting import memory_for_prompt,assemble_prompt,TokenCounter
 from cognition.runtime import CognitiveRuntime,CURRENT_TURN
 from cognition.serialization import dump,object_value
-from cognition.source_chunks import source_chunks,MAX_CHUNKS
+from cognition.source_chunks import source_chunks,source_chunk_count
 from tests.cognition.test_full_model import RecordedInterpreter,situation
 
 AT=datetime(2026,1,1,tzinfo=timezone.utc)
@@ -17,7 +17,9 @@ class ChunkWindowTests(unittest.TestCase):
     def test_maximum_source_bounds_include_tail_and_exact_offsets(self):
         text='x'*99980+'meaningful tail text'
         chunks=source_chunks(text)
-        self.assertLessEqual(len(chunks),MAX_CHUNKS)
+        self.assertEqual(len(chunks),source_chunk_count(text))
+        self.assertGreater(len(chunks),32)
+        self.assertTrue(all(right[0]<=left[1] for left,right in zip(chunks,chunks[1:])))
         self.assertEqual(chunks[-1][1],len(text))
         for start,end,excerpt in chunks:
             self.assertEqual(text[start:end],excerpt)
