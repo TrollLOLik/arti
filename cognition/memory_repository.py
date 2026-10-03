@@ -3,6 +3,7 @@
 All private text is in suppressible artifact payloads. Indexes/links never bypass
 artifact/source permission checks. Encoding and consolidation commit together.
 """
+import asyncio
 import hashlib
 import math
 from collections import Counter
@@ -117,7 +118,8 @@ class MemoryRepository:
                                                                   events=[],boundary=boundary,participants=[owner],parent_period=event.observed_at.strftime('%Y-%m'))
             episode = {**episode,'last_at':event.observed_at.isoformat(),'events':episode['events']+[eid]}
             episode_id = await self._put(conn,cid,'episode',episode_key,episode,owner,[eid],([last['id']] if boundary=='continuation' else []))
-            trace = dict(source_id=event.evidence.source_id,event_id=eid,group=row['independent_group'],episode_id=episode_id,
+            trace = dict(source_id=event.evidence.source_id,event_id=eid,author_id='arti' if event.evidence.origin==Origin.DELIVERED_ACTION else event.actor_id,
+                         audience=asdict(event.audience),group=row['independent_group'],episode_id=episode_id,
                          gist=' '.join(d['text'] for d in details),topic=topic,details=details,observed_at=event.observed_at.isoformat(),
                          occurred_at=event.occurred_at.isoformat(),modality='delivered_action' if event.evidence.origin==Origin.DELIVERED_ACTION else s.modality,
                          salience=salience,version=1,interpretation='',replay_count=0,last_replay=None,
@@ -172,13 +174,16 @@ class MemoryRepository:
             support = key('assertion',event.actor_id,proposal['value'],proposal['condition'])
             changed = old is not None and old['value']!=proposal['value']
             if changed:
-                historical = {**old,'status':'superseded','valid_until':event.observed_at.isoformat()}
+                historical = {**old,'status':'superseded','valid_until':event.occurred_at.isoformat(),
+                              'superseded_by':event.evidence.source_id,'superseded_at':event.observed_at.isoformat()}
                 await self._put(conn,cid,'belief_version',key('belief_version',oldrow['id'],oldrow['revision']),historical,
                                 event.evidence.owner_id,[],[oldrow['id']])
             confidence = min(proposal['confidence'],.65 if proposal['assertion']=='inferred' else .95)
             value = dict(subject=proposal['subject'],predicate=proposal['predicate'],value=proposal['value'],
                          condition=proposal['condition'],assertion=proposal['assertion'],confidence=confidence,
                          source_id=event.evidence.source_id,source_span=asdict(span),status='current',
+                         observed_at=event.observed_at.isoformat(),occurred_at=event.occurred_at.isoformat(),
+                         time_basis='source_event',supersedes=([old['source_id']] if changed else old.get('supersedes',[]) if old else []),
                          valid_from=event.occurred_at.isoformat(),valid_until=None,
                          support_groups=sorted(set((old['support_groups'] if old and not changed else [])+[support])),
                          version=(old.get('version',1)+1 if changed else old.get('version',1)) if old else 1)
@@ -215,8 +220,101 @@ class MemoryRepository:
                 LIMIT $5''',cid,owner,MODEL_VERSION,kind,min(2000,limit),search)
         return [{**dict(r),'payload':object_value(r['payload'])} for r in rows]
 
+    async def beliefs_for_query(self,cid,owner,query,recollections=(),limit=16):
+        """Select current claims by query AND recalled historical source lineage.
+
+        Corrections such as "Actually, Tomsk" inherit relevance from the exact
+        belief key of the recalled old assertion, not from a guessed predicate.
+        Historic utterances remain available with explicit supersession metadata.
+        """
+        sources = [r['source_id'] for r in recollections]
+        search = ' OR '.join(sorted(query_terms(query)))
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""WITH allowed AS (
+                SELECT a.* FROM cognitive_artifacts a JOIN cognitive_contexts c ON c.id=a.context_id
+                WHERE a.context_id=$1 AND a.owner_id IS NOT DISTINCT FROM $2
+                AND a.kind IN ('belief','belief_version') AND a.model_version=$3
+                AND a.suppressed_at IS NULL AND a.payload IS NOT NULL
+                AND NOT c.rebuilding AND a.projection_epoch=c.suppression_epoch
+                AND EXISTS(SELECT 1 FROM cognitive_provenance p WHERE p.artifact_id=a.id)
+                AND NOT EXISTS(SELECT 1 FROM cognitive_provenance p JOIN cognitive_events e ON e.id=p.source_event_id
+                    WHERE p.artifact_id=a.id AND (e.suppressed_at IS NOT NULL OR e.payload IS NULL)))
+                SELECT a.*, CASE WHEN a.payload->>'source_id'=ANY($4::text[]) OR EXISTS(
+                    SELECT 1 FROM allowed h WHERE h.kind='belief_version' AND h.payload->>'source_id'=ANY($4::text[])
+                    AND h.payload->'subject'=a.payload->'subject' AND h.payload->>'predicate'=a.payload->>'predicate'
+                    AND h.payload->>'condition'=a.payload->>'condition') THEN 1.0 ELSE 0.0 END
+                    + ts_rank(to_tsvector('russian',concat_ws(' ',a.payload->>'predicate',a.payload->>'value',
+                        a.payload->>'condition',a.payload->'source_span'->>'text')),websearch_to_tsquery('russian',$5)) AS query_rank
+                FROM allowed a WHERE a.kind='belief' AND a.payload->>'status'='current'
+                ORDER BY query_rank DESC,a.id DESC LIMIT $6""",cid,owner,MODEL_VERSION,sources,search,min(64,limit))
+            selected = [{**dict(r),'payload':object_value(r['payload'])} for r in rows if r['query_rank']>0]
+            history = await conn.fetch("""SELECT a.* FROM cognitive_artifacts a JOIN cognitive_contexts c ON c.id=a.context_id
+                WHERE a.context_id=$1 AND a.owner_id IS NOT DISTINCT FROM $2 AND a.kind='belief_version'
+                AND a.model_version=$3 AND a.suppressed_at IS NULL AND a.payload IS NOT NULL
+                AND NOT c.rebuilding AND a.projection_epoch=c.suppression_epoch
+                AND a.payload->>'source_id'=ANY($4::text[])
+                AND NOT EXISTS(SELECT 1 FROM cognitive_provenance p JOIN cognitive_events e ON e.id=p.source_event_id
+                    WHERE p.artifact_id=a.id AND (e.suppressed_at IS NOT NULL OR e.payload IS NULL))
+                ORDER BY a.id DESC LIMIT 128""",cid,owner,MODEL_VERSION,sources)
+        for recollection in recollections:
+            updates = []
+            for row in history:
+                old = object_value(row['payload'])
+                if old['source_id']!=recollection['source_id']:
+                    continue
+                current = next((r for r in selected if all(r['payload'].get(k)==old.get(k)
+                    for k in ('subject','predicate','condition'))),None)
+                updates.append(dict(subject=old['subject'],predicate=old['predicate'],condition=old['condition'],
+                    status=old['status'],valid_from=old.get('valid_from'),valid_until=old.get('valid_until'),
+                    superseded_by=current['payload']['source_id'] if current else old.get('superseded_by')))
+            if updates:
+                recollection['belief_history'] = updates
+        return selected
+
     async def candidates(self,cid,owner,query,limit=512):
         rows = await self.artifacts(cid,owner,'trace',limit=limit,query=query)
+        # Raw-source lexical windows also cover old prefix-only traces when the
+        # optional local encoder is unavailable. SQL ranks before the bounded read.
+        search = ' OR '.join(sorted(query_terms(query)))
+        if search:
+            sources = []
+            try:
+                async with asyncio.timeout(.5),self.pool.acquire() as conn:
+                    sources = await conn.fetch("""SELECT a.*,e.payload AS source_payload FROM cognitive_artifacts a
+                        JOIN cognitive_contexts c ON c.id=a.context_id
+                        JOIN cognitive_events e ON e.context_id=a.context_id AND e.id=(a.payload->>'event_id')::bigint
+                        WHERE a.context_id=$1 AND a.owner_id IS NOT DISTINCT FROM $2 AND e.owner_id IS NOT DISTINCT FROM $2
+                        AND a.kind='trace' AND a.model_version=$3 AND a.suppressed_at IS NULL AND a.payload IS NOT NULL
+                        AND e.suppressed_at IS NULL AND e.payload IS NOT NULL AND e.source_id=a.payload->>'source_id'
+                        AND NOT c.rebuilding AND a.projection_epoch=c.suppression_epoch
+                        AND length(e.payload->>'text')>420
+                        AND to_tsvector('russian',e.payload->>'text') @@ websearch_to_tsquery('russian',$4)
+                        AND NOT EXISTS(SELECT 1 FROM cognitive_provenance p JOIN cognitive_events z ON z.id=p.source_event_id
+                            WHERE p.artifact_id=a.id AND (z.suppressed_at IS NOT NULL OR z.payload IS NULL))
+                        ORDER BY ts_rank(to_tsvector('russian',e.payload->>'text'),websearch_to_tsquery('russian',$4)) DESC,a.id DESC LIMIT 32""",cid,owner,MODEL_VERSION,search)
+            except TimeoutError:
+                pass  # Optional raw-source fallback must not hold up the reply.
+            from cognition.source_chunks import source_chunks,chunk_trace
+            merged = {r['id']:r for r in rows}
+            for row in sources:
+                source = object_value(row['source_payload'])['text']
+                chunks = source_chunks(source)
+                # Exact-term lookup can reach gaps between bounded semantic
+                # windows for maximum-length inputs, without returning the source.
+                lowered = source.casefold()
+                for word in query_terms(query):
+                    position = lowered.find(word)
+                    if position>=0:
+                        start=max(0,position-160); end=min(len(source),start+640)
+                        chunks.append((start,end,source[start:end]))
+                start,end,_ = max(chunks,key=lambda c:len(query_terms(query)&query_terms(c[2])))
+                item={k:v for k,v in dict(row).items() if k!='source_payload'}
+                item['payload']=chunk_trace(object_value(row['payload']),source,start,end)
+                source_event=object_value(row['source_payload'])
+                item['payload']['author_id']='arti' if source_event['evidence']['origin']=='delivered_action' else source_event.get('actor_id')
+                item['payload']['audience']=source_event.get('audience')
+                merged[row['id']]=item
+            rows=list(merged.values())
         if self.semantic is not None:
             # Semantic search spans the permitted ledger, not just recent rows.
             semantic = await self.semantic.search(cid,owner,query)
@@ -268,6 +366,18 @@ class MemoryRepository:
             cue = max(overlap,semantic,signals['topic'],signals['action'])
             competition = (topics[t['topic']]-1)/12
             recollection = reconstruct(t,at,cue,competition,archive)
+            recollection.update({k:t[k] for k in ('record_start','record_end','source_chunk','evidence_status','author_id','audience') if k in t})
+            if t.get('source_prefix') and recollection['details']:
+                prefix=t['source_prefix']
+                visible={(d['kind'],d['text']) for d in recollection['details']}
+                for d in t['details']:
+                    if d['kind'] not in ('gist','wording') and (d['kind'],d['text']) not in visible:
+                        prefix=prefix.replace(d['text'],'[деталь не вспоминается]')
+                for d in t.get('_source_prefix_details',()):
+                    state=detail_state(d,datetime.fromisoformat(t['observed_at']),at,competition,cue)
+                    if state['fidelity']<.5 or state['accessibility']<.28:
+                        prefix=prefix.replace(d['text'],'[деталь не вспоминается]')
+                recollection['source_prefix']=prefix
             accessible = max((d['accessibility'] for d in recollection['details']),default=.05)
             # Mood bias is small; no candidate is removed by its emotional sign.
             bias = max(-.05,min(.05,mood*t.get('emotional_valence',0.)*.05))
@@ -318,6 +428,7 @@ class MemoryRepository:
                          observed_at=ev.observed_at.isoformat(),occurred_at=ev.occurred_at.isoformat(),source_record_verified=True)
                 aid = await self._put(conn,cid,'archive_record',key('archive',ev.event_id,start),p,owner,[row['id']])
                 result.append(dict(artifact_id=aid,source_id=ev.evidence.source_id,details=[dict(text=excerpt,kind='wording',confidence=.5,verbatim_verified=True)],
+                    observed_at=ev.observed_at.isoformat(),occurred_at=ev.occurred_at.isoformat(),time_basis='source_event',
                     time_precision='source_record',modality='delivered_action' if ev.evidence.origin==Origin.DELIVERED_ACTION else 'source_utterance',
                     interpretation='',version=1,familiarity=.5,uncertainty=False,score=1.))
         await self.record_retrieval(cid,owner,cycle_key,'archive_checked',[r['artifact_id'] for r in result],at)
@@ -342,7 +453,10 @@ class MemoryRepository:
                 if value.get('last_retrieval_cycle')==cycle:
                     continue
                 created = datetime.fromisoformat(value['observed_at'])
-                value['details'] = [reactivate(d,created,at) for d in value['details']]
+                visible = {(d['kind'],d['text']) for d in item['recollection']['details']}
+                if not visible:
+                    continue
+                value['details'] = [reactivate(d,created,at) if (d['kind'],d['text']) in visible else d for d in value['details']]
                 value['last_retrieval_cycle'] = cycle
                 await conn.execute('UPDATE cognitive_artifacts SET payload=$3::jsonb,revision=revision+1 WHERE context_id=$1 AND id=$2',cid,row['id'],dump(value))
 

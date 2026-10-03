@@ -63,6 +63,10 @@ async def _send_with_receipt(method,args,kwargs,channel):
     if channel == 'sticker' and isinstance(kwargs.get('sticker'), str):
         payload['sticker_id'] = kwargs['sticker']
     async with runtime.pool.acquire() as conn,conn.transaction():
+        public_ids = getattr(turn,'public_memory_ids',())
+        if turn.event.audience.kind in ('group','topic'):
+            # Match public retrieval/policy order: chat fence before context.
+            await conn.execute('SELECT pg_advisory_xact_lock($1::bigint)',chat_id)
         ctx = await conn.fetchrow('SELECT * FROM cognitive_contexts WHERE id=$1 FOR UPDATE',turn.context_id)
         if turn.event.event_kind=='media_request':
             from bot.media_provenance import refresh_neutral_media
@@ -75,6 +79,11 @@ async def _send_with_receipt(method,args,kwargs,channel):
             raise DeliverySuppressed()
         if turn.event.audience.kind in ('group','topic') and not await conn.fetchval('SELECT enabled FROM response_status WHERE chat_id=$1',chat_id):
             raise DeliverySuppressed()
+        if public_ids:
+            allowed,_ = await runtime.public_memory.validate(turn.context_id,turn.event.context,public_ids,runtime.clock(),
+                requester=turn.event.evidence.owner_id,expected_epoch=turn.epoch,connection=conn)
+            if set(allowed)!=set(public_ids):
+                raise DeliverySuppressed()
         if getattr(turn,'group_candidate_id',None):
             await conn.execute('SELECT pg_advisory_xact_lock($1::bigint)',chat_id)
             if not await runtime.groups.delivery_guard(turn,conn): raise DeliverySuppressed()

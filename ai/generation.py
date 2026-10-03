@@ -153,6 +153,9 @@ async def generate_response_stream(
     from materials.runtime import guard_current
     await guard_current()
     from cognition.prompting import assemble_prompt
+    if memory_context:
+        from cognition.prompting import MEMORY_GUIDANCE
+        actual_role += '\n\n'+MEMORY_GUIDANCE
     final_prompt, prompt_report = assemble_prompt(actual_role,prompt,chat_context,memory_context,model=model)
     from cognition.runtime import CURRENT_TURN
     cognitive_turn = CURRENT_TURN.get()

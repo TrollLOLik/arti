@@ -57,14 +57,25 @@ def detail_state(detail,created_at,at,competition=0.,cue=0.):
     accessibility = detail['strength'] * (1 + age_days/stability)**(-.8)
     accessibility *= math.exp(-.35*max(0.,competition))
     accessibility = min(1.,accessibility + min(.55,max(0.,cue)*.55))
-    fidelity = detail['fidelity'] * math.exp(-age_days/(stability*12))
-    vividness = detail['vividness'] * math.exp(-age_days/(stability*3))
+    # Rehearsal renews accessibility, not the age or accuracy of the evidence.
+    # Keep the quality decay denominator fixed too: growing rehearsal stability
+    # must not retroactively undo fidelity/vividness already lost. Old payloads
+    # have no frozen baseline, so use their existing stability until reactivation
+    # records it. Their last_recalled is never evidence of source verification.
+    quality_age_days = max(0.,(at-created_at).total_seconds())/86400
+    quality_stability = max(.5,detail.get('fidelity_stability_days',detail['stability_days']))
+    fidelity = detail['fidelity'] * math.exp(-quality_age_days/(quality_stability*12))
+    vividness = detail['vividness'] * math.exp(-quality_age_days/(quality_stability*3))
     return dict(accessibility=accessibility,fidelity=fidelity,vividness=vividness,
                 confidence=detail['confidence'],strength=detail['strength'])
 
 
 def reactivate(detail,created_at,at,replay=False):
     result = dict(detail)
+    # Freeze the source-aged quality baseline before increasing accessibility
+    # stability. Both ordinary recall and offline replay rehearse one source;
+    # neither is a verified rereading that can restore its missing details.
+    result.setdefault('fidelity_stability_days',detail['stability_days'])
     last = datetime.fromisoformat(detail['last_recalled']) if detail.get('last_recalled') else created_at
     spacing = max(0.,(at-last).total_seconds())/86400
     benefit = min(.25,math.log1p(spacing)*.06)
@@ -99,11 +110,16 @@ def reconstruct(trace,at,cue=0.,competition=0.,archive=False):
     else:
         for item in details:
             item['verbatim_verified'] = True
-    occurred = datetime.fromisoformat(trace.get('occurred_at',trace['observed_at']))
+    # Legacy traces can lack an occurrence time. Retain that uncertainty rather
+    # than presenting the observation timestamp as the time of the event.
+    occurred_at = trace.get('occurred_at')
+    time_basis = 'occurred_at' if occurred_at else 'observed_at'
+    occurred = datetime.fromisoformat(occurred_at or trace['observed_at'])
     elapsed = max(0.,(at-occurred).total_seconds()) / 86400
     precision = 'day' if elapsed<30 else ('month' if elapsed<365 else 'year')
     # A dated source is always exact during explicit record verification.
     return dict(details=details,time_precision='source_record' if archive else precision,
+                observed_at=trace['observed_at'],occurred_at=occurred_at,time_basis=time_basis,
                 source_id=trace['source_id'],modality=trace['modality'],
                 interpretation=trace.get('interpretation',''),version=trace.get('version',1),
                 familiarity=min(.95,.25 + math.log1p(sum(d['recall_count'] for d in trace['details']))*.1),
