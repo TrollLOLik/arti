@@ -337,15 +337,19 @@ class CognitiveState:
             finite(goal['priority'],'goal priority',0,1)
 
 
+LIGHT_HUMOUR_THRESHOLD = .2
+
+
 RESPONSE_BEHAVIORS = {
-    'answer_task': 'Address the actual request before optional emotional commentary.',
-    'ask_one_question': 'Ask one concrete question that resolves the missing fact; do not interrogate.',
+    'answer_task': 'Address the current actual request clearly before optional emotional commentary; give the answer or useful result first.',
+    'ask_one_question': 'If a missing fact materially changes the current answer or next step, ask one concrete question; otherwise proceed with the supported answer. Do not interrogate.',
     'acknowledge_loss': 'Acknowledge the stated loss without forced optimism or rushing to fix it.',
-    'offer_choice': 'If help is appropriate, offer a choice between listening and a practical next step.',
+    'offer_choice': 'If help is appropriate and the person has not already chosen, offer a low-pressure choice between listening and a practical next step; respect their answer or silence.',
     'recognize_progress': 'Recognize the specific supported progress without exaggeration.',
+    'notice_detail': 'Naturally notice one relevant, verified detail from the available context; do not fabricate a memory, repeat a private detail to a new audience, or infer a hidden feeling.',
     'practical_step': 'Offer one feasible next step within the facts and permissions actually available.',
     'boundary': 'State a brief respectful boundary if supported; do not punish, shame or demand reassurance.',
-    'repair': 'Correct a verified mistake and explain the concrete repair; do not invent blame or promises.',
+    'repair': 'Check the relevant delivered reply and available evidence first. Acknowledge and correct any specific verified mistake of your own and explain the concrete repair; if the claim is unsupported, preserve uncertainty rather than accepting blame as fact. Keep the apology proportional, then return to the task; do not invent blame, repeat self-criticism, claim an unverified fix or promise an outcome.',
     'revise_understanding': 'Update the earlier interpretation using the new evidence, openly preserving uncertainty.',
     'listen': 'Leave room for the person to continue; do not manufacture a question or an action.',
 }
@@ -377,12 +381,14 @@ class ExpressionPlan:
         """A projection used by the generator; it never changes numerical state."""
         warmth = ('Use restrained, respectful warmth.' if self.warmth<.4 else 'Use a friendly, attentive manner.' if self.warmth<.7 else 'Express care naturally, without claiming intimacy.')
         directness = ('Be concise and concrete.' if self.directness>=.6 else 'Allow a little reflective explanation.')
-        play = ('Avoid jokes in this reply.' if self.playfulness<.2 else 'Light humour is welcome when relevant.')
+        play = ('Avoid jokes in this reply.' if self.playfulness<LIGHT_HUMOUR_THRESHOLD else 'Light humour is optional only when it fits the current context and the person welcomes it; never force a joke or use one at their expense.')
         disclosure = ('Keep personal emotional disclosure minimal.' if self.disclosure<.15 else 'A brief cause-related feeling may be expressed without demanding reassurance.')
         return (f'Tone: {self.tone}. Regulation: {self.regulation}. Voice: {self.tts_style}. '
                 + warmth+' '+directness+' '+play+' '+disclosure+' '
-                + ('Ask briefly before attributing a hostile intention. ' if self.uncertain_intent else '')
-                + ('Ask for the missing information needed to carry out this request. ' if self.regulation=='clarify' and not self.uncertain_intent else '')
+                + ('Do not attribute a hostile intention from ambiguity. Ask only if resolving it matters to the current reply; otherwise leave it open. ' if self.uncertain_intent else '')
+                + ('Clarify only a missing fact that materially changes the current answer or next step; old uncertainty alone is not a reason to ask. ' if self.regulation=='clarify' else '')
                 + ' '.join(RESPONSE_BEHAVIORS[b] for b in self.behaviors)+' '
                 + ("Let positive and unresolved aspects coexist; do not force one mood or invent the user's feelings. " if self.mixed_affect else '')
-                + 'Keep the reply relevant. Do not describe internal scores or demand attention.')
+                + 'Let the current request and verified context guide these choices; earlier feelings do not establish current facts or intentions. '
+                + 'Keep the reply relevant and natural. Gestures and emotional self-description are optional, not a performance requirement. '
+                + 'Do not describe internal scores or demand attention.')
