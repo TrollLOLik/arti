@@ -7,7 +7,7 @@ from datetime import datetime,timedelta
 from types import SimpleNamespace
 
 from cognition.group_policy import PolicyRepository
-from cognition.group_context import build_frame,candidate_kind,contextual_candidate
+from cognition.group_context import build_frame,candidate_kind,contextual_candidate,explicit_refusal
 from cognition.scope import CURRENT_SCOPE,TransportScope
 from cognition.serialization import dump,object_value,load_event
 from cognition.types import AudienceScope,Origin
@@ -15,6 +15,12 @@ from cognition.types import AudienceScope,Origin
 
 ASSESS_TIMEOUT_SECONDS = 8.
 COMPOSE_TIMEOUT_SECONDS = 12.
+CONTINUATION_TIMEOUT_SECONDS = 1.
+DIRECT_LEASE_TIMEOUT_SECONDS = 1.
+MEMBERSHIP_TIMEOUT_SECONDS = 3.
+SEMANTIC_RETRIES = 1
+MAX_OUTCOME_DEPENDENCIES = 128
+MAX_OUTCOME_LINEAGE = 256
 
 
 class GroupService:
@@ -36,21 +42,54 @@ class GroupService:
 
     async def frame(self,cid):
         now=self.runtime.clock()
-        async with self.pool.acquire() as conn:
+        # A revision must describe exactly the observations given to the model.
+        # READ COMMITTED could stamp old rows with a newer observation revision.
+        async with self.pool.acquire() as conn,conn.transaction(isolation='repeatable_read',readonly=True):
             ctx=await conn.fetchrow('SELECT * FROM cognitive_contexts WHERE id=$1',cid)
-        policy,_=await self.policies.get(ctx['chat_id'],ctx['topic_id'])
-        async with self.pool.acquire() as conn:
+            policy,_=await self.policies.get(ctx['chat_id'],ctx['topic_id'],conn)
             rows=await conn.fetch('''SELECT o.*,e.source_id FROM group_observations o JOIN cognitive_events e ON e.id=o.event_id
                 WHERE o.context_id=$1 AND o.suppressed_at IS NULL AND e.suppressed_at IS NULL AND o.payload IS NOT NULL
-                AND o.event_id>$3 AND o.observed_at>=$2 ORDER BY o.observed_at DESC,o.id DESC LIMIT 64''',cid,now-timedelta(days=policy.retention_days),ctx['history_after_event_id'])
+                AND e.context_id=$1 AND e.payload->'audience'->>'kind' IN ('group','topic')
+                AND (e.payload->'audience'->>'chat_id')::bigint=$4 AND (e.payload->'audience'->>'topic_id')::bigint=$5
+                AND o.event_id>$3 AND o.observed_at>=$2 ORDER BY o.observed_at DESC,o.id DESC LIMIT 64''',
+                cid,now-timedelta(days=policy.retention_days),ctx['history_after_event_id'],ctx['chat_id'],ctx['topic_id'])
             state=await conn.fetchrow('SELECT * FROM group_topic_runtime WHERE context_id=$1',cid)
             feedback=await conn.fetch('''SELECT f.*,g.kind FROM group_feedback f
                 JOIN cognitive_outbox o ON o.context_id=f.context_id AND o.receipt_id=f.message_id AND o.status='delivered'
                 JOIN group_candidates g ON g.outbox_id=o.id WHERE f.context_id=$1 AND f.created_at>$2
                 AND NOT EXISTS(SELECT 1 FROM cognitive_events e WHERE e.id=ANY(f.source_ids) AND e.suppressed_at IS NOT NULL)
                 ORDER BY f.created_at DESC LIMIT 60''',cid,now-timedelta(days=7))
+            contributions=await conn.fetch('''SELECT g.kind,o.receipt_id,o.channel,o.payload,o.status,o.created_at,
+                ARRAY(SELECT e.source_id FROM cognitive_events e WHERE e.id=ANY(g.source_ids)) AS public_sources
+                FROM group_candidates g JOIN cognitive_outbox o ON o.id=g.outbox_id
+                WHERE g.context_id=$1 AND o.context_id=$1 AND o.status IN ('delivered','delivery_unknown') AND o.payload IS NOT NULL
+                AND cardinality(g.source_ids)<=$7
+                AND o.created_at>=$2 AND cardinality(g.source_ids)=(SELECT count(*) FROM cognitive_events e
+                    WHERE e.id=ANY(g.source_ids) AND e.context_id=$1 AND e.id>$3 AND e.suppressed_at IS NULL
+                    AND e.observed_at>=$6
+                    AND e.payload->'audience'->>'kind' IN ('group','topic')
+                    AND (e.payload->'audience'->>'chat_id')::bigint=$4 AND (e.payload->'audience'->>'topic_id')::bigint=$5)
+                ORDER BY o.created_at DESC LIMIT 8''',cid,now-timedelta(days=min(7,policy.retention_days)),ctx['history_after_event_id'],ctx['chat_id'],ctx['topic_id'],now-timedelta(days=policy.retention_days),MAX_OUTCOME_DEPENDENCIES)
+            outcomes=[]; lineage=set()
+            for contribution in contributions:
+                # Omit an over-budget derived snippet in its entirety. Retaining
+                # text while trimming its hidden support would break erasure.
+                support=set(contribution['public_sources'])
+                if len(lineage|support)>MAX_OUTCOME_LINEAGE: continue
+                lineage.update(support)
+                signals=await conn.fetch('''SELECT e.source_id,f.user_id AS owner_id,f.signal FROM group_feedback f
+                    JOIN cognitive_events e ON e.id=ANY(f.source_ids) AND e.context_id=f.context_id
+                    WHERE f.context_id=$1 AND f.message_id=$2 AND e.suppressed_at IS NULL AND e.id>$3
+                    AND e.payload->>'event_kind'='reaction' AND e.payload->'audience'->>'kind' IN ('group','topic')
+                    AND (e.payload->'audience'->>'chat_id')::bigint=$4 AND (e.payload->'audience'->>'topic_id')::bigint=$5
+                    AND NOT EXISTS(SELECT 1 FROM cognitive_events s WHERE s.id=ANY(f.source_ids) AND s.suppressed_at IS NOT NULL)
+                    ORDER BY f.created_at DESC LIMIT 8''',cid,contribution['receipt_id'],ctx['history_after_event_id'],ctx['chat_id'],ctx['topic_id'])
+                outcomes.append(dict(message_id=contribution['receipt_id'],source_ids=contribution['public_sources'],kind=contribution['kind'],
+                    channel=contribution['channel'],text=object_value(contribution['payload']).get('text','')[:600],
+                    delivery_status=contribution['status'],at=contribution['created_at'].isoformat(),feedback=[dict(s) for s in signals]))
         messages=[dict(**object_value(r['payload']),source_id=r['source_id'],event_id=r['event_id'],at=r['observed_at'].isoformat()) for r in reversed(rows)]
-        return build_frame(cid,ctx['chat_id'],ctx['topic_id'],messages,state['revision'] if state else 0,state['closed'] if state else False,feedback)
+        return build_frame(cid,ctx['chat_id'],ctx['topic_id'],messages,state['revision'] if state else 0,state['closed'] if state else False,
+                           feedback,outcomes=outcomes,suppression_epoch=ctx['suppression_epoch'])
 
     async def observe(self,scope,text,mode='default',at=None,message=None,edited=False,is_bot=False):
         if not scope.group or scope.topic_id<0 or scope.sender_kind=='bot' and not is_bot: return None
@@ -107,7 +146,8 @@ class GroupService:
                 # Coalesce assessment opportunities through the rolling public
                 # frame, rather than enqueue a provider call for every message.
                 recent_contextual=await conn.fetchval('''SELECT 1 FROM group_candidates
-                    WHERE context_id=$1 AND kind='contextual' AND created_at>$2 LIMIT 1''',cid,now-timedelta(seconds=90))
+                    WHERE context_id=$1 AND kind='contextual' AND status IN ('pending','deferred','claimed')
+                    AND expires_at>$2 LIMIT 1''',cid,now)
                 if recent_contextual: return
             queued=await conn.fetchrow('''SELECT count(*) AS total,count(*) FILTER (WHERE g.context_id=$2) AS topic
                 FROM group_candidates g JOIN cognitive_contexts c ON c.id=g.context_id
@@ -134,30 +174,65 @@ class GroupService:
         async with self.pool.acquire() as conn:
             eid=await conn.fetchval('SELECT id FROM cognitive_events WHERE context_id=$1 AND source_id=$2 AND suppressed_at IS NULL',row['context_id'],event.evidence.source_id)
             if not eid: return
+            if not reminder and not await conn.fetchval('SELECT 1 FROM cognitive_contexts WHERE id=$1 AND history_after_event_id<$2 AND NOT rebuilding',row['context_id'],eid): return
+            artifact=await conn.fetchrow('SELECT revision,projection_epoch,payload,owner_id FROM cognitive_artifacts WHERE id=$1 AND context_id=$2 AND suppressed_at IS NULL',row['id'],row['context_id'])
+            if not artifact: return
+            current=object_value(artifact['payload'])
+            if (current.get('delivery_key')!=p['delivery_key'] or current.get('status')!=p['status'] or current.get('delivered')
+                    or current.get('source_id')!=event.evidence.source_id or artifact['owner_id']!=row['owner_id']): return
+            # The description and version must come from the same artifact
+            # snapshot; discovery can precede a meaning-preserving reappraisal.
+            p=current
+            expires=(datetime.fromisoformat(p['deadline'])+timedelta(hours=24) if reminder and p.get('deadline')
+                     else now+timedelta(hours=24 if reminder else 2))
+            if expires<=now: return
             key='intention:'+p['delivery_key']
             payload=dict(owner_id=row['owner_id'],message_id=int(event.event_id.split(':')[2]),kind='reminder' if reminder else 'followup',
-                         mode=policy.mode,reactions=False,intention_id=row['id'],description=p['description'],source_id=event.evidence.source_id)
+                         mode=policy.mode,reactions=False,intention_id=row['id'],description=p['description'],source_id=event.evidence.source_id,
+                         intention_revision=artifact['revision'],intention_epoch=artifact['projection_epoch'],intention_key=p['delivery_key'])
             await conn.execute('''INSERT INTO group_candidates(context_id,candidate_key,kind,source_ids,payload,created_at,due_at,expires_at,policy_revision)
                 VALUES($1,$2,$3,$4,$5::jsonb,$6,$6,$7,$8) ON CONFLICT(context_id,candidate_key) DO UPDATE
                 SET payload=EXCLUDED.payload,source_ids=EXCLUDED.source_ids,status='pending',due_at=EXCLUDED.due_at,
                     expires_at=EXCLUDED.expires_at,policy_revision=EXCLUDED.policy_revision
-                WHERE group_candidates.kind='reminder' AND group_candidates.status='cancelled' AND group_candidates.outbox_id IS NULL''',row['context_id'],key,payload['kind'],[eid],dump(payload),now,expires,revision)
+                WHERE group_candidates.status='cancelled' AND group_candidates.outbox_id IS NULL
+                    AND (group_candidates.kind='reminder' OR group_candidates.kind='followup' AND
+                        (SELECT reason FROM group_decisions WHERE candidate_id=group_candidates.id ORDER BY id DESC LIMIT 1)='intention_changed')''',row['context_id'],key,payload['kind'],[eid],dump(payload),now,expires,revision)
 
     async def continuation(self,scope,text,mode='default'):
         if scope.addressed or scope.reply_to_id or scope.sender_kind!='user': return False
+        # This runs on ingress before the normal addressed-message path. Never
+        # turn a speculative continuation into a provider-sized ingress stall.
+        try:
+            async with asyncio.timeout(CONTINUATION_TIMEOUT_SECONDS):
+                return await self._continuation(scope,text,mode)
+        except Exception: return False
+
+    async def _continuation(self,scope,text,mode):
         cid=await self.context_id(scope,mode)
         if cid is None: return False
+        policy,revision=await self.policies.get(scope.chat_id,scope.topic_id)
+        if policy.disabled or policy.paused_until and datetime.fromisoformat(policy.paused_until)>self.runtime.clock(): return False
+        if await self.policies.opted_out(scope.chat_id,scope.user_id): return False
         frame=await self.frame(cid); last=frame.last_bot
+        if frame.closed: return False
         if not last or last.get('owner_id')!=scope.user_id or (self.runtime.clock()-last['_at']).total_seconds()>120: return False
         following=[m for m in frame.messages if m['_at']>last['_at']]
         if len(following)>2 or any(m['owner_id']!=scope.user_id for m in following): return False
         packet=dict(source_id=f'telegram:{scope.chat_id}:{scope.message_id}:user',message_id=scope.message_id,owner_id=scope.user_id,
                     sender_kind='user',text=text[:2500],reply_to_id=None,branch=last['branch'],at=self.runtime.clock().isoformat(),directed=False,is_bot=False)
         frame.messages=frame.messages+[packet]
-        try:
-            judgement=await self.judge.assess(frame,dict(kind='continuation',mode='mentions',reactions=False))
-            return judgement.action=='speak' and judgement.reason=='continuation' and judgement.confidence>=.8
-        except Exception: return False
+        from cognition.initiative_policy import provider_slot
+        async with provider_slot(self.runtime,cid,scope.user_id,'continuation',hourly_limit=6) as admitted:
+            if not admitted: return False
+            fresh=await self.frame(cid); _,latest=await self.policies.get(scope.chat_id,scope.topic_id)
+            if fresh.revision!=frame.revision or fresh.suppression_epoch!=frame.suppression_epoch or latest!=revision: return False
+            if await self.policies.opted_out(scope.chat_id,scope.user_id): return False
+            judgement=await self.judge.assess(frame,dict(kind='continuation',mode='mentions',reactions=False,message_id=scope.message_id))
+        # A classification is tied to the conversation it actually examined.
+        fresh=await self.frame(cid); _,latest=await self.policies.get(scope.chat_id,scope.topic_id)
+        if fresh.revision!=frame.revision or fresh.suppression_epoch!=frame.suppression_epoch or latest!=revision: return False
+        if await self.policies.opted_out(scope.chat_id,scope.user_id): return False
+        return judgement.action=='speak' and judgement.reason=='continuation' and judgement.confidence>=.8
 
     async def decision(self,row,action,reason,score=None,revision=None):
         async with self.pool.acquire() as conn:
@@ -183,23 +258,39 @@ class GroupService:
         if frame.serious and row['kind'] in ('social_moment','topic_seed'): return 'serious_context'
         if frame.tension>=.6: return 'tense_context'
         if row['kind']=='open_question':
-            q=frame.questions.get(p['message_id'])
-            if not q or q['status']!='open': return 'question_resolved'
+            q=frame.question(p['message_id'])
+            if q and q['status'] in ('answered','closed'): return 'question_resolved'
         if row['kind'] not in ('reminder','followup'):
-            anchor=next((m for m in frame.messages if m['event_id'] in row['source_ids']),None)
+            anchor=next((m for m in frame.messages if m['message_id']==p['message_id'] and m['event_id'] in row['source_ids']),None)
             if not anchor: return 'source_unavailable'
-            later=[m for m in frame.messages if m['_at']>anchor['_at']]
-            if any(m['owner_id']==anchor['owner_id'] and (m.get('reply_to_id')==anchor['message_id'] or m['branch']==anchor['branch'])
-                   and __import__('re').search(r'не возвращайся|не поднимай|не вмешивайся|не надо вмешиваться|stop interrupting',m['text'],__import__('re').I) for m in later):
-                return 'explicit_topic_refusal'
-            # Lexical branch IDs are only hints for the semantic sweep; a topic
-            # paraphrase must not discard it before the arbiter reads context.
-            if row['kind']!='contextual' and len(later)>=8 and all(m['branch']!=anchor['branch'] for m in later[-6:]): return 'conversation_moved'
+            if row['kind']!='open_question':
+                reply=next((m for m in reversed(frame.messages) if not m.get('is_bot') and m['owner_id']==anchor['owner_id']
+                            and m.get('reply_to_id')==anchor['message_id']),None)
+                if reply and explicit_refusal(reply['text']): return 'explicit_topic_refusal'
         async with self.pool.acquire() as conn:
+            if p.get('intention_id') and not await self.intention_valid(row,p,conn): return 'intention_changed'
             if not await conn.fetchval('SELECT enabled FROM response_status WHERE chat_id=$1',frame.chat_id): return 'responses_disabled'
             sources=await conn.fetchval("SELECT count(*) FROM cognitive_events WHERE id=ANY($1::bigint[]) AND context_id=$2 AND suppressed_at IS NULL AND payload->'audience'->>'kind' IN ('group','topic') AND (payload->'audience'->>'chat_id')::bigint=$3 AND (payload->'audience'->>'topic_id')::bigint=$4",row['source_ids'],row['context_id'],frame.chat_id,frame.topic_id)
         if sources!=len(row['source_ids']): return 'source_suppressed'
         return None
+
+    async def intention_valid(self,row,p,conn):
+        artifact=await conn.fetchrow('''SELECT a.*,c.suppression_epoch,c.rebuilding,c.history_after_event_id FROM cognitive_artifacts a
+            JOIN cognitive_contexts c ON c.id=a.context_id WHERE a.id=$1 AND a.context_id=$2''',p['intention_id'],row['context_id'])
+        if not artifact or artifact['suppressed_at'] or artifact['rebuilding']: return False
+        if row['kind']!='reminder' and not await conn.fetchval('''SELECT 1 FROM cognitive_events WHERE context_id=$1
+            AND source_id=$2 AND id>$3 AND suppressed_at IS NULL''',row['context_id'],p.get('source_id'),artifact['history_after_event_id']): return False
+        current=object_value(artifact['payload'])
+        return (artifact['revision']==p.get('intention_revision') and artifact['projection_epoch']==p.get('intention_epoch')==artifact['suppression_epoch']
+                and artifact['owner_id']==p.get('owner_id') and current.get('delivery_key')==p.get('intention_key')
+                and current.get('source_id')==p.get('source_id') and not current.get('delivered')
+                and current.get('status')==('reminder' if row['kind']=='reminder' else 'open'))
+
+    async def mark_intention_delivered(self,p,conn):
+        await conn.execute("""UPDATE cognitive_artifacts SET payload=jsonb_set(jsonb_set(payload,'{delivered}','true'::jsonb),
+            '{delivered_at}',to_jsonb($3::text)),revision=revision+1
+            WHERE id=$1 AND suppressed_at IS NULL AND payload->>'delivery_key'=$2""",
+            p['intention_id'],p.get('intention_key'),self.runtime.clock().isoformat())
 
     async def reserve(self,row,frame,policy,revision):
         now=self.runtime.clock(); token=uuid.uuid4().hex
@@ -248,14 +339,30 @@ class GroupService:
 
     async def direct_lease(self,cid):
         token=uuid.uuid4().hex
-        for _ in range(80):
-            now=self.runtime.clock()
-            async with self.pool.acquire() as conn:
-                claimed=await conn.fetchval('''INSERT INTO group_action_leases(context_id,token,fence,lease_until) VALUES($1,$2,1,$3)
-                    ON CONFLICT(context_id) DO UPDATE SET token=EXCLUDED.token,fence=group_action_leases.fence+1,lease_until=EXCLUDED.lease_until
-                    WHERE group_action_leases.lease_until IS NULL OR group_action_leases.lease_until<=$4 RETURNING fence''',cid,token,now+timedelta(seconds=120),now)
-            if claimed is not None: return token
-            await asyncio.sleep(.25)
+        try:
+            async with asyncio.timeout(DIRECT_LEASE_TIMEOUT_SECONDS):
+                while True:
+                    now=self.runtime.clock()
+                    async with self.pool.acquire() as conn,conn.transaction():
+                        chat_id=await conn.fetchval('SELECT chat_id FROM cognitive_contexts WHERE id=$1',cid)
+                        # Match the final delivery guard's lock order. An
+                        # initiative can be displaced before, never during, its
+                        # irreversible transport attempt.
+                        await conn.execute('SELECT pg_advisory_xact_lock($1::bigint)',chat_id)
+                        lease=await conn.fetchrow('SELECT * FROM group_action_leases WHERE context_id=$1 FOR UPDATE',cid)
+                        if lease and lease['token']:
+                            displaced=await conn.fetchval('''UPDATE group_candidates g SET status='cancelled',payload=NULL
+                                WHERE g.context_id=$1 AND g.lease_token=$2 AND g.status='claimed' AND g.kind!='reminder'
+                                AND NOT EXISTS(SELECT 1 FROM cognitive_outbox o WHERE o.id=g.outbox_id
+                                    AND o.status IN ('sending','delivered','delivery_unknown')) RETURNING g.id''',cid,lease['token'])
+                            if displaced:
+                                await conn.execute('UPDATE group_action_leases SET token=NULL,lease_until=NULL WHERE context_id=$1',cid)
+                        claimed=await conn.fetchval('''INSERT INTO group_action_leases(context_id,token,fence,lease_until) VALUES($1,$2,1,$3)
+                            ON CONFLICT(context_id) DO UPDATE SET token=EXCLUDED.token,fence=group_action_leases.fence+1,lease_until=EXCLUDED.lease_until
+                            WHERE group_action_leases.lease_until IS NULL OR group_action_leases.lease_until<=$4 RETURNING fence''',cid,token,now+timedelta(seconds=120),now)
+                    if claimed is not None: return token
+                    await asyncio.sleep(.05)
+        except TimeoutError: pass
         from cognition.delivery import DeliverySuppressed
         raise DeliverySuppressed('Conversation is busy')
 
@@ -269,16 +376,17 @@ class GroupService:
                 ELSE 'cancelled' END WHERE status='claimed' AND NOT EXISTS(SELECT 1 FROM group_action_leases l
                 WHERE l.context_id=g.context_id AND l.token=g.lease_token AND l.lease_until>$1) RETURNING g.*''',now)
             for item in recovered:
-                intention=(object_value(item['payload']) or {}).get('intention_id')
-                if intention and item['status']=='delivered':
-                    await conn.execute("UPDATE cognitive_artifacts SET payload=jsonb_set(jsonb_set(payload,'{delivered}','true'::jsonb),'{delivered_at}',to_jsonb($2::text)) WHERE id=$1 AND suppressed_at IS NULL",intention,now.isoformat())
+                payload=object_value(item['payload']) or {}
+                if payload.get('intention_id') and item['status']=='delivered':
+                    await self.mark_intention_delivered(payload,conn)
                 await conn.execute('UPDATE group_candidates SET payload=NULL WHERE id=$1',item['id'])
             rows=await conn.fetch("SELECT * FROM group_candidates WHERE status IN ('pending','deferred') AND due_at<=$1 ORDER BY due_at,id LIMIT 20",now)
         for row in rows:
             frame=await self.frame(row['context_id']); policy,revision=await self.policies.get(frame.chat_id,frame.topic_id)
             if row['kind']!='reminder' and getattr(self.runtime,'bot_id',None):
                 try:
-                    me=await bot.get_me(); member=await bot.get_chat_member(frame.chat_id,me.id)
+                    async with asyncio.timeout(MEMBERSHIP_TIMEOUT_SECONDS):
+                        me=await bot.get_me(); member=await bot.get_chat_member(frame.chat_id,me.id)
                     visible=member.status in ('administrator','creator') or bool(getattr(me,'can_read_all_group_messages',False))
                 except Exception: visible=False
                 if not visible:
@@ -308,67 +416,145 @@ class GroupService:
                 await asyncio.gather(renewal,work,return_exceptions=True)
                 await self.release(frame.context_id,token)
 
+    @staticmethod
+    def frame_sources(frame,anchor=None):
+        packet=frame.public_packet(anchor)
+        sources={m['source_id'] for m in packet['messages']}
+        for contribution in packet.get('recent_contributions',()):
+            sources.update(contribution.get('source_ids',()))
+            sources.update(signal['source_id'] for signal in contribution.get('feedback',()))
+        # The model's compact provenance list can truncate IDs. Internal
+        # erasure/dependency fences must retain the full lineage of that text.
+        exported={(c.get('message_id'),c.get('at'),c.get('delivery_status')) for c in packet.get('recent_contributions',())}
+        for contribution in frame.outcomes:
+            if (contribution.get('message_id'),contribution.get('at'),contribution.get('delivery_status')) in exported:
+                sources.update(contribution.get('source_ids',()))
+                sources.update(signal['source_id'] for signal in contribution.get('feedback',()))
+        return sources
+
+    async def revalidate(self,row,frame,policy,revision,token):
+        reason=await self.valid(row,frame,policy,revision)
+        if reason:
+            await self.cancel(row,reason); return False
+        p=object_value(row['payload'])
+        sources=self.frame_sources(frame,p.get('message_id')) if row['kind']!='reminder' else set()
+        async with self.pool.acquire() as conn:
+            ctx=await conn.fetchrow('SELECT suppression_epoch,rebuilding,history_after_event_id FROM cognitive_contexts WHERE id=$1',frame.context_id)
+            permitted=await conn.fetchval("""SELECT count(*) FROM cognitive_events WHERE context_id=$1 AND source_id=ANY($2::text[])
+                AND suppressed_at IS NULL AND id>$3 AND payload->'audience'->>'kind' IN ('group','topic')
+                AND (payload->'audience'->>'chat_id')::bigint=$4 AND (payload->'audience'->>'topic_id')::bigint=$5""",
+                frame.context_id,list(sources),ctx['history_after_event_id'],frame.chat_id,frame.topic_id)
+            alive=await conn.fetchval("""SELECT 1 FROM group_candidates g JOIN group_action_leases l ON l.context_id=g.context_id
+                WHERE g.id=$1 AND g.status='claimed' AND g.lease_token=$2 AND l.token=$2 AND l.lease_until>$3""",row['id'],token,self.runtime.clock())
+        if ctx['rebuilding'] or ctx['suppression_epoch']!=frame.suppression_epoch or permitted!=len(sources):
+            await self.cancel(row,'evidence_changed'); return False
+        if not alive:
+            await self.cancel(row,'lease_lost'); return False
+        return True
+
     async def execute(self,row,frame,policy,revision,token,bot):
+        anchor_event_id=row['source_ids'][0]
         p={**object_value(row['payload']),'age_seconds':max(0.,(self.runtime.clock()-row['created_at']).total_seconds())}
         if row['kind'] in ('reminder','followup'):
             try:
-                member=await bot.get_chat_member(frame.chat_id,p['owner_id'])
+                async with asyncio.timeout(MEMBERSHIP_TIMEOUT_SECONDS):
+                    member=await bot.get_chat_member(frame.chat_id,p['owner_id'])
                 if member.status in ('left','kicked'):
                     await self.cancel(row,'owner_left'); return
             except Exception:
                 await self.cancel(row,'membership_unknown'); return
-        if row['kind']=='reminder':
-            from ai.group_participation import GroupJudgement
-            async with self.pool.acquire() as conn: sid=await conn.fetchval('SELECT source_id FROM cognitive_events WHERE id=$1',row['source_ids'][0])
-            judgement=GroupJudgement('speak','shared_task',1.,0.,1.,(sid,))
-        else:
-            if row['kind']=='followup' and p['source_id'] not in {m['source_id'] for m in frame.messages}:
-                async with self.pool.acquire() as conn: raw=await conn.fetchrow('SELECT * FROM cognitive_events WHERE id=$1',row['source_ids'][0])
-                ev=load_event(raw['payload'])
-                frame.messages=[dict(source_id=ev.evidence.source_id,message_id=p['message_id'],owner_id=ev.evidence.owner_id,text=ev.text[:2500],
-                    sender_kind='user',reply_to_id=ev.reply_to_id,branch=p['message_id'],at=ev.observed_at.isoformat(),_at=ev.observed_at,event_id=raw['id'],directed=True,is_bot=False)]+frame.messages[-31:]
-            async with asyncio.timeout(ASSESS_TIMEOUT_SECONDS):
-                judgement=await self.judge.assess(frame,p)
-        if judgement.action=='defer' and row['attempts']<2:
-            async with self.pool.acquire() as conn:
-                await conn.execute("UPDATE group_candidates SET status='deferred',due_at=$2,lease_token=NULL WHERE id=$1 AND lease_token=$3",row['id'],self.runtime.clock()+timedelta(seconds=judgement.defer_seconds),token)
-            await self.decision(row,'defer',judgement.reason,judgement.usefulness,revision); return
-        norms=frame.norms.get('by_kind',{}).get(row['kind'],frame.norms)
-        threshold=.65+max(0.,-norms['receptivity'])*norms['confidence']*.2
-        if judgement.action!='speak' or judgement.confidence<.7 or judgement.usefulness<threshold or judgement.interruption>.35:
-            async with self.pool.acquire() as conn: await conn.execute("UPDATE group_candidates SET status='abstained',payload=NULL WHERE id=$1 AND lease_token=$2",row['id'],token)
-            await self.decision(row,'abstain',judgement.reason,judgement.usefulness,revision); return
-        if judgement.channel=='reaction' and not policy.reactions:
-            await self.cancel(row,'reaction_not_permitted'); return
-        if judgement.reason in ('social_fit','topic_seed') and policy.mode!='social':
-            await self.cancel(row,'social_not_permitted'); return
-        if judgement.reason=='topic_seed' and not policy.topic_seeds:
-            await self.cancel(row,'topic_seed_not_permitted'); return
-        async with self.pool.acquire() as conn:
-            ctx=await conn.fetchrow('SELECT * FROM cognitive_contexts WHERE id=$1',frame.context_id)
-            evidence=await conn.fetch('SELECT id FROM cognitive_events WHERE context_id=$1 AND source_id=ANY($2::text[]) AND suppressed_at IS NULL',frame.context_id,list(judgement.evidence_ids))
-            source=await conn.fetchrow('SELECT * FROM cognitive_events WHERE id=$1',row['source_ids'][0])
-            ids=sorted(set(row['source_ids'])|{r['id'] for r in evidence})
-            await conn.execute('UPDATE group_candidates SET source_ids=$2 WHERE id=$1',row['id'],ids)
-        row={**dict(row),'source_ids':ids}
-        if policy.execution=='shadow' or ctx['authority']!='active' or self.runtime.mode=='legacy':
-            async with self.pool.acquire() as conn: await conn.execute("UPDATE group_candidates SET status='shadow',payload=NULL WHERE id=$1 AND lease_token=$2",row['id'],token)
-            await self.decision(row,'speak','shadow_selected',judgement.usefulness,revision); return
+        from cognition.initiative_policy import provider_slot
         from cognition.affect import expression
         from cognition.runtime import PreparedTurn,CURRENT_TURN
-        event=load_event(source['payload'])
-        style=expression(await self.runtime.personal_state(frame.context_id,event.evidence.owner_id),task_serious=frame.serious)
-        async with asyncio.timeout(COMPOSE_TIMEOUT_SECONDS):
-            text=p['workflow_text'] if p.get('subscription_id') else (('Напоминание: '+p['description'])[:600] if row['kind']=='reminder' else await self.judge.compose(frame,p,judgement,replace(style,disclosure=0.).instruction()))
-        if not text: await self.cancel(row,'no_added_value'); return
-        fresh=await self.frame(frame.context_id); latest,rev=await self.policies.get(frame.chat_id,frame.topic_id)
-        reason=await self.valid(row,fresh,latest,rev)
-        if reason: await self.cancel(row,reason); return
+        # Both assessment and composition belong to one immutable conversation
+        # revision. Changed meaning gets one new assessment, never a fresh stamp
+        # on old prose. Continuous chatter safely exhausts this bounded retry.
+        for attempt in range(SEMANTIC_RETRIES+1):
+            frame=await self.frame(frame.context_id)
+            policy,revision=await self.policies.get(frame.chat_id,frame.topic_id)
+            if not await self.revalidate(row,frame,policy,revision,token): return
+            if row['kind']=='reminder':
+                from ai.group_participation import GroupJudgement
+                async with self.pool.acquire() as conn: sid=await conn.fetchval('SELECT source_id FROM cognitive_events WHERE id=$1',anchor_event_id)
+                judgement=GroupJudgement('speak','shared_task',1.,0.,1.,(sid,))
+            else:
+                if row['kind']=='followup' and p['source_id'] not in {m['source_id'] for m in frame.messages}:
+                    async with self.pool.acquire() as conn: raw=await conn.fetchrow('SELECT * FROM cognitive_events WHERE id=$1 AND suppressed_at IS NULL',anchor_event_id)
+                    if not raw or not raw['payload']:
+                        await self.cancel(row,'source_unavailable'); return
+                    ev=load_event(raw['payload'])
+                    frame.messages=[dict(source_id=ev.evidence.source_id,message_id=p['message_id'],owner_id=ev.evidence.owner_id,text=ev.text[:2500],
+                        sender_kind='user',reply_to_id=ev.reply_to_id,branch=p['message_id'],at=ev.observed_at.isoformat(),_at=ev.observed_at,event_id=raw['id'],directed=True,is_bot=False)]+frame.messages[-31:]
+                async with asyncio.timeout(ASSESS_TIMEOUT_SECONDS):
+                    async with provider_slot(self.runtime,frame.context_id,p.get('owner_id'),'group_assess',hourly_limit=policy.assessment_hourly_limit) as admitted:
+                        if not admitted:
+                            await self.cancel(row,'provider_budget'); return
+                        if not await self.revalidate(row,frame,policy,revision,token): return
+                        judgement=await self.judge.assess(frame,p)
+            fresh=await self.frame(frame.context_id); latest,rev=await self.policies.get(frame.chat_id,frame.topic_id)
+            if fresh.suppression_epoch!=frame.suppression_epoch:
+                await self.cancel(row,'evidence_changed'); return
+            if not await self.revalidate(row,fresh,latest,rev,token): return
+            if fresh.revision!=frame.revision:
+                if attempt<SEMANTIC_RETRIES: continue
+                await self.cancel(row,'conversation_changed'); return
+            if judgement.action=='defer' and row['attempts']<2:
+                async with self.pool.acquire() as conn:
+                    await conn.execute("UPDATE group_candidates SET status='deferred',due_at=$2,lease_token=NULL WHERE id=$1 AND status='claimed' AND lease_token=$3",row['id'],self.runtime.clock()+timedelta(seconds=judgement.defer_seconds),token)
+                await self.decision(row,'defer',judgement.reason,judgement.usefulness,revision); return
+            norms=frame.norms.get('by_kind',{}).get(row['kind'],frame.norms)
+            threshold=.65+max(0.,-norms['receptivity'])*norms['confidence']*.2
+            if judgement.action!='speak' or judgement.confidence<.7 or judgement.usefulness<threshold or judgement.interruption>.35:
+                async with self.pool.acquire() as conn: await conn.execute("UPDATE group_candidates SET status='abstained',payload=NULL WHERE id=$1 AND status='claimed' AND lease_token=$2",row['id'],token)
+                await self.decision(row,'abstain',judgement.reason,judgement.usefulness,revision); return
+            if judgement.channel=='reaction' and not policy.reactions:
+                await self.cancel(row,'reaction_not_permitted'); return
+            if judgement.reason in ('social_fit','topic_seed') and policy.mode!='social':
+                await self.cancel(row,'social_not_permitted'); return
+            if judgement.reason=='topic_seed' and not policy.topic_seeds:
+                await self.cancel(row,'topic_seed_not_permitted'); return
+            async with self.pool.acquire() as conn:
+                ctx=await conn.fetchrow('SELECT * FROM cognitive_contexts WHERE id=$1',frame.context_id)
+                required=set(judgement.evidence_ids)|(self.frame_sources(frame,p.get('message_id')) if row['kind']!='reminder' else set())
+                evidence=await conn.fetch('SELECT id FROM cognitive_events WHERE context_id=$1 AND source_id=ANY($2::text[]) AND suppressed_at IS NULL',frame.context_id,list(required))
+                source=await conn.fetchrow('SELECT * FROM cognitive_events WHERE id=$1 AND suppressed_at IS NULL',anchor_event_id)
+                if len(evidence)!=len(required) or not source or not source['payload']:
+                    await self.cancel(row,'source_unavailable'); return
+                ids=sorted(set(row['source_ids'])|{r['id'] for r in evidence})
+                changed=await conn.fetchval("UPDATE group_candidates SET source_ids=$2 WHERE id=$1 AND status='claimed' AND lease_token=$3 RETURNING id",row['id'],ids,token)
+            if not changed: return
+            row={**dict(row),'source_ids':ids}
+            if policy.execution=='shadow' or ctx['authority']!='active' or self.runtime.mode=='legacy':
+                async with self.pool.acquire() as conn: await conn.execute("UPDATE group_candidates SET status='shadow',payload=NULL WHERE id=$1 AND status='claimed' AND lease_token=$2",row['id'],token)
+                await self.decision(row,'speak','shadow_selected',judgement.usefulness,revision); return
+            event=load_event(source['payload'])
+            style=expression(await self.runtime.personal_state(frame.context_id,event.evidence.owner_id),task_serious=frame.serious)
+            if p.get('subscription_id'): text=p['workflow_text']
+            elif row['kind']=='reminder': text=('Напоминание: '+p['description'])[:600]
+            else:
+                async with asyncio.timeout(COMPOSE_TIMEOUT_SECONDS):
+                    async with provider_slot(self.runtime,frame.context_id,p.get('owner_id'),'group_compose',hourly_limit=policy.assessment_hourly_limit) as admitted:
+                        if not admitted:
+                            await self.cancel(row,'provider_budget'); return
+                        if not await self.revalidate(row,frame,policy,revision,token): return
+                        text=await self.judge.compose(frame,p,judgement,replace(style,disclosure=0.).instruction())
+            fresh=await self.frame(frame.context_id); latest,rev=await self.policies.get(frame.chat_id,frame.topic_id)
+            if fresh.suppression_epoch!=frame.suppression_epoch:
+                await self.cancel(row,'evidence_changed'); return
+            if not await self.revalidate(row,fresh,latest,rev,token): return
+            if fresh.revision!=frame.revision:
+                if attempt<SEMANTIC_RETRIES: continue
+                await self.cancel(row,'conversation_changed'); return
+            if not text: await self.cancel(row,'no_added_value'); return
+            break
         if p.get('subscription_id'):
-            member=await bot.get_chat_member(frame.chat_id,p['owner_id'])
+            async with asyncio.timeout(MEMBERSHIP_TIMEOUT_SECONDS):
+                member=await bot.get_chat_member(frame.chat_id,p['owner_id'])
             if member.status not in ('member','administrator','creator'): await self.cancel(row,'workflow_member_left'); return
-        turn=PreparedTurn(self.runtime,frame.context_id,source['id'],replace(event,event_id='group:'+row['candidate_key']),style,'',ctx['suppression_epoch'],'active')
-        turn.group_candidate_id=row['id']; turn.group_lease_token=token; turn.group_policy_revision=revision; turn.group_frame_revision=fresh.revision
+        turn=PreparedTurn(self.runtime,frame.context_id,source['id'],replace(event,event_id='group:'+row['candidate_key']),style,'',frame.suppression_epoch,'active')
+        turn.group_candidate_id=row['id']; turn.group_lease_token=token; turn.group_policy_revision=revision; turn.group_frame_revision=frame.revision
+        if row['kind']!='reminder':
+            turn.initiative=dict(owner_id=p.get('owner_id'),context_daily=policy.daily_limit,spacing_seconds=policy.spacing_seconds)
         scope=TransportScope(frame.chat_id,frame.topic_id,'supergroup',event.evidence.owner_id,p['message_id'],True)
         t=CURRENT_TURN.set(turn); s=CURRENT_SCOPE.set(scope)
         try:
@@ -390,13 +576,20 @@ class GroupService:
                     from agents.group_tasks import record_group_delivery
                     await record_group_delivery(self.pool,p,'unknown',row['candidate_key'])
                 await self.decision(row,'abstain','delivery_unknown'); return
-            async with self.pool.acquire() as conn: await conn.execute("UPDATE group_candidates SET status='delivered',payload=NULL,charged_at=$2 WHERE id=$1 AND status='claimed'",row['id'],self.runtime.clock())
+            # A transport return is not a confirmed receipt: reset/erasure can
+            # invalidate confirmation while the external request is in flight.
+            async with self.pool.acquire() as conn:
+                confirmed=await conn.fetchval("""UPDATE group_candidates g SET status='delivered',payload=NULL,charged_at=$2
+                    FROM cognitive_outbox o WHERE g.id=$1 AND g.outbox_id=o.id AND o.status='delivered'
+                    AND g.lease_token=$3 RETURNING g.id""",row['id'],self.runtime.clock(),token)
+            if not confirmed:
+                await self.cancel(row,'delivery_unconfirmed'); return
             if p.get('subscription_id'):
                 from agents.group_tasks import record_group_delivery
                 await record_group_delivery(self.pool,p,'delivered',row['candidate_key'])
             if p.get('intention_id'):
                 async with self.pool.acquire() as conn:
-                    await conn.execute("UPDATE cognitive_artifacts SET payload=jsonb_set(jsonb_set(payload,'{delivered}','true'::jsonb),'{delivered_at}',to_jsonb($2::text)) WHERE id=$1 AND suppressed_at IS NULL",p['intention_id'],self.runtime.clock().isoformat())
+                    await self.mark_intention_delivered(p,conn)
             await self.decision(row,'speak',judgement.reason,judgement.usefulness,revision)
         finally: CURRENT_TURN.reset(t); CURRENT_SCOPE.reset(s)
 
@@ -404,6 +597,8 @@ class GroupService:
         row=await conn.fetchrow('SELECT * FROM group_candidates WHERE id=$1 FOR UPDATE',turn.group_candidate_id)
         if not row or row['status']!='claimed' or row['lease_token']!=turn.group_lease_token: return False
         p=object_value(row['payload'])
+        if p.get('intention_id') and not await self.intention_valid(row,p,conn): return False
+        if row['kind']!='reminder' and await conn.fetchval('SELECT opt_out FROM group_participant_settings WHERE chat_id=$1 AND user_id=$2',turn.event.context.chat_id,p.get('owner_id')): return False
         if p.get('subscription_id'):
             from agents.group_tasks import guard_subscription
             if not await guard_subscription(self.pool,p,conn): return False
@@ -426,13 +621,18 @@ class GroupService:
         _,eid,_=await self.runtime.ingest(scope.chat_id,user_id,str(signal),f'reaction:{message_id}:{user_id}:{self.runtime.clock().isoformat()}',
             receipt['mode'],context=ctx,event_kind='reaction',addressed_to_arti=False,
             audience=AudienceScope('topic' if ctx.topic_id>0 else 'group',scope.chat_id,ctx.topic_id))
-        async with self.pool.acquire() as conn:
+        async with self.pool.acquire() as conn,conn.transaction():
+            await conn.fetchval('SELECT revision FROM cognitive_contexts WHERE id=$1 FOR UPDATE',receipt['context_id'])
             await conn.execute('''INSERT INTO group_feedback VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(context_id,message_id,user_id)
                 DO UPDATE SET signal=EXCLUDED.signal,created_at=EXCLUDED.created_at,source_ids=EXCLUDED.source_ids''',receipt['context_id'],message_id,user_id,signal,self.runtime.clock(),sorted(set(receipt['source_ids'])|{eid}))
+            await conn.execute('''INSERT INTO group_topic_runtime(context_id,revision) VALUES($1,1)
+                ON CONFLICT(context_id) DO UPDATE SET revision=group_topic_runtime.revision+1''',receipt['context_id'])
         return True
 
     async def set_closed(self,scope,closed):
-        async with self.pool.acquire() as conn:
+        async with self.pool.acquire() as conn,conn.transaction():
+            await conn.execute('SELECT pg_advisory_xact_lock($1::bigint)',scope.chat_id)
+            await conn.fetch('SELECT id FROM cognitive_contexts WHERE chat_id=$1 AND topic_id=$2 ORDER BY id FOR UPDATE',scope.chat_id,scope.topic_id)
             await conn.execute('''INSERT INTO group_topic_runtime(context_id,closed,revision)
                 SELECT id,$3,1 FROM cognitive_contexts WHERE chat_id=$1 AND topic_id=$2
                 ON CONFLICT(context_id) DO UPDATE SET closed=EXCLUDED.closed,revision=group_topic_runtime.revision+1''',scope.chat_id,scope.topic_id,closed)

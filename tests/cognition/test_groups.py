@@ -197,7 +197,7 @@ class GroupDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.bot=NS(send_message=AsyncMock(return_value=NS(message_id=900,chat=NS(id=-10))),
                     set_message_reaction=AsyncMock(return_value=True),get_chat_member=AsyncMock(return_value=NS(status='member')))
         async with self.pool.acquire() as conn: await conn.execute('INSERT INTO response_status(chat_id,enabled) VALUES(-10,TRUE)')
-        await self.runtime.groups.policies.set(-10,dict(mode='useful',execution='live',full_visibility=True,spacing_seconds=60))
+        await self.runtime.groups.policies.set(-10,dict(mode='useful',execution='live',full_visibility=True,timezone='UTC',spacing_seconds=60))
         self.token=CURRENT_SCOPE.set(None); self.turn_token=CURRENT_TURN.set(None)
     async def asyncTearDown(self):
         CURRENT_SCOPE.reset(self.token); CURRENT_TURN.reset(self.turn_token)
@@ -230,13 +230,19 @@ class GroupDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.pool.acquire() as conn:
             self.assertEqual(await conn.fetchval('SELECT count(*) FROM cognitive_outbox WHERE status=\'delivered\''),1)
         await self.tick(); self.bot.send_message.assert_awaited_once()
-    async def test_answer_from_a_human_cancels_before_judging(self):
-        cid=await self.observe(); await self.observe(2,'Используй sorted',2,reply=1); await self.tick()
-        self.assertEqual((await self.candidate(cid))['status'],'cancelled'); self.assertEqual(self.judge.assess_calls,0); self.bot.send_message.assert_not_called()
+    async def test_possible_answer_from_a_human_reaches_semantic_judging(self):
+        cid=await self.observe(); await self.observe(2,'Используй sorted',2,reply=1)
+        self.judge.action='abstain'; self.judge.reason='already_answered'
+        await self.tick()
+        self.assertEqual((await self.candidate(cid))['status'],'abstained'); self.assertEqual(self.judge.assess_calls,1); self.bot.send_message.assert_not_called()
     async def test_answer_during_generation_cancels_the_output(self):
         cid=await self.observe()
-        self.judge.hook=lambda:self.observe(2,'Используй sorted',2,reply=1)
-        await self.tick(); self.bot.send_message.assert_not_called(); self.assertEqual((await self.candidate(cid))['status'],'cancelled')
+        async def answered():
+            await self.observe(2,'Используй sorted',2,reply=1)
+            self.judge.action='abstain'; self.judge.reason='already_answered'
+        self.judge.hook=answered
+        await self.tick(); self.bot.send_message.assert_not_called(); self.assertEqual((await self.candidate(cid))['status'],'abstained')
+        self.assertEqual(self.judge.assess_calls,2); self.assertEqual(self.judge.compose_calls,1)
     async def test_permission_revocation_during_generation_cancels(self):
         cid=await self.observe()
         self.judge.hook=lambda:self.runtime.groups.policies.set(-10,dict(mode='mentions'))
@@ -340,7 +346,7 @@ class GroupDatabaseTests(unittest.IsolatedAsyncioTestCase):
         cid=await self.observe(text='Арти, напомни завтра про встречу',directed=True)
         async with self.pool.acquire() as conn:
             ev=await conn.fetchrow('SELECT * FROM cognitive_events WHERE context_id=$1',cid)
-            artifact=await self.runtime.memory._put(conn,cid,'intention','reminder-test',dict(status='reminder',description='Встреча',delivered=False,source_id=ev['source_id'],deadline=AT.isoformat()),1,[ev['id']])
+            artifact=await self.runtime.memory._put(conn,cid,'intention','reminder-test',dict(status='reminder',description='Встреча',delivered=False,delivery_key='reminder:test',source_id=ev['source_id'],deadline=AT.isoformat()),1,[ev['id']])
         row=dict(context_id=cid,chat_id=-10,topic_id=5,owner_id=1,id=artifact,payload=dict(status='reminder',delivery_key='reminder:test',description='Встреча'))
         await self.runtime.groups.policies.set(-10,dict(mode='mentions',daily_limit=0))
         await self.runtime.groups.propose_intention(row,load_event(ev['payload']))
@@ -506,7 +512,9 @@ class GroupDatabaseTests(unittest.IsolatedAsyncioTestCase):
         cid=await self.observe(text='Reminder request',directed=True)
         async with self.pool.acquire() as conn:
             ev=await conn.fetchrow('SELECT * FROM cognitive_events WHERE context_id=$1',cid)
-        row=dict(context_id=cid,chat_id=-10,topic_id=5,owner_id=1,id=None,payload=dict(status='reminder',delivery_key='pause:test',description='Meeting',deadline=AT.isoformat()))
+            payload=dict(status='reminder',delivery_key='pause:test',description='Meeting',deadline=AT.isoformat(),source_id=ev['source_id'],delivered=False)
+            artifact=await self.runtime.memory._put(conn,cid,'intention','pause:test',payload,1,[ev['id']])
+        row=dict(context_id=cid,chat_id=-10,topic_id=5,owner_id=1,id=artifact,payload=payload)
         await self.runtime.groups.propose_intention(row,load_event(ev['payload']))
         await self.runtime.groups.policies.set(-10,dict(paused_until=(AT+timedelta(hours=1)).isoformat()))
         self.assertEqual((await self.candidate(cid))['status'],'cancelled')

@@ -196,14 +196,42 @@ class MemoryRepository:
             await self._put(conn,cid,'belief',identity,value,event.evidence.owner_id,[eid],([oldrow['id']] if oldrow and not changed else []))
 
     async def _intentions(self,conn,cid,eid,event,s):
+        if s.modality in ('quoted','hypothetical'):
+            return
+        from cognition.private_followup import materially_revised
         for item in s.intentions:
+            stated_deadline = item.get('deadline')
             actor = item.get('actor','arti' if event.evidence.origin==Origin.DELIVERED_ACTION else event.actor_id)
             identity = key('intention',event.evidence.owner_id,actor,item['key'])
             previous,old = await self._get(conn,cid,identity)
+            if (old and old.get('status')==item['status'] and item['status'] in ('open','reminder')
+                    and item.get('deadline') is None and old.get('deadline')):
+                # Omission in a paraphrase is not an explicit reschedule or a
+                # revocation of the previously source-backed deadline.
+                item = {**item,'deadline':old['deadline']}
+            revised = old is not None and materially_revised(old,item)
+            revision = (old.get('goal_revision',1) if old else 1) + int(revised)
+            # A paraphrase, new confidence or a repeated cue is the same goal.
+            # Operationally changed/reopened goals get a new durable send slot;
+            # the artifact's ordinary projection revision is not a send identity.
+            delivery_key = (key('intention_delivery',identity,revision,event.evidence.source_id)
+                            if revised else old.get('delivery_key',identity) if old else identity)
             value = {**item,'source_id':event.evidence.source_id,'actor_id':actor,
-                     'created_at':old['created_at'] if old else event.observed_at.isoformat(),
+                     'source_span':asdict(s.spans[item['span']]),'topic':s.topic,
+                     'created_at':old['created_at'] if old and not revised else event.observed_at.isoformat(),
+                     'updated_at':event.observed_at.isoformat(),'goal_revision':revision,
                      'closed_at':event.observed_at.isoformat() if item['status'] in ('fulfilled','cancelled') else None,
-                     'delivery_key':identity,'delivered':False if old is None else old.get('delivered',False)}
+                     'delivery_key':delivery_key,'delivered':False if old is None or revised else old.get('delivered',False)}
+            if old and not revised and old.get('delivered_at'):
+                value['delivered_at'] = old['delivered_at']
+            if item['status']=='reminder':
+                if event.evidence.origin==Origin.USER and s.kind=='request' and stated_deadline is not None:
+                    value['reminder_request_source_id'] = event.evidence.source_id
+                elif old and old.get('status')=='reminder' and not revised:
+                    # An unchanged reminder retains its exact authorization,
+                    # independently of a later neutral descriptive update.
+                    # Reopening/rescheduling must establish a fresh request.
+                    value['reminder_request_source_id'] = old.get('reminder_request_source_id') or old.get('source_id')
             await self._put(conn,cid,'intention',identity,value,event.evidence.owner_id,[eid],([previous['id']] if previous else []))
 
     async def artifacts(self,cid,owner,kind=None,limit=200,query=None):

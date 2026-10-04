@@ -1,0 +1,183 @@
+{
+  "scope": "Current-evidence group/private initiatives, quiet hours and durable budgets, evidence-based outcomes, bounded arbitration and direct-response priority",
+  "baseline_commit": "0a547baebd237f95102791085eaafc25f2fef183",
+  "branch": "codex/proactive-behavior",
+  "source_files": [
+    "ai/group_participation.py",
+    "bot/group_commands.py",
+    "cognition/delivery.py",
+    "cognition/group_context.py",
+    "cognition/group_policy.py",
+    "cognition/initiative_policy.py",
+    "cognition/intentions.py",
+    "cognition/memory_repository.py",
+    "cognition/migrations/035_initiative_limits.sql",
+    "cognition/private_followup.py",
+    "cognition/proactivity.py",
+    "tests/cognition/test_contextual_behavior.py",
+    "tests/cognition/test_groups.py",
+    "tests/cognition/test_initiative_limits.py",
+    "tests/cognition/test_operational_model.py",
+    "tests/cognition/test_proactive_context.py",
+    "tests/cognition/test_proactive_groups.py",
+    "tests/cognition/test_proactive_private.py",
+    "tests/materials/test_workflows.py",
+    "tools/evaluate_group_load.py"
+  ],
+  "code_fingerprint_sha256": "7eaab2ff4601f075003547d2cfd3a37ee5f70776dca27d33e48d85c0b8ab95ce",
+  "full_suite": {
+    "status": "passed",
+    "command": "python -m tools.run_cognition_tests",
+    "tests": 1137,
+    "passed": 1137,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 513.388
+  },
+  "new_regressions": {
+    "context_and_judge": 38,
+    "group_runtime_sql": 38,
+    "private_intentions": 37,
+    "shared_limits_and_upgrade": 24,
+    "total": 137
+  },
+  "focused_checks": {
+    "private_and_existing_integrations": {
+      "tests": 94,
+      "passed": 94
+    },
+    "context_and_selected_provider": {
+      "tests": 62,
+      "passed": 62
+    },
+    "group_final_new_regressions": {
+      "tests": 38,
+      "passed": 38
+    },
+    "shared_limit_initial": {
+      "tests": 21,
+      "passed": 21
+    },
+    "shared_status_ui": {
+      "tests": 2,
+      "passed": 2
+    },
+    "migration_upgrade": {
+      "tests": 1,
+      "passed": 1
+    }
+  },
+  "independent_review": {
+    "unresolved_blocking_findings": 0,
+    "reviewers": 2,
+    "safety_tests": {
+      "combined_integration": 212,
+      "final_group": 38,
+      "shared_private_context": 93
+    },
+    "behavior_tests": {
+      "public_context_and_legacy": 56,
+      "private_and_limits": 60,
+      "group_and_reminder_pause": 39
+    },
+    "findings_fixed": [
+      "Privacy erasure of an uncited included source during assessment/composition now invalidates the frozen frame.",
+      "Private terminal outcome evidence cannot be erased by later neutral same-topic notes or a bounded recent-window rollover.",
+      "Reply-scoped refusal and resolution no longer hard-veto unrelated questions sharing lexical words.",
+      "Older decisive anchor evidence survives the public question/window caps; partial success and later owner correction remain assessable.",
+      "Opt-out, stop, timezone, topic closure and feedback/reaction changes are serialized or revision-fenced against final send.",
+      "Complete hidden outcome source lineage is retained internally; over-cap snippets are omitted whole.",
+      "Unchanged explicit reminder paraphrases retain verified exact request authorization; new schedules cannot borrow old consent.",
+      "Only authoritative delivered outbox receipts mark goal/workflow sends delivered; invalidated and ambiguous outcomes cannot complete a new revision."
+    ]
+  },
+  "synthetic_load": {
+    "version": "group-load-2026-10-04.2",
+    "messages": 1000,
+    "participants": 40,
+    "topics": 5,
+    "peak_pending_candidates": 128,
+    "peak_frame_messages": 64,
+    "peak_branches": 2,
+    "peak_questions": 16,
+    "recorded_assessments": 12,
+    "reserved_attempts": 12,
+    "provider_calls": 0,
+    "telegram_calls": 0,
+    "candidate_statuses": {
+      "cancelled": 500,
+      "abstained": 12
+    },
+    "ingest_p50_ms": 12.29,
+    "ingest_p95_ms": 18.27,
+    "seconds": 21.31,
+    "working_database_mutated": false,
+    "real_history_used": false,
+    "cost_measurement": "Offline recorded judge; actual provider latency and cost are not measured.",
+    "passed": true
+  },
+  "validation_environment": {
+    "database": "Disposable PostgreSQL 17, isolated per SQL case",
+    "network": "Offline test guard allows only loopback",
+    "dotenv_loaded": false,
+    "real_conversations_read": 0,
+    "production_database_mutated": false,
+    "provider_calls": 0,
+    "telegram_calls": 0
+  },
+  "scope_boundaries": {
+    "videotrans_modified": false,
+    "videotrans_tests_modified": false,
+    "unrelated_audio_modified": false,
+    "arbitrary_own_commitment_executor": false,
+    "new_external_integrations": false
+  },
+  "limits": {
+    "semantic_retries": 1,
+    "provider_concurrency": 2,
+    "provider_global_hourly_calls": 60,
+    "provider_admission_seconds": 0.35,
+    "provider_lease_seconds": 30,
+    "provider_owned_cleanup_seconds": 0.5,
+    "assess_budget_seconds": 8,
+    "compose_budget_seconds": 12,
+    "continuation_total_budget_seconds": 1,
+    "continuation_calls_per_context_hour": 6,
+    "membership_lookup_seconds": 3,
+    "direct_coordinator_wait_seconds": 1,
+    "private_context_daily_initiatives": 2,
+    "owner_cross_context_daily_initiatives": 3,
+    "owner_spacing_seconds": 3600,
+    "global_burst_per_minute": 3,
+    "public_raw_messages": 64,
+    "public_packet_messages": 32,
+    "public_packet_bytes": 14999,
+    "outcome_source_cap": 128,
+    "outcome_aggregate_source_cap": 256
+  },
+  "limitations": [
+    "Synthetic recorded interpretations and mocked responses test deterministic contracts, not live semantic judgement, naturalness or social usefulness.",
+    "Optional-work timeout budgets can be extended by separately bounded owned cleanup; already-started provider/Telegram requests cannot be recalled retroactively.",
+    "Direct replies preempt speculative pretransport leases; an already-started or direct transport may cause bounded safe suppression rather than guaranteed immediate delivery.",
+    "Private relevance uses existing structured interpretations and a bounded recent window, plus all-newer terminal-outcome barriers; missing evidence causes conservative abstention.",
+    "A description-only same-key goal rewrite does not renew its delivered slot. Distinct semantic goals still depend on correct extracted stable keys.",
+    "Already-neutral pre-upgrade reminders without saved request lineage remain blocked unless the current source itself provides exact valid reminder authorization.",
+    "Arti own commitments are not executed by this scheduler; no arbitrary executor or all-history planning engine is added.",
+    "Thresholds and quotas are engineering defaults, not learned psychological measurements or consent from silence.",
+    "The existing coordinator has no new global fair queue; heavily active contexts can lose optional opportunities. Load latency measures synthetic local ingestion, not provider latency or production performance.",
+    "No production API calls, live user history, deployment, merge or end-to-end live LLM behavior evaluation."
+  ],
+  "publication": {
+    "pushed": false,
+    "merged": false,
+    "deployed": false
+  },
+  "validated_at_utc": "2026-10-04T20:04:50Z",
+  "source_fingerprint_verified_after_full_suite": true,
+  "unchanged_videotrans_tests": {
+    "tests": 24,
+    "passed": 24,
+    "source_files_modified": false
+  }
+}

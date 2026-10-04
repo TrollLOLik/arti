@@ -23,7 +23,7 @@ class RecordedAbstention:
 
 
 async def evaluate():
-    clock=[datetime.now(timezone.utc)]; judge=RecordedAbstention(); started=time.perf_counter()
+    clock=[datetime(2026,10,4,12,tzinfo=timezone.utc)]; judge=RecordedAbstention(); started=time.perf_counter()
     peak_pending=0; peak_messages=0; peak_branches=0; peak_questions=0; ingest_latencies=[]; contexts=set()
     bot=SimpleNamespace(send_message=AsyncMock(side_effect=AssertionError('No Telegram allowed')))
     async with isolated_database() as pool:
@@ -32,7 +32,7 @@ async def evaluate():
         try:
             async with pool.acquire() as conn:
                 await conn.execute('INSERT INTO response_status(chat_id,enabled) VALUES(-999,TRUE)')
-            await runtime.groups.policies.set(-999,dict(mode='useful',execution='shadow',full_visibility=True))
+            await runtime.groups.policies.set(-999,dict(mode='useful',execution='shadow',full_visibility=True,timezone='UTC'))
             for i in range(1,1001):
                 clock[0]+=timedelta(milliseconds=100)
                 scope=TransportScope(-999,1+i%5,'supergroup',1+i%40,i,False)
@@ -54,15 +54,15 @@ async def evaluate():
                 attempts=await conn.fetchval('SELECT coalesce(sum(attempts),0) FROM group_candidates')
                 statuses=await conn.fetch('SELECT status,count(*) AS total FROM group_candidates GROUP BY status')
             assert observations==1000 and peak_pending<=128 and peak_messages<=64 and peak_branches<=8 and peak_questions<=16
-            assert judge.calls<=12 and bot.send_message.await_count==0
+            assert 0<judge.calls<=12 and bot.send_message.await_count==0
             values=sorted(ingest_latencies)
-            report=dict(version='group-load-2026-09-30.1',messages=observations,participants=40,topics=5,
+            report=dict(version='group-load-2026-10-04.2',messages=observations,participants=40,topics=5,
                 peak_pending_candidates=peak_pending,peak_frame_messages=peak_messages,peak_branches=peak_branches,peak_questions=peak_questions,
                 recorded_assessments=judge.calls,reserved_attempts=attempts,provider_calls=0,telegram_calls=0,
                 candidate_statuses={r['status']:r['total'] for r in statuses},
                 ingest_p50_ms=round(values[len(values)//2],2),ingest_p95_ms=round(values[949],2),
                 seconds=round(time.perf_counter()-started,2),working_database_mutated=False,real_history_used=False,
-                cost_measurement='Offline; no actual API cost. Separate live report contains provider usage.',passed=True)
+                cost_measurement='Offline recorded judge; actual provider latency and cost are not measured.',passed=True)
         finally: await runtime.close()
     Path('docs/evaluation/group_load.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
     print(json.dumps(report))

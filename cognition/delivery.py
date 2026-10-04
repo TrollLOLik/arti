@@ -77,7 +77,7 @@ async def _send_with_receipt(method,args,kwargs,channel):
             permitted=permitted and await conn.fetchval('SELECT count(*) FROM cognitive_events WHERE context_id=$1 AND id=ANY($2::bigint[]) AND suppressed_at IS NULL',turn.context_id,support)==len(support)
         if not permitted or ctx['rebuilding'] or ctx['suppression_epoch']!=turn.epoch or ctx['authority'] not in (('active','shadow') if turn.event.audience.kind in ('group','topic') else ('active',)):
             raise DeliverySuppressed()
-        if turn.event.audience.kind in ('group','topic') and not await conn.fetchval('SELECT enabled FROM response_status WHERE chat_id=$1',chat_id):
+        if turn.event.audience.kind in ('group','topic') and not await conn.fetchval('SELECT enabled FROM response_status WHERE chat_id=$1 FOR SHARE',chat_id):
             raise DeliverySuppressed()
         if public_ids:
             allowed,_ = await runtime.public_memory.validate(turn.context_id,turn.event.context,public_ids,runtime.clock(),
@@ -93,6 +93,9 @@ async def _send_with_receipt(method,args,kwargs,channel):
         if getattr(turn,'group_candidate_id',None):
             await conn.execute('SELECT pg_advisory_xact_lock($1::bigint)',chat_id)
             if not await runtime.groups.delivery_guard(turn,conn): raise DeliverySuppressed()
+        if getattr(turn,'private_intention_id',None):
+            from cognition.private_followup import delivery_guard
+            if not await delivery_guard(turn,conn): raise DeliverySuppressed()
         if channel=='sticker' and await conn.fetchval("""SELECT 1 FROM cognitive_outbox WHERE context_id=$1 AND channel='sticker'
             AND status IN ('sending','delivered','delivery_unknown') AND created_at>NOW()-INTERVAL '2 minutes'""",turn.context_id):
             raise DeliverySuppressed()
@@ -114,6 +117,8 @@ async def _send_with_receipt(method,args,kwargs,channel):
             from telegram.error import RetryAfter
             turn.send_ordinal -= 1
             raise RetryAfter(max(0, (row['retry_at'] - datetime.now(timezone.utc)).total_seconds()))
+        from cognition.initiative_policy import charge_delivery
+        if not await charge_delivery(conn,turn,delivery_key,runtime.clock()): raise DeliverySuppressed()
         await conn.execute("UPDATE cognitive_outbox SET status='sending',updated_at=NOW() WHERE id=$1",row['id'])
         if getattr(turn,'group_candidate_id',None):
             await conn.execute('UPDATE group_candidates SET outbox_id=$2 WHERE id=$1',turn.group_candidate_id,row['id'])
@@ -197,6 +202,9 @@ async def _confirm_transaction(turn,row,receipt,messages,text,channel):
             return False
         changed = await conn.fetchval("UPDATE cognitive_outbox SET status='delivered',receipt_id=$2,updated_at=NOW() WHERE id=$1 AND status='sending' RETURNING id",row['id'],receipt)
         if changed:
+            if getattr(turn,'private_intention_id',None):
+                from cognition.private_followup import confirm_delivery
+                await confirm_delivery(turn,conn)
             cid = turn.context_id
             included = await conn.fetchval("SELECT artifact_ids FROM cognitive_retrievals WHERE context_id=$1 AND cycle_key=$2 AND stage='included'",cid,turn.event.event_id) or []
             candidates = await conn.fetch('SELECT id,payload FROM cognitive_artifacts WHERE context_id=$1 AND id=ANY($2::bigint[]) AND suppressed_at IS NULL AND projection_epoch=$3',cid,included,turn.epoch)
@@ -263,4 +271,9 @@ async def _confirm_reaction(turn,row,kwargs):
             await conn.execute('''INSERT INTO cognitive_event_dependencies(context_id,event_id,source_event_id)
                 SELECT $1,$2,unnest(source_ids) FROM group_candidates WHERE id=$3 ON CONFLICT DO NOTHING''',turn.context_id,eid,turn.group_candidate_id)
         await conn.execute("UPDATE cognitive_outbox SET status='delivered' WHERE id=$1",row['id'])
+        if event.audience.kind in ('group','topic'):
+            # A confirmed reaction changes the arbiter's contribution/outcome
+            # packet even though Telegram did not create a new Message.
+            await conn.execute('''INSERT INTO group_topic_runtime(context_id,revision) VALUES($1,1)
+                ON CONFLICT(context_id) DO UPDATE SET revision=group_topic_runtime.revision+1''',turn.context_id)
         await conn.execute("INSERT INTO cognitive_jobs(context_id,event_id,kind) VALUES($1,$2,'encode') ON CONFLICT DO NOTHING",turn.context_id,eid)

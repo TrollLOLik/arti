@@ -1,9 +1,9 @@
 """Prospective memory with operational reminder delivery and contextual follow-up."""
 import asyncio
 from datetime import datetime
-from cognition.affect import advance,expression
+from cognition.affect import expression
 from cognition.runtime import PreparedTurn,CURRENT_TURN
-from cognition.serialization import object_value,load_event,dump
+from cognition.serialization import object_value,load_event
 
 
 async def due_intentions(runtime):
@@ -44,8 +44,12 @@ async def due_intentions(runtime):
             # Spontaneous outcome inquiry needs explicit receptivity, a cue and
             # enough time to plausibly observe the expected outcome.
             created = datetime.fromisoformat(p['created_at'])
-            eligible = (model['preferences'].get('proactive') is True and bool(p['cue'])
+            eligible = (model['preferences'].get('proactive') is True and bool(p.get('cue'))
                         and 86400 <= (now-created).total_seconds() <= 14*86400)
+        if eligible and row['chat_id']>0 and row['topic_id']<0:
+            from cognition.private_followup import evaluate
+            async with runtime.pool.acquire() as conn:
+                eligible = await evaluate(runtime,conn,row) is not None
         if eligible and row['mode']=='rp':
             from config import rp_mode_state
             current = await runtime.context(row['chat_id'],'rp',row['topic_id'])
@@ -75,39 +79,43 @@ async def run_intention_cycle(runtime,bot):
             except Exception: continue
             await runtime.groups.propose_intention(row,event)
             continue
+        from cognition.private_followup import evaluate,followup_text
         async with runtime.pool.acquire() as conn:
-            source = await conn.fetchrow('SELECT * FROM cognitive_events WHERE context_id=$1 AND source_id=$2 AND suppressed_at IS NULL',row['context_id'],p['source_id'])
-            prior_delivery = await conn.fetchval('''SELECT 1 FROM cognitive_outbox WHERE context_id=$1 AND delivery_key LIKE $2
-                AND status IN ('delivered','sending','delivery_unknown')''',row['context_id'],p['delivery_key']+':%')
-        if not source or prior_delivery:
+            current_row = await conn.fetchrow('SELECT * FROM cognitive_artifacts WHERE context_id=$1 AND id=$2',row['context_id'],row['id'])
+            current = (await evaluate(runtime,conn,current_row,expected_revision=row['revision'],expected_key=p['delivery_key'])
+                       if current_row else None)
+        if not current:
             continue
-        event = load_event(source['payload'])
+        source,event,p = current['source'],current['event'],current['payload']
         state = await runtime.personal_state(row['context_id'],row['owner_id'])
         plan = expression(state,task_serious=True)
         turn = PreparedTurn(runtime,row['context_id'],source['id'],event,plan,'',row['suppression_epoch'],'active')
         # An intention has its own stable delivery slot; input conversation sends
         # cannot collide with a due reminder for the same source.
         turn.event = __import__('dataclasses').replace(event,event_id=p['delivery_key'])
+        turn.private_intention_id = row['id']
+        turn.private_intention_revision = current_row['revision']
+        turn.private_delivery_key = p['delivery_key']
+        turn.supporting_event_ids = current['supporting_event_ids']
+        if p['status']!='reminder':
+            turn.initiative = dict(owner_id=row['owner_id'],context_daily=2,spacing_seconds=3600)
         token = CURRENT_TURN.set(turn)
         try:
             from organizer.ownership import cognitive_delivery_allowed
             async with cognitive_delivery_allowed(runtime.pool,row['owner_id'],row['chat_id'],row['context_id'],row['id']) as allowed:
                 if not allowed: continue
-                text = ('Напоминание: ' if p['status']=='reminder' else 'Как продвигается: ') + p['description']
-                from cognition.delivery import send_with_receipt
+                text = 'Напоминание: '+p['description'] if p['status']=='reminder' else followup_text(p)
+                from cognition.delivery import send_with_receipt,DeliverySuppressed,DeliveryUnknown
                 from bot.retry_bot import RetryBot
-                if isinstance(bot,RetryBot):
-                    await bot.send_message(chat_id=row['chat_id'],text=text)
-                else:
-                    await send_with_receipt(bot.send_message,(),dict(chat_id=row['chat_id'],text=text),'message')
-                async with runtime.pool.acquire() as conn,conn.transaction():
-                    await conn.fetchval('SELECT revision FROM cognitive_contexts WHERE id=$1 FOR UPDATE',row['context_id'])
-                    active = await conn.fetchrow('SELECT payload FROM cognitive_artifacts WHERE id=$1 AND suppressed_at IS NULL',row['id'])
-                    if active:
-                        current = object_value(active['payload'])
-                        current['delivered'] = True
-                        current['delivered_at'] = runtime.clock().isoformat()
-                        await conn.execute('UPDATE cognitive_artifacts SET payload=$2::jsonb,revision=revision+1 WHERE id=$1',row['id'],dump(current))
+                try:
+                    if isinstance(bot,RetryBot):
+                        await bot.send_message(chat_id=row['chat_id'],text=text)
+                    else:
+                        await send_with_receipt(bot.send_message,(),dict(chat_id=row['chat_id'],text=text),'message')
+                except (DeliverySuppressed,DeliveryUnknown):
+                    # One blocked or ambiguous goal cannot starve other owners.
+                    # Only the atomic receipt path marks a goal delivered.
+                    continue
         finally:
             CURRENT_TURN.reset(token)
 

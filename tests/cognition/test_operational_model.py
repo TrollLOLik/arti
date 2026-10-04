@@ -190,7 +190,9 @@ class OperationalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.runtime.memory.relationship(turn.context_id,1))['dimensions']['reliability']['alpha'],1)
 
     async def test_reminder_delivers_once_and_closed_intention_does_not_recur(self):
-        cid,eid,ev = await self.runtime.ingest(10,1,'Напомни о встрече '+(AT+timedelta(seconds=2)).isoformat(),1)
+        from cognition.types import AudienceScope
+        cid,eid,ev = await self.runtime.ingest(1,1,'Напомни о встрече '+(AT+timedelta(seconds=2)).isoformat(),1,
+                                               audience=AudienceScope('private',1,-1))
         self.interpreter.frames[ev.text] = situation(ev,kind='request',intentions=[dict(span=0,key='meeting',description='Встреча',cue='',deadline=(AT+timedelta(seconds=2)).isoformat(),status='reminder',confidence=.9)])
         await self.runtime.process(cid,eid)
         self.at = AT+timedelta(seconds=3)
