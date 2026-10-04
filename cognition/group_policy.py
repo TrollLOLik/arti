@@ -44,11 +44,11 @@ class GroupPolicy:
         if kind=='reminder': return None
         if self.mode=='mentions': return 'mentions_only'
         if not self.full_visibility: return 'partial_visibility'
-        if self.timezone:
-            hour=now.astimezone(ZoneInfo(self.timezone)).hour
-            quiet=(self.quiet_start<=hour<self.quiet_end if self.quiet_start<self.quiet_end
-                   else hour>=self.quiet_start or hour<self.quiet_end) if self.quiet_start!=self.quiet_end else False
-            if quiet: return 'quiet_hours'
+        if not self.timezone: return 'unknown_timezone'
+        hour=now.astimezone(ZoneInfo(self.timezone)).hour
+        quiet=(self.quiet_start<=hour<self.quiet_end if self.quiet_start<self.quiet_end
+               else hour>=self.quiet_start or hour<self.quiet_end) if self.quiet_start!=self.quiet_end else False
+        if quiet: return 'quiet_hours'
         return None
 
 
@@ -93,7 +93,8 @@ class PolicyRepository:
             await conn.execute("UPDATE group_candidates SET status='cancelled',payload=NULL WHERE context_id IN (SELECT id FROM cognitive_contexts WHERE chat_id=$1) AND status IN ('pending','deferred','claimed')",chat_id)
 
     async def opt_out(self,chat_id,user_id,value):
-        async with self.pool.acquire() as conn:
+        async with self.pool.acquire() as conn,conn.transaction():
+            await conn.execute('SELECT pg_advisory_xact_lock($1::bigint)',chat_id)
             await conn.execute('''INSERT INTO group_participant_settings VALUES($1,$2,$3)
                 ON CONFLICT(chat_id,user_id) DO UPDATE SET opt_out=EXCLUDED.opt_out''',chat_id,user_id,value)
             if value:

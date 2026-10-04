@@ -79,7 +79,7 @@ class ContextualPipelineTests(unittest.IsolatedAsyncioTestCase):
             set_message_reaction=AsyncMock(return_value=True),get_chat_member=AsyncMock(return_value=NS(status='member')))
         self.tokens=[(v,v.set(None)) for v in (CURRENT_SCOPE,CURRENT_TURN)]
         async with self.pool.acquire() as conn: await conn.execute('INSERT INTO response_status(chat_id,enabled) VALUES(-10,TRUE)')
-        await self.runtime.groups.policies.set(-10,dict(mode='useful',execution='live',full_visibility=True,spacing_seconds=60,daily_limit=20))
+        await self.runtime.groups.policies.set(-10,dict(mode='useful',execution='live',full_visibility=True,timezone='UTC',spacing_seconds=60,daily_limit=20))
 
     async def asyncTearDown(self):
         for var,token in self.tokens: var.reset(token)

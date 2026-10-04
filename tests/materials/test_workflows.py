@@ -119,7 +119,7 @@ class WorkflowSQLTests(unittest.IsolatedAsyncioTestCase):
             eid,b=await self.service.extract(self.asset['id'],self.actor); self.refs=[EvidenceRef(self.asset['id'],1,eid,b.blocks[0].block_id,b.blocks[0].locator)]
             await runtime.groups.observe(TransportScope(-10,5,'supergroup',7,77,True),'Подписка на общий обзор проекта')
             async with self.pool.acquire() as conn: await conn.execute('INSERT INTO response_status(chat_id,enabled) VALUES(-10,TRUE)')
-            await runtime.groups.policies.set(-10,dict(mode='useful',execution='live',full_visibility=True,spacing_seconds=60))
+            await runtime.groups.policies.set(-10,dict(mode='useful',execution='live',full_visibility=True,timezone='UTC',spacing_seconds=60))
             with patch('cognition.runtime.get_runtime',return_value=runtime):
                 _,procedure,_=await self.procedure(); subs=SubscriptionRepository(self.materials,self.registry)
                 sub=await subs.subscribe(self.actor,procedure['id'],dict(text='hello'),dict(kind='interval',timezone='UTC',seconds=300,anchor=clock.isoformat()),self.refs,confirmed=True,origin='user')

@@ -7,6 +7,16 @@ from cognition.scope import CURRENT_SCOPE
 from cognition.types import Origin
 
 
+def policy_status(policy,now):
+    reason=policy.reason(now)
+    labels=dict(unknown_timezone='нужен часовой пояс: /proactivity tz <IANA zone>',
+                quiet_hours='тихие часы',mentions_only='только обращения',partial_visibility='неполная видимость',
+                disabled='выключены',paused='на паузе')
+    availability=labels.get(reason,'разрешены в пределах лимитов')
+    return (f'Участие: {policy.mode}; исполнение: {policy.execution}; полная видимость: {policy.full_visibility}.\n'
+            f'Часовой пояс: {policy.timezone or "не задан"}. Инициативы: {availability}.')
+
+
 async def is_admin(user,chat_id,context):
     if user is None: return False
     try:
@@ -25,7 +35,7 @@ async def proactivity_command(update,context):
         await update.effective_message.reply_text('Самостоятельные обращения ко мне выключены.' if args[0]=='optout' else 'Самостоятельные обращения ко мне разрешены в рамках правил группы.'); return
     policy,_=await runtime.groups.policies.get(scope.chat_id,scope.topic_id)
     if not args:
-        await update.effective_message.reply_text(f'Участие: {policy.mode}; исполнение: {policy.execution}; полная видимость: {policy.full_visibility}.\n'
+        await update.effective_message.reply_text(policy_status(policy,runtime.clock())+'\n'+
             '/proactivity [group|topic] mentions|useful|social [shadow|live]\n'
             '/proactivity [group|topic] off|on — выключатель инициатив, включая напоминания\n'
             '/proactivity visibility full|partial; tz Europe/Moscow; limits 3 900; assessments 12; hours 23 9; reactions on|off; seeds on|off\n'
@@ -74,7 +84,7 @@ async def proactivity_command(update,context):
         cid,_,_=await runtime.ingest(scope.chat_id,update.effective_user.id,'','control:'+uuid.uuid4().hex,mode,origin=Origin.SYSTEM,event_kind='system',addressed_to_arti=False)
         await runtime.set_authority(cid,'active')
     policy,_=await runtime.groups.policies.get(scope.chat_id,scope.topic_id)
-    await update.effective_message.reply_text(f'Сохранено: {policy.mode}, {policy.execution}. Полная видимость: {policy.full_visibility}.')
+    await update.effective_message.reply_text('Сохранено. '+policy_status(policy,runtime.clock()))
 
 
 async def quiet_command(update,context):

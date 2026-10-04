@@ -1,5 +1,5 @@
 {
-  "version": "group-load-2026-09-30.1",
+  "version": "group-load-2026-10-04.2",
   "messages": 1000,
   "participants": 40,
   "topics": 5,
@@ -15,11 +15,11 @@
     "cancelled": 500,
     "abstained": 12
   },
-  "ingest_p50_ms": 7.34,
-  "ingest_p95_ms": 13.96,
-  "seconds": 12.87,
+  "ingest_p50_ms": 12.29,
+  "ingest_p95_ms": 18.27,
+  "seconds": 21.31,
   "working_database_mutated": false,
   "real_history_used": false,
-  "cost_measurement": "Offline; no actual API cost. Separate live report contains provider usage.",
+  "cost_measurement": "Offline recorded judge; actual provider latency and cost are not measured.",
   "passed": true
 }
