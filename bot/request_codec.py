@@ -31,7 +31,9 @@ TELEGRAM_TYPES = frozenset(('Message', 'ReplyParameters', 'MessageEntity', 'Inpu
     'ForceReply', 'LinkPreviewOptions', 'ReactionTypeEmoji', 'ReactionTypeCustomEmoji'))
 TURN_EXTRA = ('supporting_event_ids', 'group_candidate_id', 'group_lease_token',
               'group_policy_revision', 'group_frame_revision', 'preferences', 'retrieval_diagnostics', 'private_memory_ids',
-              'task_serious', 'expression_pending', 'expression_frozen', 'expression_support_event_ids')
+              'task_serious', 'expression_pending', 'expression_frozen', 'expression_support_event_ids',
+              'group_context_source_ids', 'group_context_event_ids', 'group_understanding_generation',
+              'group_context_manifest', 'group_context_revision')
 
 
 def _bounded(value):
@@ -222,6 +224,8 @@ async def _restore_turn(data):
         support=data.get('supporting_event_ids',[])
         if support and await conn.fetchval('SELECT count(*) FROM cognitive_events WHERE context_id=$1 AND id=ANY($2::bigint[]) AND suppressed_at IS NULL',data['context_id'],support)!=len(set(support)): raise SuppressedEvidence()
         await runtime._validate_current_scene(conn,data['context_id'])
+    if turn.event.audience.kind in ('group','topic'):
+        await runtime.groups.validate_context(turn)
     return turn
 
 

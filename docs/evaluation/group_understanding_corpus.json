@@ -1,0 +1,721 @@
+{
+  "schema_version": "public-conversation-v1",
+  "fixture_sha256": "ff807a41d47b5bbe6b2507c8b5cfb8dfb8b9dd692e0cef57afe6cb43f1e5c824",
+  "evaluation_layer": "offline_recorded_output_contract",
+  "output_provenance": "hand_authored_synthetic_recordings",
+  "limitation": "Hand-authored synthetic semantic outputs replayed through deterministic validation; live-model semantic accuracy, real conversation quality, persistence and runtime delivery are not evaluated.",
+  "semantic_model_quality_assessed": false,
+  "human_ratings": false,
+  "live_provider_calls": 0,
+  "telegram_calls": 0,
+  "production_data_used": false,
+  "episodes": 30,
+  "passed": 30,
+  "adversarial_cases": 18,
+  "adversarial_passed": 18,
+  "mocked_calls": 48,
+  "tag_totals": {
+    "interleaved_topics": {
+      "passed": 16,
+      "total": 16
+    },
+    "paraphrase_no_overlap": {
+      "passed": 3,
+      "total": 3
+    },
+    "replyless": {
+      "passed": 6,
+      "total": 6
+    },
+    "implicit_request": {
+      "passed": 4,
+      "total": 4
+    },
+    "no_question_mark": {
+      "passed": 2,
+      "total": 2
+    },
+    "known_addressee": {
+      "passed": 2,
+      "total": 2
+    },
+    "ambiguous_addressee": {
+      "passed": 3,
+      "total": 3
+    },
+    "uncertainty": {
+      "passed": 5,
+      "total": 5
+    },
+    "quote": {
+      "passed": 1,
+      "total": 1
+    },
+    "reported_attribution": {
+      "passed": 3,
+      "total": 3
+    },
+    "commitment": {
+      "passed": 4,
+      "total": 4
+    },
+    "decision": {
+      "passed": 1,
+      "total": 1
+    },
+    "no_consensus": {
+      "passed": 2,
+      "total": 2
+    },
+    "proposal": {
+      "passed": 2,
+      "total": 2
+    },
+    "different_actor_update": {
+      "passed": 3,
+      "total": 3
+    },
+    "own_acceptance": {
+      "passed": 1,
+      "total": 1
+    },
+    "exact_actor": {
+      "passed": 5,
+      "total": 5
+    },
+    "rhetorical": {
+      "passed": 2,
+      "total": 2
+    },
+    "open_question": {
+      "passed": 2,
+      "total": 2
+    },
+    "resolution": {
+      "passed": 4,
+      "total": 4
+    },
+    "same_actor_update": {
+      "passed": 5,
+      "total": 5
+    },
+    "late_correction": {
+      "passed": 2,
+      "total": 2
+    },
+    "reopened": {
+      "passed": 2,
+      "total": 2
+    },
+    "refusal": {
+      "passed": 2,
+      "total": 2
+    },
+    "low_confidence": {
+      "passed": 1,
+      "total": 1
+    },
+    "truncation": {
+      "passed": 1,
+      "total": 1
+    },
+    "bot": {
+      "passed": 1,
+      "total": 1
+    },
+    "attribution_spoof": {
+      "passed": 2,
+      "total": 2
+    },
+    "anonymous": {
+      "passed": 1,
+      "total": 1
+    },
+    "reply_metadata": {
+      "passed": 1,
+      "total": 1
+    },
+    "unicode_evidence": {
+      "passed": 1,
+      "total": 1
+    },
+    "word_collision": {
+      "passed": 1,
+      "total": 1
+    },
+    "invalid_initial_status": {
+      "passed": 1,
+      "total": 1
+    }
+  },
+  "records": [
+    {
+      "id": "en_interleaved_paraphrase",
+      "name": "Semantic continuation skips an unrelated nearest turn",
+      "language": "en",
+      "tags": [
+        "interleaved_topics",
+        "paraphrase_no_overlap",
+        "replyless"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "ru_interleaved_paraphrase",
+      "name": "Возврат к старой теме другими словами",
+      "language": "ru",
+      "tags": [
+        "interleaved_topics",
+        "paraphrase_no_overlap",
+        "replyless"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "en_implicit_need",
+      "name": "An unmet need is a question without question punctuation",
+      "language": "en",
+      "tags": [
+        "implicit_request",
+        "no_question_mark",
+        "interleaved_topics"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "ru_implicit_need",
+      "name": "Нужна информация без вопросительного знака",
+      "language": "ru",
+      "tags": [
+        "implicit_request",
+        "no_question_mark",
+        "interleaved_topics"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "en_known_addressee",
+      "name": "Replyless request has a named prior speaker",
+      "language": "en",
+      "tags": [
+        "replyless",
+        "known_addressee",
+        "implicit_request"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "ru_known_addressee",
+      "name": "Просьба названному участнику без reply",
+      "language": "ru",
+      "tags": [
+        "replyless",
+        "known_addressee",
+        "implicit_request"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "en_ambiguous_addressee",
+      "name": "Two plausible exports leave a replyless request unresolved",
+      "language": "en",
+      "tags": [
+        "replyless",
+        "ambiguous_addressee",
+        "uncertainty"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "ru_ambiguous_pronoun",
+      "name": "Неясное это не привязывается к ближайшей теме",
+      "language": "ru",
+      "tags": [
+        "replyless",
+        "ambiguous_addressee",
+        "uncertainty",
+        "interleaved_topics"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "en_quoted_commitment",
+      "name": "Quoted first-person promise is not the reporter’s commitment",
+      "language": "en",
+      "tags": [
+        "quote",
+        "reported_attribution",
+        "commitment"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "ru_reported_decision",
+      "name": "Пересказ чужого решения остаётся пересказом",
+      "language": "ru",
+      "tags": [
+        "reported_attribution",
+        "decision",
+        "no_consensus"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "en_proposal_not_consensus",
+      "name": "A proposal and another person’s own acceptance do not become group agreement",
+      "language": "en",
+      "tags": [
+        "proposal",
+        "no_consensus",
+        "different_actor_update"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "ru_own_acceptance",
+      "name": "Автор принимает своё предложение после обсуждения",
+      "language": "ru",
+      "tags": [
+        "proposal",
+        "own_acceptance",
+        "interleaved_topics"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "en_assignment_vs_commitment",
+      "name": "Assignment claims do not bind the named person",
+      "language": "en",
+      "tags": [
+        "commitment",
+        "reported_attribution",
+        "exact_actor"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "ru_own_commitment",
+      "name": "Собственное обещание отделено от поручения другому",
+      "language": "ru",
+      "tags": [
+        "commitment",
+        "exact_actor",
+        "interleaved_topics"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "en_rhetorical_and_open",
+      "name": "Rhetorical complaint and genuine unresolved question differ",
+      "language": "en",
+      "tags": [
+        "rhetorical",
+        "open_question",
+        "interleaved_topics"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "ru_rhetorical",
+      "name": "Риторический вопрос не создаёт открытое поручение",
+      "language": "ru",
+      "tags": [
+        "rhetorical",
+        "interleaved_topics"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "en_other_answer_not_resolution",
+      "name": "An answer cannot close another participant’s question",
+      "language": "en",
+      "tags": [
+        "open_question",
+        "different_actor_update",
+        "resolution"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "ru_asker_resolution",
+      "name": "Явное закрытие вопроса его автором",
+      "language": "ru",
+      "tags": [
+        "resolution",
+        "same_actor_update",
+        "interleaved_topics"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "en_late_correction",
+      "name": "A late same-speaker correction supersedes a personal decision",
+      "language": "en",
+      "tags": [
+        "late_correction",
+        "same_actor_update",
+        "interleaved_topics"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "ru_resolved_then_reopened",
+      "name": "Позднее переоткрытие уже закрытого вопроса",
+      "language": "ru",
+      "tags": [
+        "reopened",
+        "same_actor_update",
+        "late_correction",
+        "interleaved_topics"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "en_refusal_survives_noise",
+      "name": "Refused work stays refused after another person assumes it resumed",
+      "language": "en",
+      "tags": [
+        "refusal",
+        "different_actor_update",
+        "interleaved_topics"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "ru_refusal_explicit_reopen",
+      "name": "Отказ отменяется только явным решением самого участника",
+      "language": "ru",
+      "tags": [
+        "refusal",
+        "reopened",
+        "same_actor_update",
+        "interleaved_topics"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "en_low_confidence",
+      "name": "Low confidence loses concrete routing and outcome claims",
+      "language": "en",
+      "tags": [
+        "uncertainty",
+        "low_confidence",
+        "ambiguous_addressee"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "ru_truncated_qualification",
+      "name": "Обрезанная оговорка не доказывает принятое обязательство",
+      "language": "ru",
+      "tags": [
+        "truncation",
+        "uncertainty",
+        "commitment"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "en_bot_author_spoof",
+      "name": "A bot’s completion claim cannot speak as a human",
+      "language": "en",
+      "tags": [
+        "bot",
+        "exact_actor",
+        "attribution_spoof"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "ru_anonymous_spoof",
+      "name": "Анонимная публикация не принимает решение за человека",
+      "language": "ru",
+      "tags": [
+        "anonymous",
+        "exact_actor",
+        "attribution_spoof"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "en_wrong_reply_topic",
+      "name": "Semantic meaning can contradict accidental reply metadata",
+      "language": "en",
+      "tags": [
+        "reply_metadata",
+        "interleaved_topics",
+        "paraphrase_no_overlap"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "ru_unicode_evidence",
+      "name": "Unicode code points preserve emoji and combining-mark evidence",
+      "language": "ru",
+      "tags": [
+        "unicode_evidence",
+        "same_actor_update",
+        "resolution"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "en_same_words_different_topics",
+      "name": "Shared vocabulary does not merge independent meanings",
+      "language": "en",
+      "tags": [
+        "word_collision",
+        "interleaved_topics",
+        "exact_actor"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "en_origin_cannot_claim_future",
+      "name": "An origin label cannot invent a later resolution",
+      "language": "en",
+      "tags": [
+        "invalid_initial_status",
+        "uncertainty",
+        "resolution"
+      ],
+      "passed": true,
+      "mismatches": [],
+      "packet_passed": true,
+      "mocked_calls": 1
+    }
+  ],
+  "adversarial_records": [
+    {
+      "id": "invented_quote",
+      "episode_id": "en_implicit_need",
+      "expected": "rejected",
+      "passed": true,
+      "rejected": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "invented_source",
+      "episode_id": "en_implicit_need",
+      "expected": "rejected",
+      "passed": true,
+      "rejected": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "wrong_existing_source",
+      "episode_id": "en_implicit_need",
+      "expected": "rejected",
+      "passed": true,
+      "rejected": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "negative_quote_start",
+      "episode_id": "en_implicit_need",
+      "expected": "rejected",
+      "passed": true,
+      "rejected": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "boolean_quote_start",
+      "episode_id": "en_implicit_need",
+      "expected": "rejected",
+      "passed": true,
+      "rejected": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "quote_end_beyond_source",
+      "episode_id": "en_implicit_need",
+      "expected": "rejected",
+      "passed": true,
+      "rejected": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "empty_evidence",
+      "episode_id": "en_implicit_need",
+      "expected": "rejected",
+      "passed": true,
+      "rejected": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "non_integer_actor",
+      "episode_id": "en_known_addressee",
+      "expected": "rejected",
+      "passed": true,
+      "rejected": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "invented_actor",
+      "episode_id": "en_known_addressee",
+      "expected": "rejected",
+      "passed": true,
+      "rejected": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "uncited_existing_addressee",
+      "episode_id": "en_known_addressee",
+      "expected": "rejected",
+      "passed": true,
+      "rejected": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "future_link_target",
+      "episode_id": "en_known_addressee",
+      "expected": "rejected",
+      "passed": true,
+      "rejected": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "update_origin_reused",
+      "episode_id": "ru_resolved_then_reopened",
+      "expected": "rejected",
+      "passed": true,
+      "rejected": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "out_of_order_updates",
+      "episode_id": "ru_resolved_then_reopened",
+      "expected": "rejected",
+      "passed": true,
+      "rejected": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "foreign_update_evidence",
+      "episode_id": "ru_resolved_then_reopened",
+      "expected": "rejected",
+      "passed": true,
+      "rejected": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "consensus_permission_injection",
+      "episode_id": "en_proposal_not_consensus",
+      "expected": "rejected",
+      "passed": true,
+      "rejected": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "prior_summary_injection",
+      "episode_id": "en_proposal_not_consensus",
+      "expected": "rejected",
+      "passed": true,
+      "rejected": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "unicode_normalized_quote",
+      "episode_id": "ru_unicode_evidence",
+      "expected": "rejected",
+      "passed": true,
+      "rejected": true,
+      "mocked_calls": 1
+    },
+    {
+      "id": "utf16_offset_used_as_codepoints",
+      "episode_id": "ru_unicode_evidence",
+      "expected": "rejected",
+      "passed": true,
+      "rejected": true,
+      "mocked_calls": 1
+    }
+  ]
+}

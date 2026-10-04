@@ -79,6 +79,11 @@ async def _send_with_receipt(method,args,kwargs,channel):
             raise DeliverySuppressed()
         if turn.event.audience.kind in ('group','topic') and not await conn.fetchval('SELECT enabled FROM response_status WHERE chat_id=$1 FOR SHARE',chat_id):
             raise DeliverySuppressed()
+        if turn.event.audience.kind in ('group','topic'):
+            try:
+                await runtime.groups.validate_context(turn,connection=conn)
+            except SuppressedEvidence:
+                raise DeliverySuppressed() from None
         if public_ids:
             allowed,_ = await runtime.public_memory.validate(turn.context_id,turn.event.context,public_ids,runtime.clock(),
                 requester=turn.event.evidence.owner_id,expected_epoch=turn.epoch,connection=conn)
@@ -245,8 +250,13 @@ async def _confirm_transaction(turn,row,receipt,messages,text,channel):
                                        sender_kind='bot',directed=True,is_bot=True,addressed_elsewhere=False)
                     await conn.execute('''INSERT INTO group_observations(context_id,event_id,message_id,owner_id,payload,observed_at)
                         VALUES($1,$2,$3,$4,$5::jsonb,$6) ON CONFLICT(context_id,message_id) DO NOTHING''',cid,eid,actual_id,event.evidence.owner_id,dump(scope_payload),at)
-                    await conn.execute('''INSERT INTO group_topic_runtime(context_id,revision) VALUES($1,1)
-                        ON CONFLICT(context_id) DO UPDATE SET revision=group_topic_runtime.revision+1''',cid)
+                    prior_revision=await conn.fetchval('SELECT revision FROM group_topic_runtime WHERE context_id=$1',cid)
+                    receipt_revision=await conn.fetchval('''INSERT INTO group_topic_runtime(context_id,revision) VALUES($1,1)
+                        ON CONFLICT(context_id) DO UPDATE SET revision=group_topic_runtime.revision+1 RETURNING revision''',cid)
+                    # Further parts of this same response can use its own known
+                    # receipt; never advance past intervening human context.
+                    if getattr(turn,'group_context_revision',None)==prior_revision:
+                        turn.group_context_revision=receipt_revision
     return changed
 
 

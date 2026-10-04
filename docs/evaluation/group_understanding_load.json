@@ -1,0 +1,32 @@
+{
+  "version": "group-load-2026-10-04.2",
+  "messages": 1000,
+  "participants": 40,
+  "topics": 5,
+  "peak_pending_candidates": 128,
+  "peak_frame_messages": 64,
+  "peak_branches": 2,
+  "peak_questions": 16,
+  "recorded_assessments": 12,
+  "reserved_attempts": 12,
+  "provider_calls": 0,
+  "telegram_calls": 0,
+  "candidate_statuses": {
+    "cancelled": 500,
+    "abstained": 12
+  },
+  "ingest_p50_ms": 25.25,
+  "ingest_p95_ms": 62.24,
+  "seconds": 59.55,
+  "working_database_mutated": false,
+  "real_history_used": false,
+  "cost_measurement": "Offline recorded judge; actual provider latency and cost are not measured.",
+  "passed": true,
+  "understanding_recorded_calls": 30,
+  "understanding_committed_batches": 30,
+  "understanding_quota_per_context": 6,
+  "understanding_pending_observations": 280,
+  "understanding_peak_input_sources": 24,
+  "understanding_peak_lineage": 168,
+  "understanding_quality_assessed": false
+}

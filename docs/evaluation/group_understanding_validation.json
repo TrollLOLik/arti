@@ -1,0 +1,104 @@
+{
+  "version": "group-understanding-2026-10-04.1",
+  "base_commit": "b9bf0a7f6c4fe382f8d370dd5c88eb103687fedb",
+  "branch": "codex/group-conversation-understanding",
+  "source_fingerprint_sha256": "b0fb8ec0081ecfe0a738d0a3bf115b0ebc01c74b18e83315c2ac92c7bba63f3b",
+  "source_file_count": 613,
+  "fingerprint_scope": "All Git tracked and untracked nonignored files, excluding docs/ only; source/tests/fixtures/tools included",
+  "source_unchanged_after_frozen_aggregate": true,
+  "full_aggregate": {
+    "model_version": "cognition-2026-09-30.4",
+    "tests": 1282,
+    "passed": 1282,
+    "failures": [],
+    "errors": [],
+    "skipped": [],
+    "duration_seconds": 552.3362799949991,
+    "database": "disposable arti_cognition_test_<uuid>",
+    "provider_calls": 0,
+    "working_database_mutated": false
+  },
+  "full_aggregate_report": "docs/evaluation/automated_tests_full.json",
+  "new_regression_count": 145,
+  "new_suites": {
+    "schema_and_model": 67,
+    "store": 29,
+    "integration": 27,
+    "evaluation": 22
+  },
+  "corpus": {
+    "episodes": 30,
+    "passed": 30,
+    "adversarial_cases": 18,
+    "adversarial_passed": 18,
+    "report": "docs/evaluation/group_understanding_corpus.json",
+    "layer": "authored semantic outputs replayed through deterministic validation",
+    "semantic_model_quality_assessed": false
+  },
+  "independent_reviews": [
+    {
+      "scope": "source privacy, deletion, provenance, dispatch, race and restart safety",
+      "remaining_blockers": 0
+    },
+    {
+      "scope": "conversation lifecycle, arbitration, final prompt budgeting and bounded state",
+      "remaining_blockers": 0
+    }
+  ],
+  "environment": {
+    "python": "3.12",
+    "database": "disposable PostgreSQL 17",
+    "non_loopback_network": "blocked by test guard",
+    "dotenv_loading": false,
+    "live_provider_calls": 0,
+    "live_telegram_calls": 0,
+    "production_database_used": false,
+    "real_history_used": false
+  },
+  "excluded_paths_unchanged": [
+    "videotrans/",
+    "tests/videotrans/"
+  ],
+  "unchanged_videotrans_tests": 24,
+  "limitations": [
+    "No live-model semantic quality or naturalness rating.",
+    "At most six 24-new-source batches per context per rolling hour; failures also spend quota and active groups may remain behind.",
+    "Working memory and provider packets are bounded; whole-item capacity omissions, source gaps and lineage-cap reset remain explicit.",
+    "Participant actors/addressee IDs are human-only; bot sources may be reply targets but no arbitrary own-promise executor is added.",
+    "Already-started external requests cannot be recalled; final guards prevent subsequent stale reuse."
+  ],
+  "synthetic_load": {
+    "version": "group-load-2026-10-04.2",
+    "messages": 1000,
+    "participants": 40,
+    "topics": 5,
+    "peak_pending_candidates": 128,
+    "peak_frame_messages": 64,
+    "peak_branches": 2,
+    "peak_questions": 16,
+    "recorded_assessments": 12,
+    "reserved_attempts": 12,
+    "provider_calls": 0,
+    "telegram_calls": 0,
+    "candidate_statuses": {
+      "cancelled": 500,
+      "abstained": 12
+    },
+    "ingest_p50_ms": 25.25,
+    "ingest_p95_ms": 62.24,
+    "seconds": 59.55,
+    "working_database_mutated": false,
+    "real_history_used": false,
+    "cost_measurement": "Offline recorded judge; actual provider latency and cost are not measured.",
+    "passed": true,
+    "understanding_recorded_calls": 30,
+    "understanding_committed_batches": 30,
+    "understanding_quota_per_context": 6,
+    "understanding_pending_observations": 280,
+    "understanding_peak_input_sources": 24,
+    "understanding_peak_lineage": 168,
+    "understanding_quality_assessed": false,
+    "report": "docs/evaluation/group_understanding_load.json",
+    "run_condition": "separate final run after frozen aggregate completed"
+  }
+}
