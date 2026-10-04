@@ -156,9 +156,14 @@ async def generate_response_stream(
     if memory_context:
         from cognition.prompting import MEMORY_GUIDANCE
         actual_role += '\n\n'+MEMORY_GUIDANCE
-    final_prompt, prompt_report = assemble_prompt(actual_role,prompt,chat_context,memory_context,model=model)
     from cognition.runtime import CURRENT_TURN
     cognitive_turn = CURRENT_TURN.get()
+    if cognitive_turn is not None and cognitive_turn.uses_cognition:
+        from cognition.retrieval import retrieval_guidance
+        guidance = retrieval_guidance(getattr(cognitive_turn,'retrieval_diagnostics',{}))
+        if guidance:
+            actual_role += '\n\n'+guidance
+    final_prompt, prompt_report = assemble_prompt(actual_role,prompt,chat_context,memory_context,model=model)
     if cognitive_turn is not None and cognitive_turn.active:
         # Record only complete source objects surviving the final prompt budget.
         import json

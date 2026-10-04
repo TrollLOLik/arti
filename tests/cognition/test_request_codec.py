@@ -89,12 +89,16 @@ class CodecTests(unittest.IsolatedAsyncioTestCase):
         runtime=SimpleNamespace(pool=SimpleNamespace(acquire=lambda:acquired),_validate_current_scene=AsyncMock())
         turn=PreparedTurn(runtime,1,2,ev,expression(initial_state(ev.context,at)),'remembered',3,'active')
         turn.supporting_event_ids=[2]; turn.send_ordinal=4
+        turn.retrieval_diagnostics={'status':'incomplete','indexed_chunks':8,'total_chunks':48}
+        turn.private_memory_ids=[7,9]
         wire=await encode_value(turn)
         self.assertNotIn('current source',str(wire))
         with patch('cognition.runtime.get_runtime',return_value=runtime):
             restored=await decode_value(wire)
             self.assertEqual(restored.event.text,'current source')
             self.assertEqual(restored.send_ordinal,4); self.assertEqual(restored.supporting_event_ids,[2])
+            self.assertEqual(restored.retrieval_diagnostics,turn.retrieval_diagnostics)
+            self.assertEqual(restored.private_memory_ids,[7,9])
             row['suppression_epoch']=4
             with self.assertRaises(SuppressedEvidence): await decode_value(wire)
             row['suppression_epoch']=3; conn.fetchrow.return_value=None

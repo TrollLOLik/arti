@@ -18,6 +18,8 @@ from cognition.situations import Situation,goal_transition
 from cognition.types import MODEL_VERSION,Origin,utc
 from cognition.repositories import SuppressedEvidence,StaleRevision
 from cognition.semantic import query_terms,trace_names,retrieval_signals
+from cognition.retrieval import RetrievalResult
+from asyncpg import QueryCanceledError
 
 EMBEDDING_VERSION = 'arti-subword-192-v1'
 
@@ -210,12 +212,20 @@ class MemoryRepository:
             rows = await conn.fetch('''SELECT a.* FROM cognitive_artifacts a WHERE context_id=$1
                 AND NOT (SELECT rebuilding FROM cognitive_contexts WHERE id=$1)
                 AND (owner_id IS NULL OR owner_id=$2) AND suppressed_at IS NULL AND payload IS NOT NULL
+                AND (kind!='trace' OR owner_id IS NOT DISTINCT FROM $2)
                 AND model_version=$3 AND ($4::text IS NULL OR kind=$4)
                 AND projection_epoch=(SELECT suppression_epoch FROM cognitive_contexts WHERE id=$1)
-                AND NOT EXISTS (SELECT 1 FROM cognitive_provenance p JOIN cognitive_events e ON e.id=p.source_event_id
-                    WHERE p.artifact_id=a.id AND e.suppressed_at IS NOT NULL)
+                AND NOT EXISTS (WITH RECURSIVE dependencies(id) AS (
+                    SELECT p.source_event_id FROM cognitive_provenance p WHERE p.context_id=a.context_id AND p.artifact_id=a.id
+                    UNION SELECT d.source_event_id FROM cognitive_event_dependencies d JOIN dependencies previous ON previous.id=d.event_id
+                        WHERE d.context_id=a.context_id)
+                    SELECT 1 FROM dependencies d LEFT JOIN cognitive_events e ON e.context_id=a.context_id AND e.id=d.id
+                    WHERE e.id IS NULL OR e.suppressed_at IS NOT NULL OR e.payload IS NULL OR e.owner_id IS DISTINCT FROM a.owner_id)
+                AND (a.kind!='trace' OR EXISTS(SELECT 1 FROM cognitive_events e WHERE e.context_id=a.context_id
+                    AND e.id::text=a.payload->>'event_id' AND e.source_id=a.payload->>'source_id'
+                    AND e.owner_id IS NOT DISTINCT FROM a.owner_id AND e.suppressed_at IS NULL AND e.payload IS NOT NULL))
                 ORDER BY CASE WHEN $6::text IS NULL THEN 0 ELSE
-                    ts_rank(to_tsvector('russian',coalesce(payload->>'gist','')),websearch_to_tsquery('russian',$6))
+                    ts_rank(to_tsvector('russian',arti_memory_search_text(coalesce(payload->>'gist',''))),websearch_to_tsquery('russian',arti_memory_search_text($6)))
                     + CASE WHEN payload->>'gist' ILIKE '%' || $6 || '%' THEN 1 ELSE 0 END END DESC,a.id DESC
                 LIMIT $5''',cid,owner,MODEL_VERSION,kind,min(2000,limit),search)
         return [{**dict(r),'payload':object_value(r['payload'])} for r in rows]
@@ -237,14 +247,18 @@ class MemoryRepository:
                 AND a.suppressed_at IS NULL AND a.payload IS NOT NULL
                 AND NOT c.rebuilding AND a.projection_epoch=c.suppression_epoch
                 AND EXISTS(SELECT 1 FROM cognitive_provenance p WHERE p.artifact_id=a.id)
-                AND NOT EXISTS(SELECT 1 FROM cognitive_provenance p JOIN cognitive_events e ON e.id=p.source_event_id
-                    WHERE p.artifact_id=a.id AND (e.suppressed_at IS NOT NULL OR e.payload IS NULL)))
+                AND NOT EXISTS(WITH RECURSIVE dependencies(id) AS (
+                    SELECT p.source_event_id FROM cognitive_provenance p WHERE p.context_id=a.context_id AND p.artifact_id=a.id
+                    UNION SELECT d.source_event_id FROM cognitive_event_dependencies d JOIN dependencies previous ON previous.id=d.event_id
+                        WHERE d.context_id=a.context_id)
+                    SELECT 1 FROM dependencies d LEFT JOIN cognitive_events e ON e.context_id=a.context_id AND e.id=d.id
+                    WHERE e.id IS NULL OR e.suppressed_at IS NOT NULL OR e.payload IS NULL OR e.owner_id IS DISTINCT FROM a.owner_id))
                 SELECT a.*, CASE WHEN a.payload->>'source_id'=ANY($4::text[]) OR EXISTS(
                     SELECT 1 FROM allowed h WHERE h.kind='belief_version' AND h.payload->>'source_id'=ANY($4::text[])
                     AND h.payload->'subject'=a.payload->'subject' AND h.payload->>'predicate'=a.payload->>'predicate'
                     AND h.payload->>'condition'=a.payload->>'condition') THEN 1.0 ELSE 0.0 END
-                    + ts_rank(to_tsvector('russian',concat_ws(' ',a.payload->>'predicate',a.payload->>'value',
-                        a.payload->>'condition',a.payload->'source_span'->>'text')),websearch_to_tsquery('russian',$5)) AS query_rank
+                    + ts_rank(to_tsvector('russian',arti_memory_search_text(concat_ws(' ',a.payload->>'predicate',a.payload->>'value',
+                        a.payload->>'condition',a.payload->'source_span'->>'text'))),websearch_to_tsquery('russian',arti_memory_search_text($5))) AS query_rank
                 FROM allowed a WHERE a.kind='belief' AND a.payload->>'status'='current'
                 ORDER BY query_rank DESC,a.id DESC LIMIT $6""",cid,owner,MODEL_VERSION,sources,search,min(64,limit))
             selected = [{**dict(r),'payload':object_value(r['payload'])} for r in rows if r['query_rank']>0]
@@ -253,8 +267,12 @@ class MemoryRepository:
                 AND a.model_version=$3 AND a.suppressed_at IS NULL AND a.payload IS NOT NULL
                 AND NOT c.rebuilding AND a.projection_epoch=c.suppression_epoch
                 AND a.payload->>'source_id'=ANY($4::text[])
-                AND NOT EXISTS(SELECT 1 FROM cognitive_provenance p JOIN cognitive_events e ON e.id=p.source_event_id
-                    WHERE p.artifact_id=a.id AND (e.suppressed_at IS NOT NULL OR e.payload IS NULL))
+                AND NOT EXISTS(WITH RECURSIVE dependencies(id) AS (
+                    SELECT p.source_event_id FROM cognitive_provenance p WHERE p.context_id=a.context_id AND p.artifact_id=a.id
+                    UNION SELECT d.source_event_id FROM cognitive_event_dependencies d JOIN dependencies previous ON previous.id=d.event_id
+                        WHERE d.context_id=a.context_id)
+                    SELECT 1 FROM dependencies d LEFT JOIN cognitive_events e ON e.context_id=a.context_id AND e.id=d.id
+                    WHERE e.id IS NULL OR e.suppressed_at IS NOT NULL OR e.payload IS NULL OR e.owner_id IS DISTINCT FROM a.owner_id)
                 ORDER BY a.id DESC LIMIT 128""",cid,owner,MODEL_VERSION,sources)
         for recollection in recollections:
             updates = []
@@ -272,59 +290,89 @@ class MemoryRepository:
         return selected
 
     async def candidates(self,cid,owner,query,limit=512):
-        rows = await self.artifacts(cid,owner,'trace',limit=limit,query=query)
-        # Raw-source lexical windows also cover old prefix-only traces when the
-        # optional local encoder is unavailable. SQL ranks before the bounded read.
+        from cognition.source_chunks import lexical_windows,chunk_trace
+        diagnostics = dict(status='unavailable',semantic_status='unavailable',lexical_status='complete',scope='private')
+        rows = []
+        try:
+            async with asyncio.timeout(.5):
+                rows = await self.artifacts(cid,owner,'trace',limit=limit,query=query)
+        except (TimeoutError,QueryCanceledError):
+            diagnostics['lexical_status'] = 'timeout'
+        # Full-source FTS remains useful while background semantic coverage is
+        # incomplete. Excerpt positions use the SAME PostgreSQL stemmer, never
+        # an exact substring that can silently return an unrelated source prefix.
         search = ' OR '.join(sorted(query_terms(query)))
         if search:
-            sources = []
             try:
-                async with asyncio.timeout(.5),self.pool.acquire() as conn:
+                async with asyncio.timeout(.5),self.pool.acquire() as conn,conn.transaction():
+                    await conn.execute("SET LOCAL statement_timeout = '450ms'")
                     sources = await conn.fetch("""SELECT a.*,e.payload AS source_payload FROM cognitive_artifacts a
                         JOIN cognitive_contexts c ON c.id=a.context_id
                         JOIN cognitive_events e ON e.context_id=a.context_id AND e.id=(a.payload->>'event_id')::bigint
                         WHERE a.context_id=$1 AND a.owner_id IS NOT DISTINCT FROM $2 AND e.owner_id IS NOT DISTINCT FROM $2
                         AND a.kind='trace' AND a.model_version=$3 AND a.suppressed_at IS NULL AND a.payload IS NOT NULL
                         AND e.suppressed_at IS NULL AND e.payload IS NOT NULL AND e.source_id=a.payload->>'source_id'
-                        AND NOT c.rebuilding AND a.projection_epoch=c.suppression_epoch
+                        AND c.authority='active' AND NOT c.rebuilding AND a.projection_epoch=c.suppression_epoch
                         AND length(e.payload->>'text')>420
-                        AND to_tsvector('russian',e.payload->>'text') @@ websearch_to_tsquery('russian',$4)
-                        AND NOT EXISTS(SELECT 1 FROM cognitive_provenance p JOIN cognitive_events z ON z.id=p.source_event_id
-                            WHERE p.artifact_id=a.id AND (z.suppressed_at IS NOT NULL OR z.payload IS NULL))
-                        ORDER BY ts_rank(to_tsvector('russian',e.payload->>'text'),websearch_to_tsquery('russian',$4)) DESC,a.id DESC LIMIT 32""",cid,owner,MODEL_VERSION,search)
-            except TimeoutError:
-                pass  # Optional raw-source fallback must not hold up the reply.
-            from cognition.source_chunks import source_chunks,chunk_trace
-            merged = {r['id']:r for r in rows}
-            for row in sources:
-                source = object_value(row['source_payload'])['text']
-                chunks = source_chunks(source)
-                # Exact-term lookup can reach gaps between bounded semantic
-                # windows for maximum-length inputs, without returning the source.
-                lowered = source.casefold()
-                for word in query_terms(query):
-                    position = lowered.find(word)
-                    if position>=0:
-                        start=max(0,position-160); end=min(len(source),start+640)
-                        chunks.append((start,end,source[start:end]))
-                start,end,_ = max(chunks,key=lambda c:len(query_terms(query)&query_terms(c[2])))
-                item={k:v for k,v in dict(row).items() if k!='source_payload'}
-                item['payload']=chunk_trace(object_value(row['payload']),source,start,end)
-                source_event=object_value(row['source_payload'])
-                item['payload']['author_id']='arti' if source_event['evidence']['origin']=='delivered_action' else source_event.get('actor_id')
-                item['payload']['audience']=source_event.get('audience')
-                merged[row['id']]=item
-            rows=list(merged.values())
+                        AND to_tsvector('russian',arti_memory_search_text(e.payload->>'text')) @@ websearch_to_tsquery('russian',arti_memory_search_text($4))
+                        AND NOT EXISTS(WITH RECURSIVE dependencies(id) AS (
+                            SELECT p.source_event_id FROM cognitive_provenance p WHERE p.context_id=a.context_id AND p.artifact_id=a.id
+                            UNION SELECT d.source_event_id FROM cognitive_event_dependencies d JOIN dependencies previous ON previous.id=d.event_id
+                                WHERE d.context_id=a.context_id)
+                            SELECT 1 FROM dependencies d LEFT JOIN cognitive_events z ON z.context_id=a.context_id AND z.id=d.id
+                            WHERE z.id IS NULL OR z.suppressed_at IS NOT NULL OR z.payload IS NULL OR z.owner_id IS DISTINCT FROM a.owner_id)
+                        ORDER BY ts_rank(to_tsvector('russian',arti_memory_search_text(e.payload->>'text')),websearch_to_tsquery('russian',arti_memory_search_text($4))) DESC,a.id DESC LIMIT 32""",cid,owner,MODEL_VERSION,search)
+                    for row in sources:
+                        trace = object_value(row['payload'])
+                        event = object_value(row['source_payload'])
+                        source = event['text']
+                        # A name by itself cannot make an unrelated event relevant.
+                        event_words = query_terms(query)-trace_names(trace)
+                        windows = await lexical_windows(conn,source,' OR '.join(sorted(event_words)),limit=3)
+                        if not windows:
+                            continue
+                        rows = [r for r in rows if r['id']!=row['id']]
+                        for start,end,_ in windows:
+                            item={k:v for k,v in dict(row).items() if k!='source_payload'}
+                            item['payload']=chunk_trace(trace,source,start,end)
+                            item['payload']['author_id']='arti' if event['evidence']['origin']=='delivered_action' else event.get('actor_id')
+                            item['payload']['audience']=event.get('audience')
+                            item['lexical_match']=True
+                            rows.append(item)
+            except (TimeoutError,QueryCanceledError):
+                diagnostics['lexical_status']='timeout'
         if self.semantic is not None:
-            # Semantic search spans the permitted ledger, not just recent rows.
             semantic = await self.semantic.search(cid,owner,query)
-            merged = {r['id']:r for r in rows}
-            merged.update({r['id']:r for r in semantic})
-            words = tokens(query)
-            rows = sorted(merged.values(),key=lambda r:-(
-                .55*len(words & tokens(r['payload']['gist']))/max(1,len(words))
-                +.45*r.get('semantic_score',0.)))
-        return rows
+            diagnostics.update(getattr(semantic,'diagnostics',{}))
+            rows.extend(semantic)
+        if diagnostics['lexical_status']=='timeout':
+            diagnostics['status']='timeout'
+        # Keep independent matching passages. Merge only exact duplicates, then
+        # drop overlapping lower-ranked windows and cap each source at three.
+        chunked = {r['id'] for r in rows if r['payload'].get('record_start') is not None}
+        rows = [r for r in rows if r['id'] not in chunked or r['payload'].get('record_start') is not None]
+        merged = {}
+        for row in rows:
+            p=row['payload']; identity=(row['id'],p.get('record_start'),p.get('record_end'))
+            if identity in merged:
+                old=merged[identity]
+                row={**old,**row,'semantic_score':max(old.get('semantic_score',0.),row.get('semantic_score',0.)),
+                     'lexical_match':old.get('lexical_match',False) or row.get('lexical_match',False)}
+            merged[identity]=row
+        words=query_terms(query)
+        ranked=sorted(merged.values(),key=lambda r:-(
+            .55*len(words & query_terms(r['payload']['gist']))/max(1,len(words))
+            +.45*r.get('semantic_score',0.)+.25*bool(r.get('lexical_match'))))
+        selected=[]; by_source={}
+        for row in ranked:
+            previous=by_source.setdefault(row['id'],[])
+            start,end=row['payload'].get('record_start'),row['payload'].get('record_end')
+            if previous and (start is None or any(a is None or max(0,min(end,b)-max(start,a))>min(end-start,b-a)*.35 for a,b in previous)):
+                continue
+            if len(previous)>=3:
+                continue
+            previous.append((start,end)); selected.append(row)
+        return RetrievalResult(selected,diagnostics=diagnostics)
 
     async def open_intentions(self,cid,owner,query='',limit=16):
         search = ' OR '.join(sorted(tokens(query)))
@@ -333,7 +381,7 @@ class MemoryRepository:
                 AND NOT (SELECT rebuilding FROM cognitive_contexts WHERE id=$1)
                 AND kind='intention' AND suppressed_at IS NULL AND payload->>'status' IN ('open','reminder')
                 AND model_version=$3 AND projection_epoch=(SELECT suppression_epoch FROM cognitive_contexts WHERE id=$1)
-                ORDER BY ts_rank(to_tsvector('russian',payload->>'description'),websearch_to_tsquery('russian',$4)) DESC,id DESC LIMIT $5""",cid,owner,MODEL_VERSION,search,limit)
+                ORDER BY ts_rank(to_tsvector('russian',arti_memory_search_text(payload->>'description')),websearch_to_tsquery('russian',arti_memory_search_text($4))) DESC,id DESC LIMIT $5""",cid,owner,MODEL_VERSION,search,limit)
         return [{**dict(r),'payload':object_value(r['payload'])} for r in rows]
 
     async def relationship(self,cid,owner):
@@ -342,13 +390,20 @@ class MemoryRepository:
         return value or initial_relationship()
 
     async def retrieve(self,cid,owner,query,at,cycle_key,*,mood=0.,archive=False,limit=8):
+        try:
+            async with asyncio.timeout(4.):
+                return await self._retrieve(cid,owner,query,at,cycle_key,mood=mood,archive=archive,limit=limit)
+        except (TimeoutError,QueryCanceledError):
+            return RetrievalResult(diagnostics=dict(status='timeout',lexical_status='timeout',semantic_status='timeout',scope='private'))
+
+    async def _retrieve(self,cid,owner,query,at,cycle_key,*,mood=0.,archive=False,limit=8):
         at = utc(at)
         if archive:
             return await self.archive_lookup(cid,owner,query,at,cycle_key,limit)
         words = tokens(query)
         qvector = lexical_vector(query)
         traces = await self.candidates(cid,owner,query)
-        topics = Counter(r['payload']['topic'] for r in traces)
+        topics = Counter(r['payload']['topic'] for r in {r['id']:r for r in traces}.values())
         requested_names=query_terms(query) & set().union(*(trace_names(r['payload']) for r in traces))
         candidates = {}
         async with self.pool.acquire() as conn:
@@ -360,6 +415,11 @@ class MemoryRepository:
         for row in traces:
             t = row['payload']
             signals=retrieval_signals(query,t,requested_names=requested_names,semantic_score=row.get('semantic_score',0.))
+            if row.get('lexical_match'):
+                names=trace_names(t)
+                if not (requested_names and names and not names & requested_names):
+                    signals['eligible']=True
+                    signals['lexical']=max(signals['lexical'],.5)
             overlap=signals['lexical']
             vector = max(0.,cosine(qvector,vectors.get(row['id'],[])))
             semantic = row.get('semantic_score',0.)
@@ -383,16 +443,21 @@ class MemoryRepository:
             bias = max(-.05,min(.05,mood*t.get('emotional_valence',0.)*.05))
             score = (max(.55*overlap+.25*vector,.55*semantic+.20*overlap)
                      +.12*signals['topic']+.12*signals['action']+.25*signals['name']+.15*accessible+bias)
-            candidates[row['id']] = dict(row=row,score=score,cue=cue,recollection=recollection,eligible=signals['eligible'])
-        activation = {i:max(0.,v['score']-.2) if v['eligible'] else 0. for i,v in candidates.items()}
+            candidates[(row['id'],t.get('record_start'),t.get('record_end'))] = dict(row=row,score=score,cue=cue,recollection=recollection,eligible=signals['eligible'])
+        # Spreading activation is source-level: several excerpts do not become
+        # independent corroborating memories or multiply a link's weight.
+        activation = {}
+        for item in candidates.values():
+            aid=item['row']['id']
+            activation[aid]=max(activation.get(aid,0.),max(0.,item['score']-.2) if item['eligible'] else 0.)
         for _ in range(2):
             increment = {}
             for link in links:
                 for source,target in ((link['source_id'],link['target_id']),(link['target_id'],link['source_id'])):
                     increment[target] = max(increment.get(target,0.),activation.get(source,0.)*link['weight']*.25)
-            activation = {i:max(activation.get(i,0.),increment.get(i,0.)) for i in candidates}
-            for i,gain in increment.items():
-                candidates[i]['score'] += min(.08,gain)
+            activation = {i:max(value,increment.get(i,0.)) for i,value in activation.items()}
+            for item in candidates.values():
+                item['score'] += min(.08,increment.get(item['row']['id'],0.))
         ranked = sorted(candidates.values(),key=lambda v:(-v['score'],-v['row']['id']))
         selected = [r for r in ranked if r['eligible'] and r['score']>.18][:limit]
         # Reserve one alternative/counterexample from a different emotional context.
@@ -406,33 +471,42 @@ class MemoryRepository:
         await self.record_retrieval(cid,owner,cycle_key,'archive_checked' if archive else 'recalled',[r['row']['id'] for r in selected],at)
         if not archive:
             await self._reactivate(cid,owner,selected,at,cycle_key)
-        return [dict(artifact_id=r['row']['id'],score=r['score'],**r['recollection']) for r in selected]
+        return RetrievalResult([dict(artifact_id=r['row']['id'],score=r['score'],**r['recollection']) for r in selected],diagnostics=getattr(traces,'diagnostics',{}))
 
     async def archive_lookup(self,cid,owner,query,at,cycle_key,limit=8):
         """Explicit source verification can recover details never encoded in gist."""
+        from cognition.source_chunks import lexical_windows
         result = []
         async with self.pool.acquire() as conn,conn.transaction():
-            if await conn.fetchval('SELECT rebuilding FROM cognitive_contexts WHERE id=$1 FOR UPDATE',cid):
+            context=await conn.fetchrow('SELECT * FROM cognitive_contexts WHERE id=$1 FOR UPDATE',cid)
+            if context['rebuilding']:
                 raise SuppressedEvidence()
-            rows = await conn.fetch("""SELECT * FROM cognitive_events WHERE context_id=$1 AND owner_id=$2
-                AND suppressed_at IS NULL AND origin IN ('user','delivered_action')
-                AND (to_tsvector('russian',payload->>'text') @@ plainto_tsquery('russian',$3)
-                    OR payload->>'text' ILIKE '%' || $3 || '%')
-                ORDER BY ts_rank(to_tsvector('russian',payload->>'text'),plainto_tsquery('russian',$3)) DESC,id DESC LIMIT $4""",cid,owner,query,min(limit,16))
+            rows = await conn.fetch("""SELECT e.* FROM cognitive_events e WHERE e.context_id=$1 AND e.owner_id=$2
+                AND e.suppressed_at IS NULL AND e.payload IS NOT NULL AND e.origin IN ('user','delivered_action')
+                AND NOT EXISTS(WITH RECURSIVE dependencies(id) AS (
+                    SELECT e.id UNION SELECT d.source_event_id FROM cognitive_event_dependencies d
+                        JOIN dependencies previous ON previous.id=d.event_id WHERE d.context_id=$1)
+                    SELECT 1 FROM dependencies d LEFT JOIN cognitive_events source ON source.context_id=$1 AND source.id=d.id
+                    WHERE source.id IS NULL OR source.suppressed_at IS NOT NULL OR source.payload IS NULL
+                        OR source.owner_id IS DISTINCT FROM e.owner_id)
+                AND to_tsvector('russian',arti_memory_search_text(payload->>'text')) @@ websearch_to_tsquery('russian',arti_memory_search_text($3))
+                ORDER BY ts_rank(to_tsvector('russian',arti_memory_search_text(payload->>'text')),websearch_to_tsquery('russian',arti_memory_search_text($3))) DESC,id DESC LIMIT $4""",cid,owner,query,min(limit,16))
             for row in rows:
                 ev = load_event(row['payload'])
-                position = ev.text.casefold().find(query.casefold())
-                start = max(0,position-256) if position>=0 else 0
-                excerpt = ev.text[start:start+1400]
-                p = dict(source_id=ev.evidence.source_id,gist=excerpt,event_id=row['id'],record_start=start,
-                         observed_at=ev.observed_at.isoformat(),occurred_at=ev.occurred_at.isoformat(),source_record_verified=True)
-                aid = await self._put(conn,cid,'archive_record',key('archive',ev.event_id,start),p,owner,[row['id']])
-                result.append(dict(artifact_id=aid,source_id=ev.evidence.source_id,details=[dict(text=excerpt,kind='wording',confidence=.5,verbatim_verified=True)],
-                    observed_at=ev.observed_at.isoformat(),occurred_at=ev.occurred_at.isoformat(),time_basis='source_event',
-                    time_precision='source_record',modality='delivered_action' if ev.evidence.origin==Origin.DELIVERED_ACTION else 'source_utterance',
-                    interpretation='',version=1,familiarity=.5,uncertainty=False,score=1.))
+                for start,end,excerpt in await lexical_windows(conn,ev.text,query,width=1400,limit=min(3,max(0,limit-len(result)))):
+                    p = dict(source_id=ev.evidence.source_id,gist=excerpt,event_id=row['id'],record_start=start,record_end=end,
+                             observed_at=ev.observed_at.isoformat(),occurred_at=ev.occurred_at.isoformat(),source_record_verified=True)
+                    aid = await self._put(conn,cid,'archive_record',key('archive',ev.event_id,start),p,owner,[row['id']])
+                    result.append(dict(artifact_id=aid,source_id=ev.evidence.source_id,details=[dict(text=excerpt,kind='wording',confidence=.5,verbatim_verified=True)],
+                        record_start=start,record_end=end,source_prefix=ev.text[:240] if start else '',
+                        author_id='arti' if ev.evidence.origin==Origin.DELIVERED_ACTION else ev.actor_id,audience=asdict(ev.audience),
+                        observed_at=ev.observed_at.isoformat(),occurred_at=ev.occurred_at.isoformat(),time_basis='source_event',
+                        time_precision='source_record',modality='delivered_action' if ev.evidence.origin==Origin.DELIVERED_ACTION else 'source_utterance',
+                        interpretation='',version=1,familiarity=.5,uncertainty=False,score=1.))
+                if len(result)>=limit:
+                    break
         await self.record_retrieval(cid,owner,cycle_key,'archive_checked',[r['artifact_id'] for r in result],at)
-        return result
+        return RetrievalResult(result,diagnostics=dict(status='complete',lexical_status='complete',semantic_status='not_requested',scope='private_archive'))
 
     async def record_retrieval(self,cid,owner,cycle,stage,ids,at):
         async with self.pool.acquire() as conn,conn.transaction():
@@ -442,18 +516,54 @@ class MemoryRepository:
             return await conn.fetchval('''INSERT INTO cognitive_retrievals(context_id,cycle_key,owner_id,stage,artifact_ids,created_at)
                 VALUES($1,$2,$3,$4,$5::bigint[],$6) ON CONFLICT(context_id,cycle_key,stage) DO NOTHING RETURNING id''',cid,cycle,owner,stage,permitted,at)
 
+    async def validate_retrieval(self,cid,owner,ids,*,expected_epoch=None,connection=None):
+        """Recheck private source closure at prompt inclusion and final send."""
+        try:
+            async with asyncio.timeout(1.):
+                if connection is None:
+                    async with self.pool.acquire() as conn,conn.transaction():
+                        return await self.validate_retrieval(cid,owner,ids,expected_epoch=expected_epoch,connection=conn)
+                conn=connection
+                ctx=await conn.fetchrow('SELECT * FROM cognitive_contexts WHERE id=$1 FOR UPDATE',cid)
+                if (not ctx or ctx['rebuilding'] or ctx['authority']!='active' or ctx['model_version']!=MODEL_VERSION
+                        or (expected_epoch is not None and ctx['suppression_epoch']!=expected_epoch)):
+                    raise SuppressedEvidence()
+                rows=await conn.fetch('''WITH RECURSIVE selected AS (
+                    SELECT a.* FROM cognitive_artifacts a WHERE a.context_id=$1 AND a.id=ANY($2::bigint[])
+                      AND a.owner_id IS NOT DISTINCT FROM $3 AND a.model_version=$4
+                      AND a.projection_epoch=$5 AND a.suppressed_at IS NULL AND a.payload IS NOT NULL
+                      AND a.kind IN ('trace','belief','belief_version','archive_record')
+                ), dependencies(artifact_id,event_id) AS (
+                    SELECT a.id,p.source_event_id FROM selected a JOIN cognitive_provenance p
+                      ON p.context_id=a.context_id AND p.artifact_id=a.id
+                    UNION SELECT prior.artifact_id,d.source_event_id FROM dependencies prior
+                      JOIN cognitive_event_dependencies d ON d.context_id=$1 AND d.event_id=prior.event_id
+                ) SELECT a.id,ARRAY(SELECT d.event_id FROM dependencies d WHERE d.artifact_id=a.id ORDER BY d.event_id) AS sources
+                  FROM selected a WHERE EXISTS(SELECT 1 FROM dependencies d WHERE d.artifact_id=a.id)
+                  AND NOT EXISTS(SELECT 1 FROM dependencies d LEFT JOIN cognitive_events e
+                    ON e.context_id=$1 AND e.id=d.event_id WHERE d.artifact_id=a.id
+                    AND (e.id IS NULL OR e.suppressed_at IS NOT NULL OR e.payload IS NULL
+                      OR e.owner_id IS DISTINCT FROM $3))''',
+                    cid,sorted(set(ids)),owner,MODEL_VERSION,ctx['suppression_epoch'])
+                return sorted(row['id'] for row in rows),sorted({source for row in rows for source in row['sources']})
+        except (TimeoutError,QueryCanceledError) as exc:
+            raise SuppressedEvidence() from exc
+
     async def _reactivate(self,cid,owner,selected,at,cycle):
         async with self.pool.acquire() as conn,conn.transaction():
             await conn.fetchval('SELECT revision FROM cognitive_contexts WHERE id=$1 FOR UPDATE',cid)
+            grouped={}
             for item in selected:
-                row = await conn.fetchrow('SELECT * FROM cognitive_artifacts WHERE context_id=$1 AND id=$2 AND suppressed_at IS NULL AND owner_id IS NOT DISTINCT FROM $3 AND projection_epoch=(SELECT suppression_epoch FROM cognitive_contexts WHERE id=$1)',cid,item['row']['id'],owner)
+                grouped.setdefault(item['row']['id'],[]).extend(item['recollection']['details'])
+            for aid,details in grouped.items():
+                row = await conn.fetchrow('SELECT * FROM cognitive_artifacts WHERE context_id=$1 AND id=$2 AND suppressed_at IS NULL AND owner_id IS NOT DISTINCT FROM $3 AND projection_epoch=(SELECT suppression_epoch FROM cognitive_contexts WHERE id=$1)',cid,aid,owner)
                 if not row:
                     continue
                 value = object_value(row['payload'])
                 if value.get('last_retrieval_cycle')==cycle:
                     continue
                 created = datetime.fromisoformat(value['observed_at'])
-                visible = {(d['kind'],d['text']) for d in item['recollection']['details']}
+                visible = {(d['kind'],d['text']) for d in details}
                 if not visible:
                     continue
                 value['details'] = [reactivate(d,created,at) if (d['kind'],d['text']) in visible else d for d in value['details']]

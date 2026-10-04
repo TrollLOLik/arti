@@ -84,6 +84,12 @@ async def _send_with_receipt(method,args,kwargs,channel):
                 requester=turn.event.evidence.owner_id,expected_epoch=turn.epoch,connection=conn)
             if set(allowed)!=set(public_ids):
                 raise DeliverySuppressed()
+        private_ids=getattr(turn,'private_memory_ids',())
+        if private_ids:
+            allowed,_=await runtime.memory.validate_retrieval(turn.context_id,turn.event.evidence.owner_id,
+                private_ids,expected_epoch=turn.epoch,connection=conn)
+            if set(allowed)!=set(private_ids):
+                raise DeliverySuppressed()
         if getattr(turn,'group_candidate_id',None):
             await conn.execute('SELECT pg_advisory_xact_lock($1::bigint)',chat_id)
             if not await runtime.groups.delivery_guard(turn,conn): raise DeliverySuppressed()

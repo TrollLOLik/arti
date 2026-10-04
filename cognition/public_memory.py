@@ -14,6 +14,7 @@ from asyncpg import QueryCanceledError
 from cognition.group_policy import PolicyRepository
 from cognition.memory_repository import MemoryRepository, key
 from cognition.repositories import SuppressedEvidence
+from cognition.retrieval import RetrievalResult
 from cognition.semantic import query_terms
 from cognition.serialization import dump, load_event, object_value
 from cognition.types import AudienceScope, ContextKey, MODEL_VERSION, Origin, utc
@@ -67,8 +68,9 @@ WITH RECURSIVE visible AS (
 
 
 class PublicMemoryRepository:
-    def __init__(self, pool):
+    def __init__(self, pool, semantic=None):
         self.pool = pool
+        self.semantic = semantic
         self.policies = PolicyRepository(pool)
         self.records = MemoryRepository(pool)
 
@@ -133,13 +135,16 @@ class PublicMemoryRepository:
         return 'source_utterance'
 
     @classmethod
-    def _record(cls, row, event, observation, words, epoch):
+    def _record(cls, row, event, observation, words, epoch, *, window=None):
         # Keep exact wording, including quotation/report framing. A substring
         # is explicitly an excerpt, never a new statement attributed to asker.
-        positions = [event.text.casefold().find(word) for word in words]
-        position = min((p for p in positions if p >= 0),default=0)
-        start = max(0,position-256)
-        end = min(len(event.text),start+1800)
+        if window is None:
+            positions = [event.text.casefold().find(word) for word in words]
+            position = min((p for p in positions if p >= 0),default=0)
+            start = max(0,position-256)
+            end = min(len(event.text),start+640)
+        else:
+            start,end = window[:2]
         modality = cls._modality(row,event)
         author = 'arti' if event.evidence.origin == Origin.DELIVERED_ACTION else event.actor_id
         return dict(source_id=event.evidence.source_id,event_id=row['id'],owner_id=row['owner_id'],
@@ -156,63 +161,132 @@ class PublicMemoryRepository:
 
     async def retrieve(self, cid, context, query, at, cycle_key, *, requester=None,
                        expected_epoch=None, limit=8, exclude_event_ids=()):
-        """Search the permitted ledger, not the recent dialogue or private index.
+        """Hybrid retrieval from the permitted ledger, never private projections.
 
-        The returned artifact IDs retain original ownership. Use this class's
-        record_retrieval/validate methods for public prompt inclusion; the
-        personal MemoryRepository must keep its owner-only access rules.
-
-        LIMIT bounds returned rows, not PostgreSQL's recursive/full-text work.
-        The whole optional read, including pool/lock waits and artifact writes,
-        has a one-second budget. A timeout rolls back before returning no recall.
+        Optional query encoding gets its own short budget before the locked
+        lexical read. Semantic unavailability/timeouts preserve lexical results.
+        Counts report current audience coverage, not an assertion of no evidence.
         """
+        semantic_status = 'unavailable'
+        vector = None
+        if self.semantic is not None and query_terms(query) and limit>0:
+            vector,semantic_status = await self.semantic.encode_query(query)
         try:
             async with asyncio.timeout(READ_BUDGET_SECONDS):
                 return await self._retrieve(cid,context,query,at,cycle_key,requester=requester,
-                    expected_epoch=expected_epoch,limit=limit,exclude_event_ids=exclude_event_ids)
+                    expected_epoch=expected_epoch,limit=limit,exclude_event_ids=exclude_event_ids,
+                    vector=vector,semantic_status=semantic_status)
         except (TimeoutError,QueryCanceledError):
-            return []
+            return RetrievalResult(diagnostics=dict(status='timeout',semantic_status=semantic_status,
+                lexical_status='timeout',scope='public'))
 
     async def _retrieve(self, cid, context, query, at, cycle_key, *, requester,
-                        expected_epoch, limit, exclude_event_ids):
+                        expected_epoch, limit, exclude_event_ids, vector=None, semantic_status='unavailable'):
+        from cognition.source_chunks import lexical_windows, deduplicate_windows
         at = utc(at)
         words = sorted(query_terms(query))[:64]
         if not words or limit <= 0:
-            return []
+            return RetrievalResult(diagnostics=dict(status='complete',semantic_status='complete',
+                lexical_status='complete',scope='public'))
         async with self.pool.acquire() as conn,conn.transaction():
             await conn.execute(_STATEMENT_BUDGET)
             if isinstance(context,ContextKey):
                 await conn.execute('SELECT pg_advisory_xact_lock($1::bigint)',context.chat_id)
             scope = await self._scope(conn,cid,context,at,requester,expected_epoch)
             if scope is None:
-                return []
+                return RetrievalResult(diagnostics=dict(status='complete',semantic_status='complete',
+                    lexical_status='complete',scope='public',total_sources=0,indexed_sources=0,
+                    total_chunks=0,indexed_chunks=0,remaining_chunks=0))
             ctx,args = scope
+            tsquery = ' OR '.join(words)
             rows = await conn.fetch(_VISIBLE+"""
-                SELECT p.*,ts_rank(to_tsvector('russian',p.payload->>'text'),websearch_to_tsquery('russian',$8)) AS score
+                SELECT p.*,ts_rank(to_tsvector('russian',arti_memory_search_text(p.payload->>'text')),websearch_to_tsquery('russian',arti_memory_search_text($8))) AS score,
+                    to_tsvector('russian',arti_memory_search_text(p.payload->>'text')) @@ websearch_to_tsquery('russian',arti_memory_search_text($11)) AS full_query_match
                 FROM permitted p
                 WHERE p.origin IN ('user','system')
-                  AND to_tsvector('russian',p.payload->>'text') @@ websearch_to_tsquery('russian',$8)
+                  AND to_tsvector('russian',arti_memory_search_text(p.payload->>'text')) @@ websearch_to_tsquery('russian',arti_memory_search_text($8))
                   AND NOT (p.id=ANY($9::bigint[]))
-                ORDER BY score DESC,p.observed_at DESC,p.id DESC LIMIT $10
-                """,*args,' OR '.join(words),list(exclude_event_ids),min(128,max(16,int(limit)*4)))
-            result = []
-            for row in rows:
+                ORDER BY full_query_match DESC,score DESC,p.observed_at DESC,p.id DESC LIMIT $10
+                """,*args,tsquery,list(exclude_event_ids),min(128,max(16,int(limit)*4)),' '.join(words))
+            # Savepoints bound optional semantic SQL without poisoning the
+            # lexical transaction if vector ranking or coverage times out.
+            semantic_rows = []
+            diagnostics = dict(status=semantic_status,semantic_status=semantic_status,
+                lexical_status='complete',scope='public')
+            from cognition.public_semantic import PublicSemanticIndex
+            diagnostic_index = self.semantic or PublicSemanticIndex(self.pool,None)
+            if diagnostic_index is not None:
+                try:
+                    async with conn.transaction():
+                        await conn.execute("SET LOCAL statement_timeout = '120ms'")
+                        async with asyncio.timeout(.15):
+                            diagnostics.update(await diagnostic_index.diagnostics_locked(conn,context,scope))
+                            if vector is not None:
+                                semantic_rows = await self.semantic.search_locked(conn,cid,context,scope,vector,
+                                    limit=128,exclude_event_ids=exclude_event_ids)
+                        await conn.execute(_STATEMENT_BUDGET)
+                except (TimeoutError,QueryCanceledError):
+                    semantic_status = 'timeout'
+                except Exception:
+                    semantic_status = 'unavailable'
+                if semantic_status!='complete':
+                    diagnostics.update(status=semantic_status,semantic_status=semantic_status)
+            # Reciprocal ranks preserve lexical precision while allowing a
+            # semantic-only public paraphrase into the same bounded shortlist.
+            candidates = []
+            by_source = {}
+            for rank,row in enumerate(rows,1):
                 source = self._source(row,context)
                 if source is None:
                     continue
-                record = self._record(row,*source,words,ctx['suppression_epoch'])
-                identity = key('public_record',row['id'],ctx['suppression_epoch'],record['record_start'])
+                windows = await lexical_windows(conn,source[0].text,tsquery,width=640,limit=3)
+                by_source[row['id']] = dict(row=row,source=source,windows=[],score=1/(60+rank),
+                    full_query_match=bool(row['full_query_match']))
+                for window in windows:
+                    by_source[row['id']]['windows'].append((1/(60+rank),window))
+            source_ranks = {}
+            for row in semantic_rows:
+                source = self._source(row,context)
+                if source is None:
+                    continue
+                start,end = row['chunk_start'],row['chunk_end']
+                if not (type(start) is int and type(end) is int and 0<=start<end<=len(source[0].text)):
+                    continue
+                rank = source_ranks.setdefault(row['id'],len(source_ranks)+1)
+                item = by_source.setdefault(row['id'],dict(row=row,source=source,windows=[],score=0.))
+                if not item.get('semantic_ranked'):
+                    item['score'] += 1/(60+rank)
+                    item['semantic_ranked'] = True
+                item['windows'].append((float(row['semantic_score'])/(60+rank),
+                    (start,end,source[0].text[start:end])))
+            for item in by_source.values():
+                # Keep distinct passages; the fixed semantic geometry has a
+                # small boundary overlap, which is not a duplicate passage.
+                selected = deduplicate_windows(item['source'][0].text,
+                    [window for _,window in item['windows']],limit=3)
+                for index,window in enumerate(selected):
+                    candidates.append((item['score'],index,item,window))
+            # Full-query lexical specificity precedes broad topical similarity.
+            # This is PostgreSQL lexeme matching (including inflection), never
+            # guessed names or aliases: 'Alice budget' must outrank 'Bob budget'.
+            candidates.sort(key=lambda x:(-int(x[2].get('full_query_match',False)),
+                -x[0],x[1],-x[2]['row']['id'],x[3][0]))
+            result = []
+            for score,_,item,window in candidates:
+                row,source = item['row'],item['source']
+                record = self._record(row,*source,words,ctx['suppression_epoch'],window=window)
+                identity = key('public_record',row['id'],ctx['suppression_epoch'],record['record_start'],record['record_end'])
                 old = await conn.fetchrow('SELECT suppressed_at FROM cognitive_artifacts WHERE context_id=$1 AND artifact_key=$2',cid,identity)
                 if old and old['suppressed_at'] is not None:
                     continue
                 aid = await self.records._put(conn,cid,'public_record',identity,record,row['owner_id'],[row['id']])
-                result.append(dict(artifact_id=aid,score=float(row['score']),**record))
-                if len(result) >= min(16,int(limit)):
+                result.append(dict(artifact_id=aid,score=score,**record))
+                if len(result)>=min(16,int(limit)):
                     break
             ids = [r['artifact_id'] for r in result]
             for stage in ('candidate','recalled'):
                 await self._log(conn,cid,requester,cycle_key,stage,ids,at)
-            return result
+            return RetrievalResult(result,diagnostics=diagnostics)
 
     async def _validate_locked(self, conn, cid, context, artifact_ids, at, requester, expected_epoch):
         scope = await self._scope(conn,cid,context,at,requester,expected_epoch)
