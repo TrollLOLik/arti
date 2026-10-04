@@ -596,7 +596,7 @@ class CognitiveRuntime:
             ids,sources = await self.public_memory.record_retrieval(turn.context_id,turn.event.context,
                 turn.event.evidence.owner_id,turn.event.event_id,'included',sorted(artifact_ids),self.clock(),expected_epoch=turn.epoch)
             turn.public_memory_ids = ids
-            turn.supporting_event_ids = sorted(set(sources) | set(turn.expression_support_event_ids))
+            turn.supporting_event_ids = sorted(set(sources) | set(turn.expression_support_event_ids) | set(getattr(turn,'group_context_event_ids',())))
         else:
             ids,sources=await self.memory.validate_retrieval(turn.context_id,turn.event.evidence.owner_id,
                 sorted(artifact_ids),expected_epoch=turn.epoch)

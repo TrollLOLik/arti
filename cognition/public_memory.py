@@ -74,11 +74,11 @@ class PublicMemoryRepository:
         self.policies = PolicyRepository(pool)
         self.records = MemoryRepository(pool)
 
-    async def _scope(self, conn, cid, context, at, requester, expected_epoch):
+    async def _scope(self, conn, cid, context, at, requester, expected_epoch, *, lock=True):
         """Run under the context lock, including final prompt/delivery checks."""
         if not isinstance(context, ContextKey) or context.topic_id < 0:
             return None
-        row = await conn.fetchrow('SELECT * FROM cognitive_contexts WHERE id=$1 FOR UPDATE',cid)
+        row = await conn.fetchrow('SELECT * FROM cognitive_contexts WHERE id=$1'+(' FOR UPDATE' if lock else ''),cid)
         if (not row or tuple(row[k] for k in ('persona_id','chat_id','mode','scene_id','topic_id')) != context.identity()
                 or row['authority'] != 'active' or row['rebuilding'] or row['model_version'] != MODEL_VERSION):
             return None

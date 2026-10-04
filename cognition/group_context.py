@@ -146,6 +146,9 @@ class ConversationFrame:
     outcomes: list = field(default_factory=list)
     suppression_epoch: int = 0
     question_index: dict = field(default_factory=dict)
+    understanding: dict = field(default_factory=dict)
+    source_manifest: dict = field(default_factory=dict)
+    source_event_ids: list = field(default_factory=list)
 
     def question(self, message_id):
         # Retain anchor-specific state within the same raw window even if many
@@ -202,6 +205,14 @@ class ConversationFrame:
             prioritize(e['message_id'] for e in reversed(q.get('evidence', ())))
         prioritize(ancestors[:2])
         prioritize(replies[:4])
+        if anchor:
+            semantic_sources=set()
+            payload=self.understanding.get('payload') or {}
+            for item in [*payload.get('items',()),*payload.get('links',())]:
+                support=set(item.get('source_ids',()))
+                if anchor['source_id'] in support:
+                    semantic_sources.update(support)
+            prioritize(m['message_id'] for m in reversed(available) if m['source_id'] in semantic_sources)
         prioritize(m['message_id'] for m in available[-8:][::-1])
         prioritize(ancestors)
         for q in unresolved[:4]:
@@ -211,6 +222,7 @@ class ConversationFrame:
         prioritize(m['message_id'] for m in reversed(available))
         selected = []
         contributions = _public_contributions(self.outcomes)
+        semantic = public_understanding(self.understanding, anchor.get('source_id') if anchor else None)
 
         def packet():
             ids = {m['message_id'] for m in selected}
@@ -229,6 +241,7 @@ class ConversationFrame:
                         messages=sorted(selected, key=lambda m: m['at']), questions=questions,
                         tension=self.tension, serious=self.serious, norms=_public_norms(self.norms),
                         recent_contributions=contributions,
+                        semantic_conversation=semantic,
                         context_bounds=dict(raw_message_limit=FRAME_MESSAGE_LIMIT,
                                             omitted_message_count=len(available) - len(selected),
                                             anchor_message_id=anchor_message_id,
@@ -279,7 +292,7 @@ def _record_evidence(question, message, kind):
         evidence[:] = retained
 
 
-def build_frame(cid, chat_id, topic_id, messages, revision=0, closed=False, feedback=(), outcomes=(), suppression_epoch=0):
+def build_frame(cid, chat_id, topic_id, messages, revision=0, closed=False, feedback=(), outcomes=(), suppression_epoch=0, understanding=None, source_manifest=None, source_event_ids=()):
     branches = {}; mapping = {}; questions = {}; last_bot = None
     by_id = {}; last_owner_message = {}
 
@@ -384,7 +397,7 @@ def build_frame(cid, chat_id, topic_id, messages, revision=0, closed=False, feed
     norms['by_kind'] = {kind: dict(receptivity=sum(sum(v[:3]) / len(v[:3]) for v in people.values()) / (len(people) + 5),
                                 confidence=min(.8, len(people) / 20)) for kind, people in by_kind.items()}
     return ConversationFrame(cid, chat_id, topic_id, messages[-FRAME_MESSAGE_LIMIT:], branches, questions,
-                             revision, closed, tension, serious, last_bot, norms, list(outcomes)[-8:], suppression_epoch, question_index)
+                             revision, closed, tension, serious, last_bot, norms, list(outcomes)[-8:], suppression_epoch, question_index, understanding or {}, source_manifest or {}, list(source_event_ids))
 
 
 def candidate_kind(frame, message, policy):
@@ -417,3 +430,98 @@ def contextual_candidate(frame, message, policy):
             and not message.get('addressed_elsewhere') and not message.get('edited')
             and message.get('sender_kind') == 'user'
             and bool(str(message.get('text', '')).strip()))
+
+
+SEMANTIC_PACKET_BYTE_LIMIT = 5500
+
+
+def public_understanding(snapshot, anchor_source=None):
+    """Export whole, grounded hypotheses under an independent byte budget.
+
+    The store validates the complete consulted/selection lineage, which is kept
+    internally even when this display omits some objects. Missing objects never
+    imply that a question was answered or a decision disappeared.
+    """
+    payload = snapshot.get('payload') if isinstance(snapshot, dict) else None
+    if not isinstance(payload, dict):
+        return dict(status='unavailable', hypotheses_only=True)
+    result = dict(status='ready', hypotheses_only=True,
+                  current=bool(snapshot.get('current')),
+                  as_of_event_id=snapshot.get('as_of_event_id'),
+                  threads=[], links=[], items=[],
+                  bounds=dict(omitted_threads=len(payload.get('threads', ())),
+                              omitted_links=len(payload.get('links', ())),
+                              omitted_items=len(payload.get('items', ())),
+                              complete_history=False,
+                              coverage_gaps=bool(snapshot.get('coverage_gaps',False)),
+                              skipped_source_count=snapshot.get('skipped_source_count',0),
+                              lineage_reset=bool(snapshot.get('lineage_reset', False))))
+
+    def priority(item):
+        cited = set(item.get('source_ids', ()))
+        cited.update(e.get('source_id') for e in item.get('evidence', ()))
+        cited.update([item.get('source_id'), item.get('origin_source_id'), item.get('thread_id')])
+        return (anchor_source not in cited, item.get('status') not in
+                ('declined', 'reopened', 'open', 'pending', 'accepted', 'resolved'),
+                -len(item.get('updates', ())))
+
+    # Items retain all evidence and updates, rather than displaying a terminal
+    # summary after dropping the correction/refusal which qualifies it.
+    fields = {
+        'items': ('item_id', 'kind', 'thread_id', 'origin_source_id', 'summary',
+                  'actor_id', 'attribution', 'initial_status', 'status',
+                  'confidence', 'evidence', 'updates', 'source_ids', 'status_scope'),
+        'links': ('source_id', 'target_source_id', 'thread_id', 'relation',
+                  'addressee_ids', 'confidence', 'evidence', 'source_ids'),
+        'threads': ('thread_id', 'label', 'confidence', 'evidence', 'source_ids'),
+    }
+    for kind in ('items', 'links', 'threads'):
+        for item in sorted(payload.get(kind, ()), key=priority):
+            public = {k: item[k] for k in fields[kind] if k in item}
+            public['evidence']=[{k:e[k] for k in ('source_id','start','end','quote') if k in e}
+                                for e in item.get('evidence',())]
+            if 'updates' in public:
+                public['updates']=[{**{k:u[k] for k in ('source_id','status','actor_id','attribution','confidence') if k in u},
+                    'evidence':[{k:e[k] for k in ('source_id','start','end','quote') if k in e} for e in u.get('evidence',())]}
+                    for u in item.get('updates',())]
+            result[kind].append(public)
+            result['bounds']['omitted_'+kind] -= 1
+            if _json_size(result) > SEMANTIC_PACKET_BYTE_LIMIT:
+                result[kind].pop()
+                result['bounds']['omitted_'+kind] += 1
+    return result
+
+
+class GroupHistory(str):
+    """Internal typed dialogue, so final budgeting cannot split derived JSON.
+
+    No user-supplied marker is parsed as metadata. All supplied recent raw turns
+    have priority over older hypotheses; if raw context must be shortened, the
+    semantic block is omitted altogether.
+    """
+    HEADER = '\n[Source-linked public hypotheses; newer raw turns take precedence]\n'
+
+    def __new__(cls, raw, semantic):
+        import copy
+        instance=super().__new__(cls,raw+cls.HEADER+json.dumps(semantic,ensure_ascii=False))
+        instance.raw=raw
+        instance.semantic=copy.deepcopy(semantic)
+        return instance
+
+    def fit_for_prompt(self,counter,budget):
+        import copy
+        if counter.count(self.raw)>budget:
+            return counter.fit(self.raw,budget,tail=True)
+        packet=copy.deepcopy(self.semantic)
+        while any(packet.get(k) for k in ('items','links','threads')):
+            value=self.raw+self.HEADER+json.dumps(packet,ensure_ascii=False)
+            if counter.count(value)<=budget:
+                return value
+            # Complete lower-priority objects go first. The same single JSON
+            # object always retains its bounds/as-of/uncertainty metadata.
+            for kind in ('threads','links','items'):
+                if packet.get(kind):
+                    packet[kind].pop()
+                    packet['bounds']['omitted_'+kind]+=1
+                    break
+        return self.raw

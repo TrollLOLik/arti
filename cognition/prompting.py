@@ -84,7 +84,10 @@ def assemble_prompt(system,task,dialogue='',memory='',model='',budget=PromptBudg
         else:
             data = counter.fit(escape(str(memory),quote=False),capacity)
         memory = opening+data+closing if data else ''
-    dialogue = counter.fit(dialogue,max(0,remaining-counter.count(memory)-256),tail=True)
+    from cognition.group_context import GroupHistory
+    dialogue_budget=max(0,remaining-counter.count(memory)-256)
+    dialogue = (dialogue.fit_for_prompt(counter,dialogue_budget) if isinstance(dialogue,GroupHistory)
+                else counter.fit(dialogue,dialogue_budget,tail=True))
     context = ('[Недавний диалог]\n'+dialogue+'\n\n' if dialogue else '')+memory
     final = 'Контекст:\n'+context+'\n\nТекущее сообщение:\n'+task
     if counter.count(system)+counter.count(final)>available:

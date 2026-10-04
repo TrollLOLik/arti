@@ -22,7 +22,7 @@ class RecordedAbstention:
     async def close(self): pass
 
 
-async def evaluate():
+async def evaluate(output_path='docs/evaluation/group_load.json', *, include_understanding=False):
     clock=[datetime(2026,10,4,12,tzinfo=timezone.utc)]; judge=RecordedAbstention(); started=time.perf_counter()
     peak_pending=0; peak_messages=0; peak_branches=0; peak_questions=0; ingest_latencies=[]; contexts=set()
     bot=SimpleNamespace(send_message=AsyncMock(side_effect=AssertionError('No Telegram allowed')))
@@ -55,6 +55,31 @@ async def evaluate():
                 statuses=await conn.fetch('SELECT status,count(*) AS total FROM group_candidates GROUP BY status')
             assert observations==1000 and peak_pending<=128 and peak_messages<=64 and peak_branches<=8 and peak_questions<=16
             assert 0<judge.calls<=12 and bot.send_message.await_count==0
+            understanding_metrics={}
+            if include_understanding:
+                class RecordedUnderstanding:
+                    def __init__(self): self.calls=0;self.max_inputs=0
+                    async def analyze(self,messages,chat_id):
+                        self.calls+=1;self.max_inputs=max(self.max_inputs,len(messages))
+                        # Deliberately empty authored output: this load checks
+                        # scheduling/coverage bounds, not semantic quality.
+                        return dict(threads=[],links=[],items=[])
+                    async def close(self): pass
+                analyzer=RecordedUnderstanding();runtime.groups.understanding.analyzer=analyzer
+                committed=0
+                for _ in range(7):
+                    for context in sorted(contexts): committed+=await runtime.groups.understanding.refresh(context)
+                async with pool.acquire() as conn:
+                    backlog=await conn.fetchval("""SELECT count(*) FROM group_observations o
+                        JOIN group_understanding_state s ON s.context_id=o.context_id
+                        WHERE o.event_id>s.cursor_event_id""")
+                    lineage=await conn.fetchval('SELECT max(n) FROM (SELECT count(*) n FROM group_understanding_dependencies GROUP BY context_id) q')
+                    calls=await conn.fetchval("SELECT count(*) FROM cognitive_initiative_calls WHERE kind='group_understanding'")
+                assert analyzer.calls==committed==calls==30 and backlog==280 and analyzer.max_inputs<=72 and lineage<=4096
+                understanding_metrics=dict(understanding_recorded_calls=analyzer.calls,
+                    understanding_committed_batches=committed,understanding_quota_per_context=6,
+                    understanding_pending_observations=backlog,understanding_peak_input_sources=analyzer.max_inputs,
+                    understanding_peak_lineage=lineage,understanding_quality_assessed=False)
             values=sorted(ingest_latencies)
             report=dict(version='group-load-2026-10-04.2',messages=observations,participants=40,topics=5,
                 peak_pending_candidates=peak_pending,peak_frame_messages=peak_messages,peak_branches=peak_branches,peak_questions=peak_questions,
@@ -62,9 +87,9 @@ async def evaluate():
                 candidate_statuses={r['status']:r['total'] for r in statuses},
                 ingest_p50_ms=round(values[len(values)//2],2),ingest_p95_ms=round(values[949],2),
                 seconds=round(time.perf_counter()-started,2),working_database_mutated=False,real_history_used=False,
-                cost_measurement='Offline recorded judge; actual provider latency and cost are not measured.',passed=True)
+                cost_measurement='Offline recorded judge; actual provider latency and cost are not measured.',passed=True,**understanding_metrics)
         finally: await runtime.close()
-    Path('docs/evaluation/group_load.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
+    Path(output_path).write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
     print(json.dumps(report))
 
 
