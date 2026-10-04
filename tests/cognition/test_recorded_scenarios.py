@@ -31,7 +31,9 @@ class RecordedScenarioTests(unittest.TestCase):
                     # remain evidence of the old version, never relabeled success.
                     plan=expression(state)
                     self.assertEqual(plan.behaviors,('ask_one_question',) if case['id']=='ambiguity' else ('listen',))
-                    self.assertEqual(plan.mixed_affect,case['id'] in {'user_loss','service_failure','goal_conflict','heldout_grief'})
+                    # Ambiguity includes small positive pulses whose aggregate
+                    # matters even though each missed the old episode display cutoff.
+                    self.assertEqual(plan.mixed_affect,case['id'] in {'ambiguity','user_loss','service_failure','goal_conflict','heldout_grief'})
                     self.assertTrue(set(plan.cause_ids)<={ev.event_id})
                     if plan.mixed_affect: self.assertIsNone(plan.sticker_mood)
 

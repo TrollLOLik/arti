@@ -146,12 +146,32 @@ async def generate_response_stream(
         logger.info("🛠 Подмешиваем инструкции навыков в системный промпт...")
         actual_role += "\n" + skills_prompt
 
+    # Direct callers (for example photo replies) may not have routed intent yet.
+    # Finish that bounded work before freezing expression for the answer model.
+    from materials.runtime import guard_current
+    await guard_current()
+    should_search = False
+    if not user_location and not is_rp_mode:
+        intent = request_intent if request_intent is not None else await analyze_intent(prompt,chat_id)
+        should_search = intent.get("web_search", False)
+
+    # Routing can await a provider; recheck revoked materials before assembly.
+    await guard_current()
+
+    # Interpretation may finish while intent routing/material preparation runs.
+    # Read only already-ready durable evidence immediately before prompt assembly;
+    # a completed response checkpoint bypasses this function on recovery.
+    from cognition.runtime import CURRENT_TURN
+    cognitive_turn = CURRENT_TURN.get()
+    if (expression_plan is not None and cognitive_turn is not None and cognitive_turn.uses_cognition
+            and cognitive_turn.event.context.chat_id == chat_id
+            and expression_plan is cognitive_turn.expression):
+        await cognitive_turn.runtime.refresh_expression(cognitive_turn)
+        expression_plan = cognitive_turn.expression
     if expression_plan is not None:
         actual_role += '\n' + expression_plan.instruction()
 
     # --- 1. ОБЩАЯ ПОДГОТОВКА КОНТЕКСТА ---
-    from materials.runtime import guard_current
-    await guard_current()
     from cognition.prompting import assemble_prompt
     if memory_context:
         from cognition.prompting import MEMORY_GUIDANCE
@@ -177,12 +197,6 @@ async def generate_response_stream(
             except (ValueError,KeyError,TypeError):
                 continue
         await cognitive_turn.runtime.mark_included(cognitive_turn,sources)
-
-    # --- 2. ОПРЕДЕЛЯЕМ НУЖДАЕТСЯ ЛИ ЗАПРОС В ПОИСКЕ ---
-    should_search = False
-    if not user_location and not is_rp_mode:
-        intent = request_intent if request_intent is not None else await analyze_intent(prompt,chat_id)
-        should_search = intent.get("web_search", False)
 
     from ai.providers.contracts import GenerationRequest, ImageInput
     from ai.capabilities import registry_for

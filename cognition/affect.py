@@ -8,7 +8,8 @@ from dataclasses import replace
 from datetime import datetime
 
 from cognition.types import (CognitiveEvent, CognitiveState, DEFAULT_GOALS, EmotionEpisode,
-                             ExpressionPlan, Goal, Origin, Perception, Temperament, utc,AffectiveResidue)
+                             ExpressionPlan, Goal, Origin, Perception, Temperament, utc,AffectiveResidue,
+                             LIGHT_HUMOUR_THRESHOLD)
 
 # Valence, activation, pulse time constant. These are configurable model priors,
 # not measurements of human neurobiology.
@@ -20,6 +21,10 @@ EMOTIONS = {
     'disappointment': (-.55, .25, 3600.), 'guilt': (-.6, .45, 3600.),
     'embarrassment': (-.45, .65, 900.),
 }
+
+# A bounded display prior, not a change to versioned appraisal dynamics.
+# Repeated praise or wins should not force escalating exuberance or hide grief.
+EXPRESSIVE_POSITIVE_CAP = .85
 
 
 def initial_state(context, at: datetime, temperament=Temperament()) -> CognitiveState:
@@ -213,31 +218,54 @@ def replay_ledger(context, entries, empty_at):
 
 def expression(state: CognitiveState, *, task_serious: bool = False,
                temperament=Temperament()) -> ExpressionPlan:
-    active = sorted((e for e in state.episodes if e.intensity >= .025),
+    # Affect is computed before presentation truncation. Small independent pulses
+    # and compacted tails can collectively matter even when none is in the top six.
+    working = state.episodes + state.residues
+    positive = sum(e.intensity for e in working if EMOTIONS[e.emotion][0] > .1)
+    negative_weight = sum(e.intensity for e in working if EMOTIONS[e.emotion][0] < -.1)
+    # Expression has finite reserve even if many equivalent positive causes have
+    # accumulated. This deliberately leaves persisted pulses/mood unchanged: true
+    # numerical habituation requires a new model version and a ledger migration.
+    positive = min(positive,EXPRESSIVE_POSITIVE_CAP)
+    total = positive + negative_weight
+    mixed = bool(total >= .05 and min(positive,negative_weight) / total >= .18)
+    active = sorted((e for e in state.episodes if e.intensity >= .005),
                     key=lambda e: (-e.intensity, e.id))
-    # Keep independent causes and mixed affect instead of selecting one winner.
-    strong = active[:6]
-    positive = sum(e.intensity for e in strong if EMOTIONS[e.emotion][0] > .1)
-    negative_weight = sum(e.intensity for e in strong if EMOTIONS[e.emotion][0] < -.1)
-    total = positive+negative_weight
-    mixed = bool(total and min(positive,negative_weight)/total >= .18)
-    uncertain = any(e.confidence < .6 and EMOTIONS[e.emotion][0] < 0 for e in strong)
-    negative = negative_weight > positive or mixed
+    # Bound explanatory causes, not the affect calculation. Ensure both sides of
+    # a mixture survive the display cap, and do not spend six slots on one cause.
+    cause_weights = {}
+    for ep in active:
+        cause_weights[ep.cause_id] = cause_weights.get(ep.cause_id,0.) + ep.intensity
+    selected = []
+    if mixed:
+        for sign in (1,-1):
+            representative = next((e for e in active if EMOTIONS[e.emotion][0] * sign > .1),None)
+            if representative and representative.cause_id not in selected:
+                selected.append(representative.cause_id)
+    for cause in sorted(cause_weights,key=lambda c: (-cause_weights[c],c)):
+        if cause not in selected:
+            selected.append(cause)
+    # This fallback describes affect without a current situation. regulate()
+    # replaces it with current grounded uncertainty before selecting an action.
+    uncertain = any(e.confidence < .6 and e.intensity >= .025 and EMOTIONS[e.emotion][0] < 0
+                    for e in active)
+    negative = mixed or (negative_weight >= .025 and negative_weight > positive)
     if mixed: tone = 'warm but measured'
     elif negative: tone = 'gentle and concrete'
-    elif positive: tone = 'warm and attentive'
+    elif positive >= .025: tone = 'warm and attentive'
     else: tone = 'calm'
     regulation = 'clarify' if uncertain else 'problem_solve' if task_serious else 'acknowledge'
-    # Delivery is a choice, not an emotion label. Avoid a single-valence sticker
-    # when the state has competing causes or the task needs a serious answer.
-    sticker = 'happy' if positive and not negative_weight and not task_serious and not uncertain else None
-    slow = affect(state)['mood_valence']
-    if not strong and slow < -.12: tone = 'quiet and measured'
+    clear_positive = positive >= .025 and negative_weight < .025 and not mixed
+    sticker = 'happy' if clear_positive and not task_serious and not uncertain else None
+    slow = affect(state,temperament)['mood_valence']
+    if total < .025 and slow < -.12: tone = 'quiet and measured'
     if state.effort_load > .8: tone = 'concise and attentive'
     behaviors = ('ask_one_question',) if uncertain else ('answer_task',) if task_serious else ('listen',)
+    playful = clear_positive and not task_serious and not uncertain and state.effort_load <= .8
 
     return ExpressionPlan(regulation, tone, max(0.,min(1.,(.35 if negative else .65)+slow*.08)),
                           .8 if task_serious or negative else .5,
-                          0. if task_serious or negative else .15, .3 * (1 - temperament.expression_reserve),
+                          LIGHT_HUMOUR_THRESHOLD + .05 if playful else 0.,
+                          .3 * (1 - temperament.expression_reserve),
                           sticker, 'measured' if negative or task_serious else 'conversational',
-                          tuple(dict.fromkeys(e.cause_id for e in strong)), uncertain, behaviors, mixed)
+                          tuple(selected[:6]), uncertain, behaviors, mixed)

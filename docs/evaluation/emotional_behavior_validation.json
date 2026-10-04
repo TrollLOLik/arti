@@ -1,0 +1,103 @@
+{
+  "scope": "Current-context emotional behavior, bounded late interpretation refresh, evidence-first own-action repair and aligned persona",
+  "baseline_commit": "a89c8708df1d5fef5578f38e9c3f8da8eb1eb61e",
+  "branch": "codex/emotional-behavior",
+  "source_files": [
+    "ai/generation.py",
+    "arti_card.md",
+    "bot/request_codec.py",
+    "cognition/affect.py",
+    "cognition/regulation.py",
+    "cognition/runtime.py",
+    "cognition/types.py",
+    "config.py",
+    "tests/cognition/test_emotional_behavior.py",
+    "tests/cognition/test_emotional_prompt_alignment.py",
+    "tests/cognition/test_emotional_runtime.py",
+    "tests/cognition/test_recorded_scenarios.py"
+  ],
+  "code_fingerprint_sha256": "21fe22f2d86c7d48fca6e8ff555e3514c5ce65f75f643e59a93122b97dfee67a",
+  "full_suite": {
+    "status": "passed",
+    "command": "python -m tools.run_cognition_tests",
+    "tests": 1000,
+    "passed": 1000,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 443.023
+  },
+  "new_regressions": {
+    "behavior": 34,
+    "prompt_alignment": 12,
+    "runtime_sql": 14,
+    "total": 60
+  },
+  "focused_checks": {
+    "runtime_tests": 14,
+    "runtime_passed": 14,
+    "runtime_seconds": 13.261,
+    "behavior_aggregate": 90,
+    "behavior_aggregate_passed": 90,
+    "behavior_aggregate_seconds": 38.496,
+    "prompt_tests": 12,
+    "prompt_passed": 12,
+    "integration_tests_before_last_isolated_fixes": 181,
+    "integration_passed": 181
+  },
+  "unchanged_numerical_functions_ast": {
+    "appraise": true,
+    "advance": true,
+    "affect": true,
+    "replay_ledger": true
+  },
+  "independent_review": {
+    "unresolved_blocking_findings": 0,
+    "runtime_scope": "epoch, owner, source provenance, reset, restart, delivery, pool concurrency and provider boundaries",
+    "behavior_scope": "current-situation priority, mixtures, expression reserve, cautious repair and persona alignment",
+    "findings_fixed": [
+      "reuse the current SQL connection to avoid a full-pool deadlock",
+      "route direct-call intent before freezing the expression plan",
+      "validate materials before any optional intent provider and again after routing",
+      "do not inherit/freeze emotional plans for auxiliary custom-prompt generations",
+      "preserve resolved regulation and latest source reappraisal when refreshing an older prepared turn"
+    ]
+  },
+  "validation_environment": {
+    "database": "disposable PostgreSQL 17, isolated per SQL case",
+    "network": "offline test audit hook permits only loopback",
+    "dotenv_loaded": false,
+    "real_conversations_read": 0,
+    "production_database_mutated": false,
+    "provider_calls": 0,
+    "telegram_calls": 0
+  },
+  "scope_boundaries": {
+    "videotrans_modified": false,
+    "videotrans_tests_modified": false,
+    "unrelated_audio_modified": false,
+    "proactive_scheduler_modified": false,
+    "numerical_state_migration": false
+  },
+  "limitations": [
+    "If interpretation is not ready at prompt assembly, the reply stays on its prepared neutral plan; no extra interpretation calls or post-generation restyling.",
+    "Repeated positive affect is limited at expression only. Latent numerical saturation and true habituation are only partially addressed and need a versioned model/rebuild migration.",
+    "Mixture/reserve/humor thresholds are engineering assumptions, not calibrated psychological measurements.",
+    "Synthetic interpretations and mocked generated responses prove deterministic contracts and data paths, not naturalness or live-model empathy/intent accuracy.",
+    "Reported reviews and resolutions remain reports; no inferred blame, success from silence, or automatic strategy learning.",
+    "Conservative emotional state provenance can cancel a pending response when an older supporting source is erased.",
+    "No live user conversations, production API, Telegram delivery, deployment or end-to-end live LLM behavior evaluation."
+  ],
+  "publication": {
+    "pushed": false,
+    "merged": false,
+    "deployed": false
+  },
+  "validated_at_utc": "2026-10-04T18:38:56Z",
+  "unchanged_videotrans_tests": {
+    "tests": 24,
+    "passed": 24,
+    "source_files_modified": false
+  },
+  "source_fingerprint_verified_after_full_suite": true
+}
