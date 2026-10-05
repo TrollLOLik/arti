@@ -17,15 +17,19 @@ def register_planning(registry):
             row=await ArtifactRepository(c.service.repository).get(id,c.actor) if args['kind']=='artifact' else await TaskRepository(c.service.repository,registry).get(id,c.actor)
             return ToolResult('success',dict(id=id,kind=args['kind'],revision=row['revision'],content_hash=semantic_fingerprint(row['spec'])),dependencies=(row['head'],))
         from artifacts.validation import validate_evidence
-        async def validate_artifact(spec): await validate_evidence(spec,c.actor,c.service.repository)
-        planner=ModelPlanner(registry,chat_id=c.actor.scope.chat_id); contract=await planner.propose(args['goal'],args['context'],kind='artifact' if args['kind']=='artifact' else 'plan',guard=c.validate,validator=validate_artifact if args['kind']=='artifact' else None)
+        async def validate_artifact(spec):
+            if c.request_scope: await c.request_scope.validate_args('artifact.create',dict(spec=spec.to_dict()))
+            await validate_evidence(spec,c.actor,c.service.repository)
+        async def validate_plan(plan):
+            if c.request_scope: await c.request_scope.validate_plan(plan)
+        planner=ModelPlanner(registry,chat_id=c.actor.scope.chat_id); contract=await planner.propose(args['goal'],args['context'],kind='artifact' if args['kind']=='artifact' else 'plan',guard=c.validate,validator=validate_artifact if args['kind']=='artifact' else validate_plan)
         async with c.service.repository.pool.acquire() as conn:
             task=await conn.fetchrow('SELECT plan_id FROM arti_tasks WHERE id=$1',c.task_id); refs=await DerivativeRepository(c.service.repository)._chain(conn,task['plan_id'],c.actor)
         if args['kind']=='artifact':
             from projects.workflows import WorkflowRepository
             async with c.service.repository.pool.acquire() as conn:
                 preferred=await conn.fetchval("SELECT id FROM arti_workflow_objects WHERE project_id=$1 AND kind='style' AND owner_id=$2 AND status='active' AND accepted=head ORDER BY created_at DESC,id LIMIT 1",c.project_id,c.actor.user_id)
-            if preferred:
+            if preferred and not c.request_scope:
                 from artifacts.spec import ArtifactSpec
                 preferences=await WorkflowRepository(c.service.repository).get(preferred,c.actor,'style')
                 contract=ArtifactSpec({**contract.to_dict(),'style':preferences['body']['style']})

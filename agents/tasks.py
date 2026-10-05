@@ -13,8 +13,22 @@ def task_actor(row): return AccessContext(MaterialScope(**decoded(row['scope']))
 
 class TaskRepository:
     def __init__(self,materials,registry): self.materials=materials; self.pool=materials.pool; self.registry=registry; self.projects=ProjectRepository(materials); self.derivatives=DerivativeRepository(materials)
-    async def create(self,actor,project_id,plan,sources,*,id=None,max_calls=40,max_cost='1',max_bytes=8*1024**2,seconds=600):
+    async def create(self,actor,project_id,plan,sources,*,id=None,max_calls=40,max_cost='1',max_bytes=8*1024**2,seconds=600,native_request_id=None):
         plan=Plan(plan,self.registry)
+        if native_request_id:
+            from agents.native_requests import NativeRequestRepository,RequestScope
+            found=await NativeRequestRepository(self.materials).get(native_request_id,actor)
+            if not found or native_request_id!=id or found[0]['project_id']!=project_id: raise MaterialError('native_request_identity_conflict')
+            if plan.value['goal']!=found[1]['goal']: raise MaterialError('native_request_identity_conflict')
+            boundary=RequestScope(self.materials,actor,*found)
+            async with self.pool.acquire() as conn:
+                original=await self.derivatives._chain(conn,found[0]['binding_id'],actor)
+                boundary.assets.update({r['asset_id']:r['asset_version'] for r in original})
+                for input_id in plan.value.get('inputs',[]):
+                    await boundary.validate_sources(await self.derivatives._chain(conn,input_id,actor))
+                    boundary.derivative_ids.add(input_id)
+            await boundary.validate_sources(sources)
+            await boundary.validate_plan(plan)
         if not 1<=max_calls<=100 or not 0<=Decimal(max_cost)<=100 or not 1024<=max_bytes<=32*1024**2 or not 10<=seconds<=86400: raise MaterialError('task_budget_invalid')
         p=await self.projects.get(project_id,actor); p.require('edit')
         plan_id=await self.derivatives.save(actor,'task_plan',plan.to_dict(),sources,inputs=plan.value.get('inputs',[]))
@@ -24,11 +38,11 @@ class TaskRepository:
             await self.derivatives._sources(conn,actor,await self.derivatives._chain(conn,plan_id,actor))
             old=await conn.fetchrow('SELECT * FROM arti_tasks WHERE id=$1',id)
             if old:
-                if old['realm']!=actor.realm or old['owner_id']!=actor.user_id or old['plan_id']!=plan_id or old['project_id']!=project_id: raise MaterialError('task_identity_conflict')
+                if old['realm']!=actor.realm or old['owner_id']!=actor.user_id or old['plan_id']!=plan_id or old['project_id']!=project_id or old['native_request_id']!=native_request_id: raise MaterialError('task_identity_conflict')
                 return dict(old)
             if await conn.fetchval("SELECT COUNT(*) FROM arti_tasks WHERE realm=$1 AND status IN ('queued','running','waiting','paused')",actor.realm)>=100: raise MaterialError('task_scope_quota')
-            await conn.execute('''INSERT INTO arti_tasks(id,realm,scope,owner_id,project_id,access_generation,plan_id,max_calls,max_cost,max_bytes,deadline,max_replans)
-             VALUES($1,$2,$3::jsonb,$4,$5,$6,$7,$8,$9,$10,$11,$12)''',id,actor.realm,canonical(asdict(actor.scope)),actor.user_id,project_id,p.access_generation,plan_id,max_calls,Decimal(max_cost),max_bytes,datetime.now(timezone.utc)+timedelta(seconds=seconds),plan.value.get('max_replans',2))
+            await conn.execute('''INSERT INTO arti_tasks(id,realm,scope,owner_id,project_id,access_generation,plan_id,max_calls,max_cost,max_bytes,deadline,max_replans,native_request_id,native_origin_plan_id)
+             VALUES($1,$2,$3::jsonb,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)''',id,actor.realm,canonical(asdict(actor.scope)),actor.user_id,project_id,p.access_generation,plan_id,max_calls,Decimal(max_cost),max_bytes,datetime.now(timezone.utc)+timedelta(seconds=seconds),plan.value.get('max_replans',2),native_request_id,plan_id if native_request_id else None)
         return await self.get(id,actor)
     async def get(self,id,actor):
         async with self.pool.acquire() as conn:
@@ -66,6 +80,11 @@ class TaskRepository:
         if reason not in ('new_evidence','tool_error','missing_input'): raise MaterialError('task_replan_reason_invalid')
         old=await self.get(id,actor); plan=Plan(plan,self.registry)
         if old['owner_id']!=actor.user_id: raise MaterialError('task_replan_denied')
+        from agents.native_requests import RequestScope
+        boundary=await RequestScope.for_task(self.materials,actor,old)
+        if boundary:
+            await boundary.validate_sources(sources)
+            await boundary.validate_plan(plan)
         head=await self.derivatives.save(actor,'task_plan',plan.to_dict(),sources,inputs=plan.value.get('inputs',[]))
         if head==old['plan_id']: raise MaterialError('task_replan_stagnation')
         async with self.pool.acquire() as conn,conn.transaction():
@@ -147,6 +166,8 @@ class TaskRepository:
         return await self.get(id,actor)
     async def guard(self,lease):
         actor=task_actor(lease)
+        from agents.native_requests import RequestScope
+        await RequestScope.for_task(self.materials,actor,lease)
         from agents.scope_guard import guard_scope
         await guard_scope(actor,self.pool)
         p=await self.projects.get(lease['project_id'],actor); p.require('edit')

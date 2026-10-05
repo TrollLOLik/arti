@@ -22,8 +22,11 @@ def build_registry():
     async def search(args,c):
         from materials.index import MaterialIndex
         from projects.repository import ProjectRepository
-        sources=await ProjectRepository(c.service.repository).materials_for(c.project_id,c.actor)
-        ids=[m['asset_id'] for m in sources if m['status']=='current']
+        if c.request_scope:
+            ids=list(c.request_scope.assets)
+        else:
+            sources=await ProjectRepository(c.service.repository).materials_for(c.project_id,c.actor)
+            ids=[m['asset_id'] for m in sources if m['status']=='current']
         hits=await MaterialIndex(c.service.repository).search(c.actor,args['query'],asset_ids=ids,limit=8)
         refs=tuple(asdict(h.source) for h in hits)
         return ToolResult('success',dict(hits=[dict(text=h.text[:6000],source=asdict(h.source),quality=h.quality,filename=h.filename) for h in hits],coverage='indexed_project_window'),refs,dependencies=tuple(dict.fromkeys(h.observation_id for h in hits if h.observation_id)))
@@ -58,8 +61,8 @@ def build_registry():
         from hashlib import sha256
         id=sha256(c.idempotency_key.encode()).hexdigest()[:32]
         row=await ArtifactRepository(c.service.repository).create(c.project_id,c.actor,args['spec'],id=id,sources=refs)
-        return ToolResult('success',dict(id=row['id'],revision=row['revision'],derivative_id=row['head'],content_hash=semantic_fingerprint(row['spec'])),dependencies=(row['head'],))
-    add('artifact.create',dict(spec=ARTIFACT_SCHEMA),create,dict(id=STRING,revision=integer,derivative_id=STRING,content_hash=STRING),'write',max_bytes=10000,idempotent=True)
+        return ToolResult('success',dict(id=row['id'],kind='artifact',revision=row['revision'],derivative_id=row['head'],content_hash=semantic_fingerprint(row['spec'])),dependencies=(row['head'],))
+    add('artifact.create',dict(spec=ARTIFACT_SCHEMA),create,dict(id=STRING,kind=dict(const='artifact'),revision=integer,derivative_id=STRING,content_hash=STRING),'write',max_bytes=10000,idempotent=True)
     async def revise(args,c):
         from artifacts.revisions import ArtifactRepository
         row,diff=await ArtifactRepository(c.service.repository).revise(args['id'],c.actor,args['revision'],args['patches'])

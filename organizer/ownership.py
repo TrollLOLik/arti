@@ -99,3 +99,18 @@ async def cognitive_delivery_allowed(pool,owner,chat,context_id,artifact_id):
     async with pool.acquire() as conn,conn.transaction():
         await conn.execute('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',_lock(owner))
         yield not await owns_intention(conn,context_id,artifact_id)
+
+
+async def lock_material_source_context(conn,owner,identity_key,source_id):
+    """Keep material forget's asset lock after its native context fence.
+
+    A Telegram source can back both an organizer record and an attached material.
+    The source-erasure trigger may need this context while RequestStore takes
+    context-before-asset locks. Validate the exact private scope before locking.
+    """
+    if type(owner) is not int or owner<=0 or not isinstance(source_id,str): return
+    if not re.fullmatch(r'telegram:'+str(owner)+r':[1-9][0-9]*(?::user)?',source_id): return
+    from materials.types import context_identity
+    if identity_key!=context_identity('arti',owner,-1,'default',''): return
+    await conn.fetch("""SELECT id FROM cognitive_contexts WHERE persona_id='arti' AND chat_id=$1
+        AND topic_id<0 AND mode='default' AND scene_id='' ORDER BY id FOR UPDATE""",owner)

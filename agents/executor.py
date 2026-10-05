@@ -44,6 +44,9 @@ class Executor:
                     args=resolve_args(step['args'],outputs); attempt=None
                     try:
                         ctx=ToolContext(actor,self.service,lease['project_id'],lease['id'],f"{lease['id']}:{step['id']}",guard,step.get('grant_id'),CapabilityRepository(self.repository.pool))
+                        from agents.native_requests import RequestScope
+                        ctx.request_scope=await RequestScope.for_task(self.repository.materials,actor,lease)
+                        if ctx.request_scope: await ctx.request_scope.validate_args(step['tool'],args)
                         from agents.tools.registry import validate_schema
                         tool=self.registry.get(step['tool'],step['version']); validate_schema(tool.input_schema,args)
                         if tool.effect=='external':

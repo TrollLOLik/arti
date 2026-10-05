@@ -62,6 +62,7 @@ class ToolContext:
     guard:object
     grant_id:str|None=None
     grants:object=None
+    request_scope:object=None
     async def validate(self): await self.guard()
 
 class Registry:
@@ -77,6 +78,8 @@ class Registry:
         return [dict(type='function',function=dict(name=t.name,description=f'{t.effect}; version {t.version}',parameters=t.input_schema)) for t in self.tools.values()]
     async def call(self,name,args,ctx,*,version=None):
         tool=self.get(name,version); validate_schema(tool.input_schema,args); await ctx.validate()
+        if ctx.request_scope:
+            await ctx.request_scope.validate_args(name,args)
         if tool.effect=='external':
             if not ctx.grants or not ctx.grant_id: raise MaterialError('capability_required')
             await ctx.grants.validate(ctx.grant_id,ctx.actor,tool,args)

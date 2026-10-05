@@ -43,6 +43,10 @@ class MaterialLifecycle:
     async def forget(self, aid, actor):
         async with self.repository.pool.acquire() as conn, conn.transaction():
             await self.repository._locks(conn, actor)
+            row = await conn.fetchrow('SELECT * FROM material_assets WHERE id=$1', aid)
+            MaterialRepository.check(row, actor, edit=True)
+            from organizer.ownership import lock_material_source_context
+            await lock_material_source_context(conn,row['owner_id'],row['identity_key'],row['source_id'])
             row = await conn.fetchrow('SELECT * FROM material_assets WHERE id=$1 FOR UPDATE', aid)
             MaterialRepository.check(row, actor, edit=True)
             if row['owner_id'] is not None:
