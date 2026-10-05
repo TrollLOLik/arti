@@ -107,12 +107,13 @@ class AgentAcceptanceSQLTests(unittest.IsolatedAsyncioTestCase):
         cards=WorkCards(self.service); row=await cards.artifacts.create(self.p.id,self.actor,fixture(),sources=self.refs)
         buttons=await cards.actions(row,self.actor); menu=next(b for line in buttons.inline_keyboard for b in line if b.text=='Формат')
         message=NS(reply_text=AsyncMock()); query=NS(data=menu.callback_data,id='cb1',answer=AsyncMock(),message=message)
-        bot=NS(send_message=AsyncMock(return_value=NS(message_id=50,chat=NS(id=55))))
+        bot=NS(send_message=AsyncMock(return_value=NS(message_id=50,chat=NS(id=55))),send_photo=AsyncMock(return_value=NS(message_id=51,chat=NS(id=55))))
         with patch('materials.runtime.enabled',return_value=True),patch('materials.runtime.actor_for_current',return_value=self.actor),patch('materials.runtime.service_for_bot',return_value=self.service):
             await work_callback(NS(callback_query=query),NS(bot=bot))
             options=message.reply_text.await_args.kwargs['reply_markup']; query.data=options.inline_keyboard[0][0].callback_data; query.id='cb2'
             await work_callback(NS(callback_query=query),NS(bot=bot))
         revised=await cards.artifacts.get(row['id'],self.actor); self.assertEqual('comparison',revised['spec']['format']); self.assertEqual(fixture()['elements'],revised['spec']['elements'])
+        bot.send_photo.assert_awaited_once(); bot.send_message.assert_not_awaited()
         with self.assertRaises(MaterialError): await cards.resolve(menu.callback_data[5:],self.actor)
     async def test_shared_effect_is_serialized_across_workers_without_spending_on_busy(self):
         import asyncio

@@ -1,0 +1,309 @@
+{
+  "schema": "arti-visual-design-pixel-qa-1",
+  "reviewed_at_utc": "2026-10-05T20:06:18.552747+00:00",
+  "code_fingerprint_sha256": "701d5534b5688439ed53e230957fb6ed1d064ce589926ca92cdd877bff602352",
+  "fixture_scope": "Owned synthetic DOCX/XLSX ingested and extracted in disposable PostgreSQL; no user data or live models",
+  "palette": {
+    "background": "#E4D8D8",
+    "body": "#300000",
+    "heading": "#840018",
+    "secondary": "#784848",
+    "series": [
+      "#D87890",
+      "#B4606C"
+    ],
+    "orange_excluded": true,
+    "minimum_text_contrast": {
+      "calm": 5.361,
+      "ink": 7.155,
+      "night": 6.227
+    }
+  },
+  "samples": [
+    {
+      "name": "01-document-summary",
+      "format": "cards",
+      "pdf_pages": 2,
+      "exact_content_preserved": true,
+      "source_checks": [
+        {
+          "id": "e1",
+          "source": {
+            "locator": {
+              "bbox": null,
+              "cell": null,
+              "kind": "paragraph",
+              "page": null,
+              "sheet": null,
+              "end_ms": null,
+              "start_ms": null,
+              "paragraph": 3
+            },
+            "asset_id": "c986dbaf83814571a53442ad5bcbb7e3",
+            "block_id": "8d97d8e2301bbc38c18fa1d1",
+            "asset_version": 1,
+            "extraction_id": "ce7484a087a24e07b538c07136dcf6b3"
+          },
+          "quality": "unassessed",
+          "support": "literal_text_only",
+          "coverage": "complete",
+          "limitations": [
+            "docx_pagination_unknown"
+          ],
+          "observation_id": null
+        },
+        {
+          "id": "e2",
+          "source": {
+            "locator": {
+              "bbox": null,
+              "cell": null,
+              "kind": "paragraph",
+              "page": null,
+              "sheet": null,
+              "end_ms": null,
+              "start_ms": null,
+              "paragraph": 4
+            },
+            "asset_id": "c986dbaf83814571a53442ad5bcbb7e3",
+            "block_id": "fcf617eea2573b5fdc390ec7",
+            "asset_version": 1,
+            "extraction_id": "ce7484a087a24e07b538c07136dcf6b3"
+          },
+          "quality": "unassessed",
+          "support": "literal_text_only",
+          "coverage": "complete",
+          "limitations": [
+            "docx_pagination_unknown"
+          ],
+          "observation_id": null
+        },
+        {
+          "id": "e3",
+          "source": {
+            "locator": {
+              "bbox": null,
+              "cell": null,
+              "kind": "paragraph",
+              "page": null,
+              "sheet": null,
+              "end_ms": null,
+              "start_ms": null,
+              "paragraph": 5
+            },
+            "asset_id": "c986dbaf83814571a53442ad5bcbb7e3",
+            "block_id": "acbf54b996c1c37387be9957",
+            "asset_version": 1,
+            "extraction_id": "ce7484a087a24e07b538c07136dcf6b3"
+          },
+          "quality": "unassessed",
+          "support": "literal_text_only",
+          "coverage": "complete",
+          "limitations": [
+            "docx_pagination_unknown"
+          ],
+          "observation_id": null
+        }
+      ],
+      "files": {
+        "spec.json": "89ad329b296a906b518ebd4545ab756060c865211c342acfe9b93f5fe56b694a",
+        "page-1.png": "b830d518eb5fdbd35136ef5bdbf08f8ca6bd4953ef2f010993d355ea0c01e906",
+        "page-1.svg": "57d6b8da018fea923be46400fea72fd867688ce58d55f51cf4e47413b9f25e05",
+        "page-2.png": "3b6f91ec1cbda1616379d8d4f0fde228277e74a51d24ff6f79b767c3fdfdb659",
+        "page-2.svg": "ed09766ded6dbb3236097d5cd75bb99b9dbc1aec55bc7fc816f0592d9713893d",
+        "report.pdf": "e5bbb1332113325e4a1505cf71cbdc7018148007f9d69f709bbe2cbc6a28f7dc"
+      }
+    },
+    {
+      "name": "02-statistics",
+      "format": "statistical",
+      "pdf_pages": 3,
+      "exact_content_preserved": true,
+      "source_checks": [
+        {
+          "id": "n0",
+          "support": "verified_numeric",
+          "uncertainty": false
+        },
+        {
+          "id": "n1",
+          "support": "verified_numeric",
+          "uncertainty": false
+        },
+        {
+          "id": "n2",
+          "support": "verified_numeric",
+          "uncertainty": false
+        },
+        {
+          "id": "missing",
+          "support": "unverified"
+        }
+      ],
+      "files": {
+        "spec.json": "a8eabe46e44727dcfcb96957f11160dcfa94e8409ec2d533ff40debf39dc0166",
+        "page-1.png": "a82e2b7b48ffa4867ea21a558d62e68f0ba84573305392ac2b9721d243193f23",
+        "page-1.svg": "9d8d28e18a9d86bba98e7147fb20f7293da5e47d43c59f362becae8f5198936b",
+        "page-2.png": "b5e8c228fd5d60c55f87657d8a3c7dca78c3ccfdacb914a9ad2948468651b5b1",
+        "page-2.svg": "93537468251f5c1a7aacabe1d0e7f8e338fb7f6119937a7887c37b6c43fe9aac",
+        "page-3.png": "ebca7e93677b94e05665d49465322c1568e1c7fb5bf55dd6e7dbea52da502aab",
+        "page-3.svg": "b9fae781a6a2bf025295dc6c4b5022d14d727b1aa878582531d9409a8f8451a5",
+        "report.pdf": "3d05d480ee9e75c951793da6d8182a46260102f05e4383b8a0e7bd81b326efda"
+      }
+    },
+    {
+      "name": "03-timeline",
+      "format": "timeline",
+      "pdf_pages": 3,
+      "exact_content_preserved": true,
+      "source_checks": [
+        {
+          "id": "e4",
+          "source": {
+            "locator": {
+              "bbox": null,
+              "cell": null,
+              "kind": "paragraph",
+              "page": null,
+              "sheet": null,
+              "end_ms": null,
+              "start_ms": null,
+              "paragraph": 6
+            },
+            "asset_id": "c986dbaf83814571a53442ad5bcbb7e3",
+            "block_id": "1c9010440cb4231387790dee",
+            "asset_version": 1,
+            "extraction_id": "ce7484a087a24e07b538c07136dcf6b3"
+          },
+          "quality": "unassessed",
+          "support": "literal_text_only",
+          "coverage": "complete",
+          "limitations": [
+            "docx_pagination_unknown"
+          ],
+          "observation_id": null
+        },
+        {
+          "id": "e5",
+          "source": {
+            "locator": {
+              "bbox": null,
+              "cell": null,
+              "kind": "paragraph",
+              "page": null,
+              "sheet": null,
+              "end_ms": null,
+              "start_ms": null,
+              "paragraph": 7
+            },
+            "asset_id": "c986dbaf83814571a53442ad5bcbb7e3",
+            "block_id": "fbc05c4aaa2f27327f8e0790",
+            "asset_version": 1,
+            "extraction_id": "ce7484a087a24e07b538c07136dcf6b3"
+          },
+          "quality": "unassessed",
+          "support": "literal_text_only",
+          "coverage": "complete",
+          "limitations": [
+            "docx_pagination_unknown"
+          ],
+          "observation_id": null
+        },
+        {
+          "id": "e6",
+          "source": {
+            "locator": {
+              "bbox": null,
+              "cell": null,
+              "kind": "paragraph",
+              "page": null,
+              "sheet": null,
+              "end_ms": null,
+              "start_ms": null,
+              "paragraph": 8
+            },
+            "asset_id": "c986dbaf83814571a53442ad5bcbb7e3",
+            "block_id": "f81c87ca77d2e6b0f966d591",
+            "asset_version": 1,
+            "extraction_id": "ce7484a087a24e07b538c07136dcf6b3"
+          },
+          "quality": "unassessed",
+          "support": "literal_text_only",
+          "coverage": "complete",
+          "limitations": [
+            "docx_pagination_unknown"
+          ],
+          "observation_id": null
+        },
+        {
+          "id": "r1",
+          "support": "unverified"
+        },
+        {
+          "id": "r2",
+          "support": "unverified"
+        }
+      ],
+      "files": {
+        "spec.json": "1b18b6f15ef87d469e7d66274ead8b31e8ff21b6f050f87704ddcdbbdb88cd85",
+        "page-1.png": "97ca80e8e958ac785768d68273b9d7d5ec277e56052bd5df3481cd5be316e921",
+        "page-1.svg": "e33e26af1c616c5c1405eb4901404e35cfda5169cfa263848375e24988f91e98",
+        "page-2.png": "8660472dbf5fdd0db10ca05f0ecd57bb7e5625a9a848f7b5fb5572f39a6df60c",
+        "page-2.svg": "24b4f9cc86995feb8282cf1d3f32f1478d5ca998de87809d31a119725041213b",
+        "page-3.png": "0ed1a021a967580d0fc367ae6a0ed19dddf5d9da4e5886013269c0e4658d7313",
+        "page-3.svg": "d234b157b376b88328c2213fb34bd8f602bce3b1edf990e820d05420a112b039",
+        "report.pdf": "99bcfeb7cd3cee845bedc3a7d40ba091c3c23ac5d8fba1fcde7df3038f23843d"
+      }
+    }
+  ],
+  "committed_preview_sha256": {
+    "document-summary.png": "b830d518eb5fdbd35136ef5bdbf08f8ca6bd4953ef2f010993d355ea0c01e906",
+    "timeline.png": "97ca80e8e958ac785768d68273b9d7d5ec277e56052bd5df3481cd5be316e921",
+    "statistics.png": "a82e2b7b48ffa4867ea21a558d62e68f0ba84573305392ac2b9721d243193f23"
+  },
+  "all_nine_formats_rendered": true,
+  "all_nine_first_pages_inspected": true,
+  "actual_registry_svg_export_base64_bytes": {
+    "arguments": 129024,
+    "cards": 126508,
+    "comparison": 116936,
+    "process": 178208,
+    "roadmap": 185896,
+    "statistical": 169232,
+    "table": 121504,
+    "teaching": 130192,
+    "timeline": 184008
+  },
+  "pixel_review": {
+    "method": "Assistant inspected actual images, not a human user study",
+    "primary_png_pages": 3,
+    "phone_previews_390x520": 3,
+    "pdf_raster_pages": 8,
+    "svg_independent_renderer": "Installed Inkscape; three first-page rasters inspected",
+    "office": "Real LibreOffice conversion; final source-bound DOCX 4 pages and XLSX 3 pages inspected",
+    "additional_office_stress_sample": "Five DOCX and five XLSX pages reviewed by export implementer",
+    "outcomes": [
+      "Distinct card, comparison/statistic and chronology compositions",
+      "No visible overflow or clipped Russian text in reviewed pages",
+      "Signed bars share scale, include zero labels and exact tiny-value labels",
+      "Unknown value remains unknown; full source references retained in appendices",
+      "Three timeline events fit the first page; relationships are defined separately",
+      "Pale/rose/burgundy theme; no orange fill or small low-contrast rose text"
+    ]
+  },
+  "safeguards": [
+    "Literal quote validation unchanged",
+    "Native request project-style source isolation unchanged",
+    "Reader/source/revision guards immediately before transport",
+    "Ambiguous sends are not retried",
+    "XLSX formulas stay literal on both sheets; oversized strings rejected"
+  ],
+  "limitations": [
+    "No live Telegram, paid-provider, production or real-history verification",
+    "Chromium could not launch because the environment denied its local singleton socket; browser-specific SVG font acceptance remains unverified",
+    "Inkscape warns font-kerning is unsupported; minor typography differs by renderer, while reviewed content and bounds remain intact",
+    "Native Microsoft Word/Excel rendering was not tested; LibreOffice was used",
+    "Very long Excel cells may exceed print row height and receive an explicit comment warning",
+    "Independent artifact-only task outputs retain existing single-preview selection, not a gallery"
+  ]
+}

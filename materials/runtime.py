@@ -56,7 +56,14 @@ class DerivativeUse:
     actor: AccessContext
     repository: object
     kind: str | None=None
-    async def validate(self): await self.repository.load(self.id,self.actor,self.kind)
+    async def validate(self):
+        if self.kind == 'dataset':
+            # Dataset snapshots predate derivative envelopes and require their
+            # own head check, including after request-codec rehydration.
+            from materials.dataset_repository import DatasetRepository
+            await DatasetRepository(self.repository.materials).load_dataset(self.id,self.actor)
+        else:
+            await self.repository.load(self.id,self.actor,self.kind)
 
 
 def enabled():

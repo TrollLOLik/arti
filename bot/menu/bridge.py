@@ -20,6 +20,7 @@ HANDLERS = {
     'moment': ('bot.video_commands', 'moment_command'),
     'storyboard': ('bot.video_commands', 'storyboard_command'),
     'materials_find': ('bot.material_search', 'material_search_command'),
+    'material_summary': ('bot.material_search', 'material_summary_command'),
     'material_review': ('bot.material_search', 'material_review_command'),
     'proactivity': ('bot.group_commands', 'proactivity_command'),
     'quiet': ('bot.group_commands', 'quiet_command'),
