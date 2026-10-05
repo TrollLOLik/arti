@@ -25,6 +25,13 @@ ERRORS={
     'schedule_out_of_range':'Выбери будущее время в пределах 365 дней.',
     'invalid_datetime':'Нужны дата и время ISO: 2026-10-03T09:00, либо интервал 30m.',
     'active_item_limit':'Достигнут лимит 200 активных записей. Заверши или отмени ненужные.',
+    'stale_item':'Запись уже изменилась. Проверь её в списке и повтори действие с точным ID.',
+    'item_not_found':'Запись не найдена. Укажи точный ID своей записи.',
+    'item_closed':'Запись уже завершена или отменена. Создай новую запись, если она нужна снова.',
+    'task_has_no_schedule':'У задачи нет расписания уведомления. Создай отдельное напоминание с нужным временем.',
+    'notification_terminal':'Отправка уже началась, завершилась или её результат неизвестен. Это напоминание нельзя перенести или переименовать; создай новое, если оно нужно.',
+    'request_cancelled':'Это уточнение уже отменено. Отправь новую просьбу отдельным сообщением.',
+    'source_erased':'Источник записи удалён. Повторное выполнение заблокировано.',
     'task_operation_only':'done/reopen доступны только личным задачам /todo.',
 }
 
@@ -114,28 +121,25 @@ async def handle_natural(request,bot):
     from organizer.natural import converse,clear_pending,parse
     from bot.request_runtime import checkpoint
     scope=request.get('_telegram_scope')
-    text=str(request.get('user_message',''))
-    if scope is None or scope.chat_type!='private' or scope.user_id!=scope.chat_id or request.get('user_id')!=scope.user_id:
+    text=str(request.get('_native_user_message',request.get('user_message','')))
+    if scope is None or scope.chat_type!='private' or scope.user_id!=scope.chat_id or request.get('user_id')!=scope.user_id or scope.sender_kind!='user' or request.get('chat_id')!=scope.chat_id or type(request.get('message_id')) is not int or request['message_id']<=0 or scope.message_id!=request['message_id'] or scope.topic_id>=0:
         if parse(text) is None: return False
         await bot.send_message(chat_id=request['chat_id'],text='Для личных задач и напоминаний открой личный чат с Арти.',parse_mode=None)
         return True
     repo=repository()
     async def perform():
+        from organizer.scenarios import perform as native_perform
         try:
-            operation=await converse(repo,scope.user_id,scope.chat_id,text,f'telegram:{scope.chat_id}:{request["message_id"]}')
-            if operation is None: return None
-            if isinstance(operation,str): return dict(response=operation,clear_source=None)
-            if isinstance(operation,dict):
-                response='Сохранено:\n'+summary(operation['existing_item'])
-                return dict(response=response,clear_source=operation['source_key'])
-            command,args,key,display_zone=operation
-            response=await execute(scope.user_id,scope.chat_id,command,args,key,repo=repo,display_timezone=display_zone)
-            return dict(response=response,clear_source=key)
+            return await native_perform(repo,scope.user_id,scope.chat_id,text,
+                f'telegram:{scope.chat_id}:{request["message_id"]}',reply_to_id=scope.reply_to_id)
         except OrganizerError as exc:
             return dict(response=ERRORS.get(str(exc),'Не удалось сохранить запись: проверь название, дату и часовой пояс.'),clear_source=None)
     outcome=await checkpoint('organizer_result',perform)
     if outcome is None: return False
-    await bot.send_message(chat_id=scope.chat_id,text=outcome['response'],parse_mode=None)
+    from organizer.scenarios import current_outcome
+    outcome=await current_outcome(repo,scope.user_id,scope.chat_id,outcome)
+    sent=await bot.send_message(chat_id=scope.chat_id,text=outcome['response'],parse_mode=None)
+    await repo.record_reply(scope.user_id,scope.chat_id,getattr(sent,'message_id',None),outcome.get('items',[]),source_key=outcome.get('source_key'),generation=outcome.get('generation'))
     if outcome['clear_source']:
         await clear_pending(repo,scope.user_id,scope.chat_id,outcome['clear_source'])
     return True

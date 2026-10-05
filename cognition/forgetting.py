@@ -45,6 +45,14 @@ async def forget_cognitive_sources(pool,cid,owner,sources):
                 await forget_sources(pool,identity,owner,sources)
             owned = await lock.fetchval('SELECT 1 FROM cognitive_events WHERE context_id=$1 AND owner_id=$2 AND source_id=ANY($3::text[])',cid,owner,list(set(sources)))
             if not owned:
+                # A legacy/slash-created native item may have no original
+                # cognitive event. Its exact delivered copies were fenced by
+                # the native source trigger and still need ordinary recovery.
+                native_rebuild=await lock.fetchval("""SELECT 1 FROM cognitive_contexts c JOIN cognitive_jobs j ON j.context_id=c.id
+                    WHERE c.id=$1 AND c.chat_id=$2 AND c.persona_id='arti' AND c.mode='default' AND c.topic_id<0
+                    AND c.rebuilding AND j.kind='rebuild' AND j.status='pending' AND j.last_error_code='native_source_erased'""",cid,owner)
+                if native_rebuild:
+                    await finish_rebuild(pool,cid)
                 return dict(events=0,artifacts=0)
             from bot.request_store import RequestStore
             request_sources = await lock.fetch('SELECT id FROM cognitive_events WHERE context_id=$1 AND owner_id=$2 AND source_id=ANY($3::text[])', cid, owner, list(set(sources)))

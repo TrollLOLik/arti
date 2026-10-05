@@ -22,7 +22,7 @@ class CodecError(ValueError):
 
 
 REQUEST_FIELDS = frozenset('type chat_id user_id user_name user_message message_id is_voice base64_image base64_images document_text video_file_id is_video_note prompt image_urls image_aspect_ratio image_resolution image_num_images video_model video_duration video_aspect_ratio style instrumental _cognitive_context _cognitive_source_ids _material_uses _derivative_uses _computation_uses _cognitive_turn _telegram_scope _request_mode _request_no_coalesce url input_media reference_media synthesis_text cleaned source_kind with_subs audio_only'.split())
-REQUEST_FIELDS = REQUEST_FIELDS | {'saved_voice_id','saved_voice_version'}
+REQUEST_FIELDS = REQUEST_FIELDS | {'saved_voice_id','saved_voice_version','_native_user_message'}
 # These are process-local bookkeeping, never input to the resumed operation.
 TRANSIENT_FIELDS = frozenset(('bot', 'context', 'enqueued_at', 'started_at'))
 TELEGRAM_TYPES = frozenset(('Message', 'ReplyParameters', 'MessageEntity', 'InputMediaPhoto',
@@ -402,7 +402,14 @@ def coalesce_requests(parent,new):
     if left is None or right is None: return None
     if left.get('_request_no_coalesce') or right.get('_request_no_coalesce'): return None
     from organizer.natural import parse as native_intent
-    if native_intent(left.get('user_message','')) or native_intent(right.get('user_message','')): return None
+    if any('_native_user_message' not in d and d.get('user_message','').startswith('Исходный текст сообщения:') for d in (left,right)): return None
+    from bot.agent_requests import direct_text
+    def direct(d): return direct_text(d)
+    if native_intent(direct(left)) or native_intent(direct(right)): return None
+    from bot.agent_requests import patch_intent
+    if patch_intent(direct(left)) or patch_intent(direct(right)): return None
+    from ai.intents import direct_intent
+    if direct_intent(direct(left))[0]['work'] or direct_intent(direct(right))[0]['work']: return None
     if parent['fence']!=new['fence']: return None
     for field in ('chat_id','user_id','_cognitive_context','_request_mode'):
         if left.get(field)!=right.get(field): return None
@@ -414,7 +421,7 @@ def coalesce_requests(parent,new):
     a=scope(left); b=scope(right)
     if a is False or b is False or (a is None)!=(b is None): return None
     if a is not None:
-        if any(a.get(k)!=b.get(k) for k in ('chat_id','topic_id','chat_type','user_id','sender_kind','sender_ref')): return None
+        if any(a.get(k)!=b.get(k) for k in ('chat_id','topic_id','chat_type','user_id','sender_kind','sender_ref','reply_to_id')): return None
     if left.get('_cognitive_turn') or right.get('_cognitive_turn'): return None
     if type(left.get('user_message','')) is not str or type(right.get('user_message','')) is not str: return None
     text='\n'.join(x for x in (left.get('user_message',''),right.get('user_message','')) if x)
@@ -432,6 +439,7 @@ def coalesce_requests(parent,new):
     sources=sorted(set(sources))
     if len(sources)>16: return None
     merged=copy.deepcopy(parent); data=merged['value']['items']
+    data['_native_user_message']='\n'.join(x for x in (direct(left),direct(right)) if x)
     data['user_message']=text; data['message_id']=right.get('message_id',left.get('message_id'))
     data['_cognitive_source_ids']=_tag('list',items=sources)
     for field in ('document_text',):

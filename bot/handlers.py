@@ -72,9 +72,10 @@ async def _save_message(chat_id: int, user_name: str, message_text: str, user_id
     from cognition.runtime import get_runtime
     from cognition.scope import CURRENT_SCOPE
     runtime=get_runtime(); scope=CURRENT_SCOPE.get()
+    native_text=source.pop('native_user_message',message_text)
     if runtime and scope and scope.chat_type=='private' and source.get('message_id') is not None:
         from organizer.natural import claim_input
-        await claim_input(runtime.pool,user_id,chat_id,source['message_id'],message_text,mode='rp' if rp_mode_state.get(chat_id) else 'default')
+        await claim_input(runtime.pool,user_id,chat_id,source['message_id'],native_text,mode='rp' if rp_mode_state.get(chat_id) else 'default')
     if rp_mode_state.get(chat_id):
         await save_chat_message_rp(chat_id, user_name, message_text, user_id=user_id, **source)
     else:
@@ -127,6 +128,9 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     from cognition.runtime import get_runtime
     runtime = get_runtime()
+    if runtime and scope and scope.chat_type=='private' and update.message.text:
+        from organizer.natural import claim_input
+        await claim_input(runtime.pool,user_id,chat_id,message_id,update.message.text,mode='rp' if rp_mode_state.get(chat_id) else 'default')
     if runtime and runtime.mode!='legacy' and update.message.text:
         mode='rp' if rp_mode_state.get(chat_id) else 'default'
         if scope and scope.group:
@@ -286,6 +290,8 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     if len(user_message) > _MAX_USER_MESSAGE_LEN:
         user_message = user_message[:_MAX_USER_MESSAGE_LEN] + "…[обрезано]"
 
+    native_user_message = user_message
+
     # --- БЛОК ЛОГИКИ REPLY ---
     base64_image_reply = None
     document_text_reply = None
@@ -324,7 +330,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             if not user_message:
                 user_message = "Проанализируй это видео."
 
-    await _save_message(chat_id, user_name, user_message, user_id=user_id,message_id=message_id,occurred_at=update.message.date)
+    await _save_message(chat_id, user_name, user_message, user_id=user_id,message_id=message_id,occurred_at=update.message.date,native_user_message=native_user_message)
 
     # === Перехват одиночного URL на видео: предлагаем инлайн-меню ===
     # Условия: ЛС, сообщение — только URL, известный видеохост, нет reply/forward/упоминания.
@@ -364,7 +370,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     # В личных сообщениях — отвечаем на всё
     is_private = is_private_chat
     if is_private:
-        await enqueue_reply(chat_id, user_id, user_name, user_message, message_id, context, is_voice=True, base64_image=base64_image_reply, document_text=document_text_reply, video_file_id=telegram_video_file_id)
+        await enqueue_reply(chat_id, user_id, user_name, user_message, message_id, context, is_voice=True, base64_image=base64_image_reply, document_text=document_text_reply, video_file_id=telegram_video_file_id,native_user_message=native_user_message)
         return
 
     # Group ingress has already recorded public observations. Every direct
@@ -372,7 +378,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     if scope and scope.group:
         if scope.addressed and scope.sender_kind!='bot':
             await enqueue_reply(chat_id,user_id,user_name,user_message,message_id,context,is_voice=False,
-                                base64_image=base64_image_reply,document_text=document_text_reply,video_file_id=telegram_video_file_id)
+                                base64_image=base64_image_reply,document_text=document_text_reply,video_file_id=telegram_video_file_id,native_user_message=native_user_message)
         return
 
     return

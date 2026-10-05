@@ -155,9 +155,10 @@ async def cancel_chat_generation(chat_id: int):
     from bot.request_runtime import store
     requests=store()
     async with requests.pool.acquire() as conn,conn.transaction():
-        await requests.cancel_chat(chat_id,conn=conn)
         if chat_id>0:
-            await conn.execute('DELETE FROM arti_organizer_pending WHERE owner_id=$1 AND chat_id=$1',chat_id)
+            from organizer.scenarios import cancel_pending
+            await cancel_pending(conn,chat_id)
+        await requests.cancel_chat(chat_id,conn=conn)
     mark_chat_generation_cancelled(chat_id)
     cancel_chat_tasks(chat_id)
 
@@ -628,8 +629,9 @@ async def enqueue_generation(task: dict, bot, chat_id):
     return await submit(task)
 
 
-async def enqueue_reply(chat_id, user_id, user_name, user_message, message_id, context, is_voice=True, base64_image=None, document_text=None, video_file_id=None, is_video_note=False):
+async def enqueue_reply(chat_id, user_id, user_name, user_message, message_id, context, is_voice=True, base64_image=None, document_text=None, video_file_id=None, is_video_note=False, *, native_user_message=None):
     context=_real_menu_context(context)
+    native_user_message=user_message if native_user_message is None else native_user_message
     from cognition.scope import CURRENT_SCOPE
     scope=CURRENT_SCOPE.get()
     if scope and scope.group and scope.sender_kind=='chat':
@@ -639,7 +641,7 @@ async def enqueue_reply(chat_id, user_id, user_name, user_message, message_id, c
     runtime = get_runtime()
     if runtime and scope and scope.chat_type=='private' and message_id is not None:
         from organizer.natural import claim_input
-        await claim_input(runtime.pool,user_id,chat_id,message_id,user_message,mode='rp' if rp_mode_state.get(chat_id) else 'default')
+        await claim_input(runtime.pool,user_id,chat_id,message_id,native_user_message,mode='rp' if rp_mode_state.get(chat_id) else 'default')
     source_context = None; source_ids=[]
     if runtime and runtime.mode!='legacy' and scope and scope.group and message_id is not None:
         from cognition.types import Origin
@@ -669,6 +671,7 @@ async def enqueue_reply(chat_id, user_id, user_name, user_message, message_id, c
         'user_id': user_id,
         'user_name': user_name,
         'user_message': user_message,
+        '_native_user_message': native_user_message,
         'message_id': message_id,
         'context': context,
         'is_voice': is_voice,
@@ -940,7 +943,8 @@ async def process_user_reply(request, bot):
     runtime=get_runtime()
     if runtime and CURRENT_SCOPE.get() and CURRENT_SCOPE.get().chat_type=='private':
         from organizer.natural import claim_input
-        await claim_input(runtime.pool,user_id,chat_id,message_id,user_message,mode=mode)
+        from bot.agent_requests import direct_text
+        await claim_input(runtime.pool,user_id,chat_id,message_id,direct_text(request),mode=mode)
     from bot.request_runtime import prepare_turn
     cognitive_turn = await prepare_turn(chat_id,profile_user_id,user_message,message_id,mode,source_context=request.get('_cognitive_context'))
     cognitive_turn.supporting_event_ids=sorted(set(getattr(cognitive_turn,'supporting_event_ids',())) | set(request.get('_cognitive_source_ids',[])))
@@ -955,16 +959,19 @@ async def process_user_reply(request, bot):
     import time
     from utils.location_scope import location_scope_key
     map_scope_key = location_scope_key(user_id, chat_id=chat_id)
-    request['_intent'] = await checkpoint('intent', lambda: resolve_intent(user_message,chat_id,
+    from bot.agent_requests import direct_text
+    native_text=direct_text(request)
+    request['_intent_raw']=native_text
+    request['_intent'] = await checkpoint('intent', lambda: resolve_intent(native_text,chat_id,
         has_materials=bool(request.get('_material_uses') or document_text),
         allow_work=enabled() and os.getenv('ARTI_AGENTS_ENABLED','0').lower() in ('1','true','yes'),
         recent_maps=map_scope_key is not None and time.time()-_recent_map_sessions.get(map_scope_key,0)<300,context=intent_context)) if mode!='rp' else {}
     if request['_intent'].get('clarification'):
         await bot.send_message(chat_id=chat_id, text=request['_intent']['clarification'], reply_to_message_id=message_id)
         return
-    from bot.agent_requests import handle_agent_request
+    from bot.agent_requests import handle_agent_request,recover_agent_request
     from bot.request_runtime import agent_handoff
-    if enabled() and user_id and await agent_handoff(lambda: handle_agent_request(request,bot)):
+    if mode!='rp' and user_id and await agent_handoff(lambda: handle_agent_request(request,bot),recover=lambda: recover_agent_request(request,bot,resume_reserved=True)):
         return
     if cognitive_turn.preferences.get('voice') is False or cognitive_turn.preferences.get('text') is True:
         is_voice = False

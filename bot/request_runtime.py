@@ -127,7 +127,7 @@ async def prepare_turn(*args, **kwargs):
     return turn
 
 
-async def agent_handoff(factory):
+async def agent_handoff(factory, *, recover=None):
     """Agent work has its own durable engine; never replay a partial side effect."""
     job = CURRENT_REQUEST.get()
     if job is None:
@@ -135,6 +135,9 @@ async def agent_handoff(factory):
     if 'agent_result' in job['checkpoints']:
         return await checkpoint('agent_result', factory)
     if job['checkpoints'].get('agent_started'):
+        if recover is not None and await recover():
+            async def recovered(): return True
+            return await checkpoint('agent_result', recovered)
         from materials.types import MaterialError
         raise MaterialError('interrupted_agent_handoff')
     if not await store().checkpoint(job['id'], job['token'], 'agent_started', True):

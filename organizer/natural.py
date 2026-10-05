@@ -37,6 +37,26 @@ def parse(text):
     listing=re.fullmatch(r'(?i)(?:покажи|перечисли|какие у меня)(?: мои)? (задачи|напоминания|события)[?.!]*',text)
     if listing:
         return dict(command={'задачи':'todo','напоминания':'remind','события':'event'}[listing[1].lower()],action='list')
+    if _work_request(text): return None
+    # Mutations only accept explicit imperatives at the instruction boundary.
+    rename=re.fullmatch(r'(?i)переименуй\s+(?:(задачу|напоминание|событие)\s+)?(.+?)\s+(?:в|на)\s+(.+)',text)
+    move=re.fullmatch(r'(?i)перенеси\s+(?:(задачу|напоминание|событие)\s+)?(.+?)(?:\s+на\s+(.+))?',text)
+    close=re.fullmatch(r'(?i)(отмени|заверши|выполни)\s+(?:(задачу|напоминание|событие)\s+)?(.+)',text)
+    if close and close[1].lower()=='выполни' and (close[2] or '').lower()!='задачу': close=None
+    if rename or move or close:
+        match=rename or move or close
+        label=match[2] if close else match[1]
+        command={'задачу':'todo','напоминание':'remind','событие':'event'}.get((label or '').lower())
+        result=dict(command=command,action='rename' if rename else 'reschedule' if move else 'cancel' if close[1].lower()=='отмени' else 'done',
+                    target=(match[3] if close else match[2]).strip(' «»"'))
+        if rename: result['title']=rename[3].strip(' «»"')
+        if move:
+            body=move[3] or ''
+            if re.search(r'(?i)\b(?:кажд\w*|ежедневно|еженедельно|ежемесячно|повторяющ\w*)\b',body):
+                return dict(command=command,action='unsupported_recurrence')
+            extra,when=_split_time(body)
+            result['when']=when if not extra else None
+        return result
     task=re.match(r'(?i)^(?:добавь|создай|запиши)(?: мне)?(?: задачу| в (?:мои )?задачи)\b\s*[:—-]?\s*(.*)$',text)
     if task: return dict(command='todo',action='add',title=task[1].rstrip('?'))
     event=re.match(r'(?i)^(?:добавь|создай|запиши)(?: мне)? событие\b\s*[:—-]?\s*(.*)$',text)
@@ -78,6 +98,11 @@ def _split_time(body):
         title=(body[:absolute.start()]+' '+body[absolute.end():]).strip(' ,:—-')
         title=re.sub(r'(?i)\s+в$','',title).strip()
         return title,absolute[0].replace(' ','T')
+    date=re.search(r'\b\d{4}-\d{2}-\d{2}\b',body)
+    if date: return (body[:date.start()]+' '+body[date.end():]).strip(' ,:—-'),date[0]
+    clock=re.search(r'(?i)(?:\bв\s+|^)(\d{1,2}):(\d{2})\b',body)
+    if clock:
+        return (body[:clock.start()]+' '+body[clock.end():]).strip(' ,:—-'),'clock@'+clock[1].zfill(2)+':'+clock[2]
     if re.fullmatch(r'\d+[smhd]',body.strip(),re.I): return '',body.strip().lower()
     return body.strip(),None
 
@@ -90,7 +115,8 @@ def _zone_name(text):
 
 
 async def _pending(repo,owner,chat):
-    async with repo.pool.acquire() as conn:
+    async with repo.connection() as conn:
+        await conn.execute("UPDATE arti_organizer_turns SET state='cancelled',outcome=NULL WHERE owner_id=$1 AND state='pending' AND root_source_key IN (SELECT source_key FROM arti_organizer_pending WHERE owner_id=$1 AND expires_at<=NOW())",owner)
         await conn.execute('DELETE FROM arti_organizer_pending WHERE owner_id=$1 AND expires_at<=NOW()',owner)
         row=await conn.fetchrow('SELECT * FROM arti_organizer_pending WHERE owner_id=$1 AND chat_id=$2',owner,chat)
     if not row: return None
@@ -99,20 +125,22 @@ async def _pending(repo,owner,chat):
 
 
 async def clear_pending(repo,owner,chat,source_key=None):
-    async with repo.pool.acquire() as conn:
+    async with repo.connection() as conn:
+        await conn.execute("UPDATE arti_organizer_turns SET state='cancelled',outcome=NULL WHERE owner_id=$1 AND state='pending' AND root_source_key IN (SELECT source_key FROM arti_organizer_pending WHERE owner_id=$1 AND chat_id=$2 AND ($3::text IS NULL OR source_key=$3))",owner,chat,source_key)
         await conn.execute('DELETE FROM arti_organizer_pending WHERE owner_id=$1 AND chat_id=$2 AND ($3::text IS NULL OR source_key=$3)',owner,chat,source_key)
 
 
 async def _save_pending(repo,owner,chat,key,payload):
-    async with repo.pool.acquire() as conn:
+    async with repo.connection() as conn:
         await conn.execute('''INSERT INTO arti_organizer_pending VALUES($1,$2,$3,$4::jsonb,NOW()+INTERVAL '15 minutes')
             ON CONFLICT(owner_id) DO UPDATE SET chat_id=EXCLUDED.chat_id,source_key=EXCLUDED.source_key,
             payload=EXCLUDED.payload,expires_at=EXCLUDED.expires_at''',owner,chat,key,json.dumps(payload,ensure_ascii=False))
 
 
-async def converse(repo,owner,chat,text,source_key):
+async def converse(repo,owner,chat,text,source_key,*,reply_to_id=None):
     """Return (command,args) for a ready operation, a question, or None."""
     if type(owner) is not int or type(chat) is not int or owner!=chat or owner<=0: return None
+    if _work_request(text): return None
     parsed=parse(text)
     pending=await _pending(repo,owner,chat)
     if parsed and parsed['action']=='unsupported_recurrence':
@@ -151,6 +179,19 @@ async def converse(repo,owner,chat,text,source_key):
             extra,when=_split_time(answer)
             if when is None or extra: return 'Когда напомнить? Например: через 30 минут или 2026-10-03T09:00.'
             parsed['when']=when
+            parsed['requested_at']=datetime.now(timezone.utc).isoformat()
+        elif missing=='target':
+            candidate=next((item for item in parsed.get('candidates',[]) if item['id']==answer),None)
+            if not candidate and not parsed.get('candidates') and re.fullmatch(r'[a-f0-9]{12}',answer):
+                item=await repo.get(owner,chat,answer,kind={'todo':'todo','event':'event','remind':'reminder'}.get(parsed.get('command')))
+                if item: candidate=dict(id=item['id'],version=item['version'])
+            if not candidate: return 'Пришли точный ID нужной записи из списка.'
+            parsed.update(target=answer,item_id=answer,expected_version=candidate['version'])
+        elif missing=='date':
+            extra,day=_split_time(answer)
+            if extra or not day or not (day in ('завтра','сегодня') or re.fullmatch(r'\d{4}-\d{2}-\d{2}',day)):
+                return 'На какую дату? Например завтра или 2026-10-07.'
+            parsed['when']=day+'@'+parsed['when'].split('@',1)[1]
         elif missing=='clock':
             clock=re.fullmatch(r'(?:в\s+)?(\d{1,2})(?::(\d{2}))?',answer)
             if not clock or int(clock[1])>23 or int(clock[2] or 0)>59: return 'Во сколько? Например 09:00.'
@@ -161,9 +202,11 @@ async def converse(repo,owner,chat,text,source_key):
     if parsed is None: return None
     anchor=pending['payload'].get('requested_at') if pending and source_key==pending['source_key'] else None
     parsed.setdefault('requested_at',anchor or datetime.now(timezone.utc).isoformat())
-    if pending and source_key!=pending['source_key'] and parsed['action']=='add':
+    if pending and source_key!=pending['source_key'] and parsed['action'] in ('add','rename','reschedule','cancel','done'):
         await clear_pending(repo,owner,chat,pending['source_key'])
     if parsed['action']=='list': return (parsed['command'],['list'],source_key,None)
+    if parsed['action'] in ('rename','reschedule','cancel','done'):
+        return await _mutation(repo,owner,chat,parsed,source_key,reply_to_id=reply_to_id)
     existing=await repo.by_source(owner,chat,source_key)
     if existing is not None: return {'existing_item':existing,'source_key':source_key}
     command=parsed['command']; title=parsed.get('title','').strip(' "«»')
@@ -172,17 +215,18 @@ async def converse(repo,owner,chat,text,source_key):
     if not title: missing='title'
     elif command!='todo' and not parsed.get('when'): missing='when'
     args=['add',title]
-    if parsed.get('when') in ('завтра','сегодня'): missing=missing or 'clock'
-    if command!='todo' and parsed.get('when') and parsed['when'] not in ('завтра','сегодня'):
+    if parsed.get('when') in ('завтра','сегодня') or re.fullmatch(r'\d{4}-\d{2}-\d{2}',parsed.get('when') or ''): missing=missing or 'clock'
+    if (parsed.get('when') or '').startswith('clock@'): missing=missing or 'date'
+    if command!='todo' and parsed.get('when') and missing not in ('clock','date'):
         when=parsed['when']; timezone_name=parsed.get('timezone') or await repo.get_timezone(owner,chat)
         try:
             if '@' in when:
                 day,clock=when.split('@',1)
                 if not timezone_name: raise OrganizerError('timezone_required')
                 local=datetime.fromisoformat(parsed['requested_at']).astimezone(ZoneInfo(timezone_name))
-                date=local.date()+timedelta(days=day=='завтра')
+                date=_calendar_date(day,local)
                 when=f'{date.isoformat()}T{clock}'
-            due,label=scheduled_at(when,timezone_name)
+            due,label=scheduled_at(when,timezone_name,now=datetime.fromisoformat(parsed['requested_at']) if re.fullmatch(r'\d+[smhd]',when) else None)
             # Anchor a known relative time across the next clarification turn.
             display_zone=parsed.get('timezone') or label
             parsed['when']=due.isoformat(); parsed['timezone']=display_zone
@@ -197,6 +241,7 @@ async def converse(repo,owner,chat,text,source_key):
         return {'title':'Как назвать задачу?' if command=='todo' else 'О чём напомнить?' if command=='remind' else 'Как назвать событие?',
                 'when':('Какое одно время выбрать для напоминания?' if parsed.get('ambiguous_when') else 'Когда напомнить? Например: через 30 минут или 2026-10-03T09:00.'),
                 'clock':'Во сколько? Например 09:00.',
+                'date':'На какую дату? Например завтра или 2026-10-07.',
                 'timezone':'В каком часовом поясе? Например Europe/Moscow или Москва.'}[missing]
     return command,args,source_key,display_zone
 
@@ -207,6 +252,7 @@ async def claim_input(pool,owner,chat,message_id,text,*,mode='default'):
         return False
     from organizer.repository import Repository
     from organizer.ownership import claim_source
+    if _work_request(text): return False
     direct=parse(text)
     if direct is not None:
         return await claim_source(pool,owner,chat,message_id)
@@ -225,8 +271,73 @@ async def claim_input(pool,owner,chat,message_id,text,*,mode='default'):
 async def cleanup_expired(pool,limit=500):
     if type(limit) is not int or not 1<=limit<=1000: raise ValueError('invalid_cleanup_limit')
     async with pool.acquire() as conn:
-        rows=await conn.fetch('''WITH expired AS (
-            SELECT owner_id FROM arti_organizer_pending WHERE expires_at<=NOW()
-            ORDER BY expires_at,owner_id LIMIT $1 FOR UPDATE SKIP LOCKED)
-            DELETE FROM arti_organizer_pending p USING expired e WHERE p.owner_id=e.owner_id RETURNING p.owner_id''',limit)
-        return len(rows)
+        owners=await conn.fetch('SELECT owner_id FROM arti_organizer_pending WHERE expires_at<=NOW() ORDER BY expires_at,owner_id LIMIT $1',limit)
+        removed=0
+        for row in owners:
+            async with conn.transaction():
+                if not await conn.fetchval('SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))',f'organizer:{row["owner_id"]}'): continue
+                await conn.execute("UPDATE arti_organizer_turns SET state='cancelled',outcome=NULL WHERE owner_id=$1 AND state='pending' AND root_source_key IN (SELECT source_key FROM arti_organizer_pending WHERE owner_id=$1 AND expires_at<=NOW())",row['owner_id'])
+                removed+=bool(await conn.fetchval('DELETE FROM arti_organizer_pending WHERE owner_id=$1 AND expires_at<=NOW() RETURNING 1',row['owner_id']))
+        return removed
+
+
+async def _mutation(repo,owner,chat,parsed,source_key,*,reply_to_id=None):
+    """Resolve only owned native objects; never trust quoted Telegram content."""
+    command=parsed.get('command')
+    kind={'todo':'todo','event':'event','remind':'reminder'}.get(command)
+    if not parsed.get('item_id'):
+        candidates=await repo.resolve(owner,chat,parsed.get('target',''),kind=kind,reply_to_id=reply_to_id)
+        if len(candidates)!=1:
+            if not candidates:
+                parsed.update(missing='target',candidates=[])
+                # A fresh explicit ID may be supplied even if contextual evidence is absent.
+                await _save_pending(repo,owner,chat,source_key,parsed)
+                return 'Не удалось однозначно определить запись. Пришли её точный ID из списка задач или напоминаний.'
+            parsed.update(missing='target',candidates=[dict(id=r['id'],version=r['version']) for r in candidates])
+            await _save_pending(repo,owner,chat,source_key,parsed)
+            return 'Есть несколько записей. Пришли точный ID:\n'+'\n'.join(r['id']+' · '+r['title'][:80] for r in candidates[:10])
+        item=candidates[0]; parsed.update(item_id=item['id'],expected_version=item['expected_version'])
+    item=await repo.get(owner,chat,parsed['item_id'],kind=kind)
+    if not item: raise OrganizerError('item_not_found')
+    if item['version']!=parsed['expected_version']: raise OrganizerError('stale_item')
+    command={'todo':'todo','event':'event','reminder':'remind'}[item['kind']]
+    parsed['command']=command
+    action=parsed['action']
+    if action=='reschedule' and item['kind']=='todo': raise OrganizerError('task_has_no_schedule')
+    if action=='done' and item['kind']!='todo': raise OrganizerError('task_operation_only')
+    if action=='reschedule':
+        when=parsed.get('when'); missing=None
+        if not when: missing='when'
+        elif when in ('завтра','сегодня') or re.fullmatch(r'\d{4}-\d{2}-\d{2}',when): missing='clock'
+        elif when.startswith('clock@'): missing='date'
+        if not missing:
+            timezone_name=parsed.get('timezone') or await repo.get_timezone(owner,chat)
+            try:
+                if '@' in when:
+                    day,clock=when.split('@',1)
+                    if not timezone_name: raise OrganizerError('timezone_required')
+                    local=datetime.fromisoformat(parsed['requested_at']).astimezone(ZoneInfo(timezone_name))
+                    date=_calendar_date(day,local)
+                    when=f'{date.isoformat()}T{clock}'
+                due,label=scheduled_at(when,timezone_name,now=datetime.fromisoformat(parsed['requested_at']) if re.fullmatch(r'\d+[smhd]',when) else None)
+                parsed.update(when=due.isoformat(),timezone=parsed.get('timezone') or label)
+            except OrganizerError as exc:
+                if str(exc)=='timezone_required': missing='timezone'
+                else: raise
+        if missing:
+            parsed['missing']=missing
+            await _save_pending(repo,owner,chat,source_key,parsed)
+            return {'when':'На какое время перенести? Например через 30 минут или 2026-10-07T09:00.',
+                    'clock':'Во сколько? Например 09:00.','date':'На какую дату? Например завтра или 2026-10-07.',
+                    'timezone':'В каком часовом поясе? Например Europe/Moscow или Москва.'}[missing]
+    return dict(mutation=parsed,source_key=source_key)
+
+
+def _calendar_date(day,local):
+    try: return local.date()+timedelta(days=day=='завтра') if day in ('сегодня','завтра') else datetime.fromisoformat(day).date()
+    except ValueError: raise OrganizerError('invalid_datetime') from None
+
+
+def _work_request(text):
+    direct=re.sub(r'(?i)^(?:(?:привет|пожалуйста|арти)[,! ]+)+','',_text(text))
+    return bool(re.match(r'(?i)^(?:агент[:,]?\s*|выполни задачу[:,]\s*)',direct))
