@@ -3,10 +3,12 @@ import asyncio
 import logging
 import shlex
 from artifacts.computation import ComputationSpec
+from artifacts.material_cards import dataset_card, computation_card, WARNINGS
+from bot.material_search import send_material_card, _bounded, bounded_report
 from materials.datasets import DatasetPolicy,ColumnPolicy
 from materials.dataset_repository import DatasetRepository
 from materials.dataset_quality import diagnose
-from materials.runtime import enabled,capture_document,actor_for_current,service_for_bot,CURRENT_MATERIAL_USE,CURRENT_COMPUTATION_USE,ComputationUse,guard_current
+from materials.runtime import enabled,capture_document,actor_for_current,service_for_bot,CURRENT_MATERIAL_USE,CURRENT_COMPUTATION_USE,CURRENT_DERIVATIVE_USE,ComputationUse,DerivativeUse,guard_current
 from materials.types import MaterialError
 logger=logging.getLogger(__name__)
 
@@ -69,7 +71,7 @@ async def _run(update,context,action):
     document=getattr(original,'document',None)
     if document is None:
         await message.reply_text(HELP); return
-    token=computation_token=None
+    token=computation_token=derivative_token=None
     try:
         positional,options=parse(message.text)
         material=await capture_document(context,document,original)
@@ -84,19 +86,32 @@ async def _run(update,context,action):
                 # Keep source header units while changing parse locale/date order.
                 policies.append(ColumnPolicy(c,locale=options.get('locale','unknown'),date_order=options.get('date_order','unknown')))
             snapshots=await service.datasets(material.material_uses[0].asset_id,actor,policy=DatasetPolicy(columns=tuple(policies)))
+        derivative_repository=DatasetRepository(service.repository)
+        derivative_token=CURRENT_DERIVATIVE_USE.set(tuple(DerivativeUse(d.id,actor,derivative_repository,'dataset') for d in snapshots))
+        # Findings can become stale after a correction even when the original
+        # material is unchanged. Recheck every formula environment snapshot.
+        async def validate_datasets():
+            for snapshot in snapshots:
+                await derivative_repository.load_dataset(snapshot.id,actor)
+        card=None; footer=''
         if action=='dataset' and not options.get('sheet'):
             lines=['Таблицы:']
+            reports=[]
             for i,dataset in enumerate(snapshots,1):
                 report=await asyncio.to_thread(diagnose,dataset,formula_cells={(d.name,c.address):c for d in snapshots for c in d.cells})
+                reports.append(report)
                 lines.append(f'{i}. {dataset.name}: {len(dataset.cells)} ячеек; покрытие {dataset.coverage}; замечаний {len(report["findings"])}')
                 for finding in report['findings'][:4]: lines.append(f'  {finding["address"]}: '+quality_text(finding['codes']))
             output='\n'.join(lines)+'\nДля конкретного листа: sheet=номер.'
+            card=dataset_card(snapshots,reports)
         else:
             dataset=choose(snapshots,options.get('sheet'))
             if action=='dataset':
                 report=await asyncio.to_thread(diagnose,dataset,formula_cells={(d.name,c.address):c for d in snapshots for c in d.cells})
                 output=f'{dataset.name}; покрытие {dataset.coverage}\n'+'\n'.join(f'{c["index"]+1}. {c["name"]}: {c["dtype"]}; единицы {", ".join(c["units"])}' for c in dataset.columns)
                 output+='\nЗамечания:\n'+'\n'.join(f'{f["address"]}: '+quality_text(f['codes']) for f in report['findings'][:15])
+                if not report['findings']: output+='Не обнаружены в извлечённых ячейках; это не гарантия точности.'
+                card=dataset_card((dataset,),(report,))
             elif action=='calc':
                 if len(positional)!=2: raise MaterialError('invalid_table_command')
                 spec=ComputationSpec(positional[0],positional[1].upper(),reference=options.get('reference','').upper() or None,
@@ -109,32 +124,44 @@ async def _run(update,context,action):
                 output=f'{spec.operation} {spec.selection}: {r["value"]} {r["unit"]}\nЛист: {dataset.name}'
                 if r['lower']!=r['upper']: output+=f'\nДиапазон: {r["lower"]}…{r["upper"]}; учитывает границы входов и округление, это не вероятность.'
                 output+='\nИсточники: '+', '.join(source_text(i,dataset.name) for i in result.inputs[:12])
-                if result.warnings: output+='\nОграничения: '+('; '.join({'missing_inputs_excluded':'пропуски исключены','uncertain_source_input':'есть неуверенно распознанные входные значения','partial_dataset_selection_only':'материал извлечён частично; расчёт использует указанный диапазон','excel_blank_reference_as_zero':'формула Excel использует пустую ячейку как ноль'}.get(w,'учтено ограничение исходных данных') for w in result.warnings))
                 if result.formula_steps: output+='\nФормулы: '+', '.join(f'{s["address"]}: '+{'stale':'сохранённый итог устарел','missing':'рассчитано заново','matches_recomputed':'итог подтверждён повторным расчётом'}.get(s['cache_status'],'сохранённый итог не подтверждён') for s in result.formula_steps)
                 for check in result.checks:
                     if check['kind']=='reconciliation': output+='\nСверка номинального итога: '+('сходится' if check['passes'] else 'не сходится')
                     if check['kind']=='tukey_hinges_outliers' and check['addresses']:
                         output+='\nПроверь возможные выбросы: '+', '.join(check['addresses'])+'. Исходные значения сохранены.'
-                output+='\nРасчёт: '+result.id[:12]
+                card=computation_card(dataset,result)
+                footer='\nРасчёт: '+result.id[:12]
+                if result.warnings: footer+='\nОграничения расчёта: '+_bounded('; '.join(WARNINGS.get(w,w) for w in result.warnings),600)
+                footer+='\nОригинал: '+_bounded(document.file_name or 'документ',180)+'; документ над командой.'
             else:
                 if len(positional)!=2: raise MaterialError('invalid_table_command')
                 proposal=await service.propose_correction(dataset.id,actor,positional[0].upper(),positional[1])
                 corrected=await service.confirm_correction(actor,proposal)
                 output=f'{positional[0].upper()}: принято значение {positional[1]}. Исходная ячейка сохранена; зависимые расчёты отозваны.'
                 await DatasetRepository(service.repository).load_dataset(corrected.id,actor)
-        await guard_current(message.chat_id)
-        await message.reply_text(output[:3900])
+                # The correction intentionally invalidated the old snapshot.
+                CURRENT_DERIVATIVE_USE.reset(derivative_token); derivative_token=None
+        if action=='dataset':
+            limitations=tuple(dict.fromkeys(code for d in snapshots for code in d.limitations))
+            if limitations: footer+='\nОграничения извлечения ('+str(len(limitations))+'): '+_bounded('; '.join(limitations),600)
+            footer+='\nИсточники: '+_bounded(', '.join(d.name+' / '+d.id[:12] for d in snapshots),500)
+            footer+='\nОригинал — документ, на который отвечает команда. Заголовки включены в число ячеек.'
+        await send_material_card(message,context,card,bounded_report(output,footer),
+            validate=validate_datasets if action!='fix' else None)
     except (ValueError,MaterialError) as exc:
         code=getattr(exc,'code','invalid_table_command')
         logger.info('Table command refused: %s',code)
         if computation_token is not None:
             CURRENT_COMPUTATION_USE.reset(computation_token); computation_token=None
+        if derivative_token is not None:
+            CURRENT_DERIVATIVE_USE.reset(derivative_token); derivative_token=None
         if token is not None:
             CURRENT_MATERIAL_USE.reset(token); token=None
         await message.reply_text(ERRORS.get(code,'Не удалось выполнить проверяемую операцию. Проверь диапазон, доступ к источнику и данные.\n'+HELP[:700]))
     finally:
         if token is not None: CURRENT_MATERIAL_USE.reset(token)
         if computation_token is not None: CURRENT_COMPUTATION_USE.reset(computation_token)
+        if derivative_token is not None: CURRENT_DERIVATIVE_USE.reset(derivative_token)
 
 
 async def dataset_command(update,context): await _run(update,context,'dataset')

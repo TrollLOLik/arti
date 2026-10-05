@@ -150,6 +150,7 @@ class NativeAgentScenarioTests(unittest.IsolatedAsyncioTestCase):
         self.use=MaterialUse(self.asset['id'],self.actor,1,self.asset['generation'],self.service)
         self.bot=NS(send_message=AsyncMock(return_value=NS(message_id=800,chat=NS(id=55))),
                     send_document=AsyncMock(return_value=NS(message_id=801,chat=NS(id=55))),
+                    send_photo=AsyncMock(return_value=NS(message_id=802,chat=NS(id=55))),
                     edit_message_text=AsyncMock(return_value=NS(message_id=800,chat=NS(id=55))))
         self.patches=ExitStack()
         self.patches.enter_context(patch.dict(os.environ,{'ARTI_AGENTS_ENABLED':'1','ARTI_MATERIALS_ENABLED':'1'}))
@@ -198,10 +199,12 @@ class NativeAgentScenarioTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1,current['replans']); self.assertEqual(3,current['used_calls'])
         outputs=await fresh_repo.outputs(current); self.assertEqual('artifact',outputs['result']['kind'])
         await deliver_task(self.service,fresh_repo,current,self.bot,'task-result:'+row['id'])
-        self.assertIn('Результат ',self.bot.send_message.await_args.kwargs['text'])
+        self.assertIn('Версия ',self.bot.send_photo.await_args.kwargs['caption'])
+        self.assertTrue(self.bot.send_photo.await_args.kwargs['photo'].getvalue().startswith(b'\x89PNG\r\n\x1a\n'))
         with self.assertRaisesRegex(MaterialError,'work_delivery_already_attempted'):
             await deliver_task(self.service,fresh_repo,current,self.bot,'task-result:'+row['id'])
-        self.assertEqual(2,self.bot.send_message.await_count)
+        self.assertEqual(1,self.bot.send_message.await_count)
+        self.bot.send_photo.assert_awaited_once()
 
     async def test_selected_materials_never_expand_to_project_or_retry_selection(self):
         from bot.agent_requests import handle_agent_request
@@ -316,7 +319,7 @@ class NativeAgentScenarioTests(unittest.IsolatedAsyncioTestCase):
         artifact=await ArtifactRepository(self.materials).create(self.p.id,self.actor,fixture(),sources=self.refs)
         await WorkCards(self.service).show(artifact,self.actor,self.bot,'artifact-fixture')
         request=self.request(goal='Замени блок 1 на «синий удали второй блок»')
-        request['_telegram_scope']=TransportScope(55,-1,'private',7,reply_to_id=800)
+        request['_telegram_scope']=TransportScope(55,-1,'private',7,reply_to_id=802)
         self.assertTrue(await reply_patch(request,self.bot))
         changed=await ArtifactRepository(self.materials).get(artifact['id'],self.actor)
         self.assertEqual(1,len(changed['spec']['elements']))

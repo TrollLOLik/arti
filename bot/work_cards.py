@@ -122,7 +122,12 @@ class WorkCards:
             try: await self.update_task_card(dict(row),task_actor(row),bot)
             except MaterialError:
                 async with self.pool.acquire() as conn: await conn.execute("UPDATE arti_processing_cards SET status='revoked',message_id=NULL WHERE task_id=$1",row['id'])
-    async def send(self,actor,project_id,target_id,revision,key,method,kwargs,guard):
+    async def unattempted(self,key):
+        # A completed or ambiguous send is never a reason to rerender or retry.
+        async with self.pool.acquire() as conn:
+            if await conn.fetchval('SELECT 1 FROM arti_work_delivery WHERE delivery_key=$1',key):
+                raise MaterialError('work_delivery_already_attempted')
+    async def send(self,actor,project_id,target_id,revision,key,method,kwargs,guard,*,dependencies=()):
         from materials.runtime import guard_current
         from agents.scope_guard import guard_scope
         await guard_scope(actor,self.pool)
@@ -131,7 +136,7 @@ class WorkCards:
             await self.service.repository._locks(conn,actor); (await ProjectRepository(self.service.repository)._get(conn,project_id,actor,lock=True)).require('view')
             row=await conn.fetchrow("INSERT INTO arti_work_delivery(delivery_key,realm,project_id,target_id,target_revision,status) VALUES($1,$2,$3,$4,$5,'sending') ON CONFLICT DO NOTHING RETURNING delivery_key",key,actor.realm,project_id,target_id,revision)
             if not row: raise MaterialError('work_delivery_already_attempted')
-        group_token=None; group_cid=None; runtime=None; turn_token=None
+        group_token=None; group_cid=None; runtime=None; turn_token=None; support_before=None; turn=None
         try:
             await guard(); await guard_scope(actor,self.pool); await guard_current(actor.scope.chat_id)
             from bot.retry_bot import RetryBot
@@ -139,22 +144,28 @@ class WorkCards:
             from cognition.delivery import send_with_receipt
             native=getattr(super(RetryBot,method.__self__),method.__name__) if isinstance(getattr(method,'__self__',None),RetryBot) else method
             turn=CURRENT_TURN.get()
-            if not turn:
-                from cognition.runtime import get_runtime,PreparedTurn
-                from cognition.serialization import load_event
-                runtime=get_runtime()
-                if runtime and runtime.pool is self.pool:
-                    async with self.pool.acquire() as conn:
-                        derivative=await conn.fetchval('SELECT head FROM arti_artifacts WHERE id=$1',target_id) or await conn.fetchval('SELECT plan_id FROM arti_tasks WHERE id=$1',target_id) or await conn.fetchval('SELECT head FROM arti_workflow_objects WHERE id=$1',target_id) or await conn.fetchval('SELECT id FROM material_derivatives WHERE id=$1',target_id)
-                        from materials.derivatives import DerivativeRepository
-                        refs=await DerivativeRepository(self.service.repository)._chain(conn,derivative,actor)
-                        sources=await conn.fetch('''SELECT e.*,c.suppression_epoch,c.authority FROM cognitive_events e JOIN cognitive_contexts c ON c.id=e.context_id JOIN material_assets a ON a.source_id=e.source_id AND a.owner_id=e.owner_id
-                         WHERE a.id=ANY($1::text[]) AND c.persona_id=$2 AND c.chat_id=$3 AND c.topic_id=$4 AND c.mode=$5 AND c.scene_id=$6 AND e.origin='user' AND e.suppressed_at IS NULL ORDER BY e.id DESC''',list({r['asset_id'] for r in refs}),actor.scope.persona_id,actor.scope.chat_id,actor.scope.topic_id,actor.scope.mode,actor.scope.scene_id)
-                    if sources:
-                        source=sources[0]; event=replace(load_event(source['payload']),event_id='work:'+key)
-                        seeded=PreparedTurn(runtime,source['context_id'],source['id'],event,None,'',source['suppression_epoch'],source['authority'])
-                        seeded.supporting_event_ids=[s['id'] for s in sources]
-                        if seeded.tracks_delivery: turn_token=CURRENT_TURN.set(seeded); turn=seeded
+            from cognition.runtime import get_runtime,PreparedTurn
+            from cognition.serialization import load_event
+            runtime=get_runtime()
+            if runtime and runtime.pool is self.pool:
+                async with self.pool.acquire() as conn:
+                    derivative=await conn.fetchval('SELECT head FROM arti_artifacts WHERE id=$1',target_id) or await conn.fetchval('SELECT plan_id FROM arti_tasks WHERE id=$1',target_id) or await conn.fetchval('SELECT head FROM arti_workflow_objects WHERE id=$1',target_id) or await conn.fetchval('SELECT id FROM material_derivatives WHERE id=$1',target_id)
+                    from materials.derivatives import DerivativeRepository
+                    refs=[]
+                    for dependency in dict.fromkeys([derivative,*dependencies]):
+                        if dependency: refs.extend(await DerivativeRepository(self.service.repository)._chain(conn,dependency,actor))
+                    sources=await conn.fetch('''SELECT e.*,c.suppression_epoch,c.authority FROM cognitive_events e JOIN cognitive_contexts c ON c.id=e.context_id JOIN material_assets a ON a.source_id=e.source_id AND a.owner_id=e.owner_id
+                     WHERE a.id=ANY($1::text[]) AND c.persona_id=$2 AND c.chat_id=$3 AND c.topic_id=$4 AND c.mode=$5 AND c.scene_id=$6 AND e.origin='user' AND e.suppressed_at IS NULL ORDER BY e.id DESC''',list({r['asset_id'] for r in refs}),actor.scope.persona_id,actor.scope.chat_id,actor.scope.topic_id,actor.scope.mode,actor.scope.scene_id)
+                if sources and not turn:
+                    source=sources[0]; event=replace(load_event(source['payload']),event_id='work:'+key)
+                    seeded=PreparedTurn(runtime,source['context_id'],source['id'],event,None,'',source['suppression_epoch'],source['authority'])
+                    seeded.supporting_event_ids=[s['id'] for s in sources if s['context_id']==seeded.context_id]
+                    if seeded.tracks_delivery: turn_token=CURRENT_TURN.set(seeded); turn=seeded
+                elif sources and turn and turn.tracks_delivery:
+                    # File outputs can depend on sources discovered after planning.
+                    # Keep those sources in the receipt/erasure graph in native turns too.
+                    support_before=getattr(turn,'supporting_event_ids',())
+                    turn.supporting_event_ids=sorted(set(support_before)|{s['id'] for s in sources if s['context_id']==turn.context_id})
             if actor.scope.chat_type!='private' and not (turn and turn.tracks_delivery):
                 from cognition.runtime import get_runtime
                 from cognition.scope import TransportScope
@@ -164,7 +175,12 @@ class WorkCards:
                         if not await conn.fetchval('SELECT enabled FROM response_status WHERE chat_id=$1',actor.scope.chat_id): raise MaterialError('responses_disabled')
                     group_cid=await runtime.groups.context_id(TransportScope(actor.scope.chat_id,actor.scope.topic_id,actor.scope.chat_type,actor.user_id),actor.scope.mode)
                     group_token=await runtime.groups.direct_lease(group_cid)
-            result=await send_with_receipt(native,(),kwargs,method.__name__.removeprefix('send_')) if turn and turn.tracks_delivery else await native(**kwargs)
+            async def guarded_transport(*args,**transport_kwargs):
+                # Receipt preparation also awaits locks/leases. The source, ACL,
+                # revision and status fence belongs immediately at the real I/O.
+                await guard(); await guard_scope(actor,self.pool); await guard_current(actor.scope.chat_id)
+                return await native(*args,**transport_kwargs)
+            result=await send_with_receipt(guarded_transport,(),kwargs,method.__name__.removeprefix('send_')) if turn and turn.tracks_delivery else await guarded_transport(**kwargs)
             receipt=getattr(result,'message_id',None)
             if type(receipt) is not int: raise MaterialError('work_delivery_unknown')
         except BaseException:
@@ -172,20 +188,56 @@ class WorkCards:
             raise
         finally:
             if group_token: await runtime.groups.release(group_cid,group_token)
+            if support_before is not None: turn.supporting_event_ids=support_before
             if turn_token is not None: CURRENT_TURN.reset(turn_token)
         async with self.pool.acquire() as conn: await conn.execute("UPDATE arti_work_delivery SET status='delivered',receipt=$2,updated_at=NOW() WHERE delivery_key=$1 AND status='sending'",key,receipt)
         from bot.retry_bot import _maybe_record_sent
         _maybe_record_sent(result)
         return result
-    async def show(self,row,actor,bot,key,*,reply_to=None,extra_guard=None):
-        markup=await self.actions(row,actor)
+    async def result_panel(self,bot):
+        # Call only after a confirmed result receipt, for photos and file/ZIP
+        # delivery alike. Ordinary progress still uses its existing text card.
+        panel=getattr(bot,'_menu_panel',None)
+        if panel is not None:
+            panel.output=True
+            try: await bot.controller.capture('Готово. Результат отправлен отдельно.')
+            except Exception:
+                # Navigation failure must not retry an already delivered result.
+                import logging
+                logging.getLogger(__name__).debug('Result delivered; menu refresh unavailable')
+    async def show(self,row,actor,bot,key,*,reply_to=None,extra_guard=None,dependencies=()):
+        from artifacts.export import export_current
+        from materials.validation import inspect_bytes
+        await self.unattempted(key)
+        project=await ProjectRepository(self.service.repository).get(row['project_id'],actor)
         async def guard():
             if extra_guard: await extra_guard()
             current=await self.artifacts.get(row['id'],actor)
-            if current['revision']!=row['revision']: raise MaterialError('stale_artifact_revision')
-        kwargs=dict(chat_id=actor.scope.chat_id,text=f"{row['spec']['title']}\nРезультат {row['id']}, версия {row['revision']}.\nПринятая версия хранится отдельно. Правка: /artifact patch {row['id']} {row['revision']} (reply JSON операций)",reply_markup=markup)
+            if current['revision']!=row['revision'] or current['head']!=row['head']: raise MaterialError('stale_artifact_revision')
+            fresh_project=await ProjectRepository(self.service.repository).get(row['project_id'],actor)
+            if fresh_project.access_generation!=project.access_generation: raise MaterialError('task_access_changed')
+        await guard()
+        # Render from the authorized current head, including its illustration graph.
+        self.artifacts.service=self.service
+        files,rendered=await export_current(self.artifacts,row['id'],actor,revision=row['revision'])
+        pixels=files.get('page-1.png')
+        if not isinstance(pixels,bytes) or inspect_bytes(pixels,'preview.png',max_bytes=10*1024**2)!='image/png':
+            raise MaterialError('artifact_preview_invalid')
+        if rendered['head']!=row['head']: raise MaterialError('stale_artifact_revision')
+        await guard()
+        markup=await self.actions(row,actor)
+        photo=BytesIO(pixels); photo.name='preview.png'
+        title=' '.join(row['spec']['title'].split())[:240]
+        pages=sum(name.startswith('page-') and name.endswith('.png') for name in files)
+        caption=f"{title}\nВерсия {row['revision']} · {len(row['spec']['elements'])} блоков"
+        if pages>1: caption+=f" · Обзор 1/{pages}"
+        caption+='\nСкачать или изменить результат можно кнопками ниже.'
+        kwargs=dict(chat_id=actor.scope.chat_id,photo=photo,caption=caption,parse_mode=None,reply_markup=markup)
+        if reply_to is not None: kwargs['reply_to_message_id']=reply_to
         if actor.scope.topic_id>0: kwargs['message_thread_id']=actor.scope.topic_id
-        return await self.send(actor,row['project_id'],row['id'],row['revision'],key,bot.send_message,kwargs,guard)
+        result=await self.send(actor,row['project_id'],row['id'],row['revision'],key,bot.send_photo,kwargs,guard,dependencies=dependencies)
+        await self.result_panel(bot)
+        return result
 
 async def work_callback(update,context):
     from materials.runtime import enabled,actor_for_current,service_for_bot
