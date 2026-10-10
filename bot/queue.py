@@ -931,6 +931,42 @@ def _conversational_reply(request, mode, display_text, reply_markup, *, task):
     return conversational(display_text, task=task, card=bool(request.get('_result_card')), markup=reply_markup is not None)
 
 
+async def _initiative_question(bot, chat_id, turn):
+    """H4c (I1): at most one in-character question after a light private reply.
+
+    Consent to write first is asked once; with consent and no known timezone,
+    the local time is asked once. The decision is durable, so a retried request
+    keeps its send ordinals; a request resumed without it never asks.
+    """
+    from cognition.initiatives import question_due, question_text
+    from cognition.delivery import DeliveryUnknown, DeliverySuppressed
+    runtime = getattr(turn, 'runtime', None)
+    if runtime is None or not getattr(turn, 'active', False):
+        return
+    async def decide():
+        if _resumed_request():
+            return {'kind': None}
+        try:
+            return {'kind': await question_due(runtime, turn, light=True)}
+        except Exception:
+            return {'kind': None}
+    kind = (await checkpoint('initiative_question', decide)).get('kind')
+    if not kind:
+        return
+    from bot.human_rhythm import pacing_enabled
+    if pacing_enabled() and not _resumed_request():
+        from bot.text_delivery import typing_pause
+        await typing_pause(bot, chat_id, 1.5)
+    try:
+        await bot.send_message(chat_id=chat_id, text=question_text(kind, turn.event.event_id))
+    except DeliveryUnknown:
+        pass
+    except DeliverySuppressed:
+        raise
+    except Exception:
+        logger.info('initiative_question_skipped')
+
+
 async def _reply_quote_needed():
     """Quote the user's message only when a later message of theirs already waits."""
     from bot.request_runtime import CURRENT_REQUEST, store
@@ -1373,6 +1409,8 @@ async def process_user_reply(request, bot):
                         pacing = lambda parts: plan_pacing(user_message, parts, asyncio.get_running_loop().time() - turn_started)
                 sent_msg = await send_html_reply(callback_context.bot, chat_id=chat_id, text=display_text,
                     reply_to_message_id=quote, reply_markup=reply_markup, bubbles=paced, pacing=pacing)
+                if paced and sent_msg is not None:
+                    await _initiative_question(callback_context.bot, chat_id, cognitive_turn)
 
         # === ОТПРАВКА СТИКЕРА В ФОНЕ ===
         if sticker_mood:

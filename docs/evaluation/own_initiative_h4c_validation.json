@@ -1,0 +1,37 @@
+{
+  "batch": "H4c-own-initiative",
+  "date": "2026-10-11",
+  "base_commit": "29fd77e",
+  "model_version": "cognition-2026-09-30.4 (unchanged)",
+  "temperament_version": "arti-temperament-2 (unchanged)",
+  "schema_changes": ["cognition/migrations/054_arti_reading.sql: table arti_reading_notes"],
+  "new_artifact_kinds": ["local_time"],
+  "environment": {
+    "python": "3.12.14",
+    "postgresql": "16.4 disposable, localhost only, without pgvector",
+    "network": "test process proxied to a closed port; search, model and Telegram replaced by fakes",
+    "working_database_mutated": false,
+    "credentials_used": false
+  },
+  "new_tests": {"module": "tests.cognition.test_own_initiative", "tests": 21, "passed": 21, "database_tests": 13},
+  "database_cognition_suite": {
+    "tests": 1161,
+    "failures": ["tests.cognition.test_native_agent_safety.NativeOrganizerSafetyTests.test_legacy_erasure_during_transport_fences_late_confirmation"],
+    "errors": 2,
+    "error_cause": "relation memory_chunks does not exist (created only with pgvector); same as before H1"
+  },
+  "non_database_full_discovery": {"tests": 1610, "failure_set_identical_to_h4b": true},
+  "parameters": {
+    "consent": {"min_messages": 10, "min_days": 2, "asked": "once, after a light private reply", "answer_max_chars": 60},
+    "local_time": {"rounding_minutes": 15, "offset_range_hours": [-12, 14], "quiet_hours": "23:00-09:00", "dst": "not tracked"},
+    "occasions": {"quiet_after_minutes": 30, "return_after_silence_days": [7, 14], "return_every_days": 30,
+                  "share_every_days": 7, "share_note_max_age_days": 3, "share_active_days": 30,
+                  "own_thought_min_familiarity": 0.85, "no_article_after_concern_days": 14},
+    "receptivity": {"window": 5, "lookback_days": 90, "answer_window_hours": 48, "weekly_budget": {"default": 2, "warm": 3, "after_one_ignore": 1},
+                    "pause_days": {"two_ignored": 14, "three_ignored": 30}},
+    "delivery_limits_for_new_occasions": {"context_daily": 1, "spacing_hours": 6},
+    "reading": {"reads_per_day": 2, "interests": 8, "notes_in_prompt_days": 7, "notes_in_prompt": 3, "retry_tick_seconds": 3600}
+  },
+  "switches": ["ARTI_INITIATIVES_ENABLED", "ARTI_READING_ENABLED", "ARTI_READING_MODEL"],
+  "limits": "Contract and delivery-path checks with fake search, model and transport; live reading quality and the social fit of initiatives were not measured."
+}

@@ -168,6 +168,9 @@ class MemoryRepository:
                 await self._put(conn,cid,'goals',gkey,goal_transition(goals or {},s,event),owner,[eid],([gr['id']] if gr else []))
                 await self._learn_beliefs(conn,cid,eid,event,s)
                 await self._intentions(conn,cid,eid,event,s)
+                # H4c (I1): an answer to Arti's local-time question becomes a UTC offset.
+                from cognition.initiatives import learn_local_time
+                await learn_local_time(self,conn,cid,eid,event)
             elif event.evidence.origin==Origin.DELIVERED_ACTION:
                 await self._intentions(conn,cid,eid,event,s)
                 await self._learn_self(conn,cid,eid,event,s)

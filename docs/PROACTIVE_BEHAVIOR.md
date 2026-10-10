@@ -72,6 +72,10 @@ Arti's own unexecuted promises remain excluded from automatic user status
 inquiries. There is no new executor that can actually fulfill an arbitrary
 promise; pretending otherwise or asking the user to do that work would be wrong.
 
+## Arti's own initiative (H4c)
+
+Consent is asked once, in character, after a light private reply; only a short clear answer becomes the explicit `proactive` preference, and silence is never consent. With consent and no timezone, Arti asks the local time once and keeps only a UTC offset for quiet hours. New occasions (a quiet hello after 7-14 days of silence, sharing an actually read note) and receptivity learning from answered or ignored initiatives are described in [ARTI_H4C_PROACTIVITY.md](ARTI_H4C_PROACTIVITY.md). The principles above are unchanged.
+
 ## Quiet hours and limits
 
 Unknown timezone fails closed for unsolicited initiative. No host/UTC timezone

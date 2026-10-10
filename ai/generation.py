@@ -213,6 +213,17 @@ async def generate_response_stream(
                        and cognitive_turn.event.context.chat_id == chat_id else None)
             tail.append(await temporal_context(current, transcript=not native_dialogue,
                                                person_name=user_name if chat_id and chat_id > 0 else None))
+            # H4c (I7): what Arti really read recently; optional, never blocks a reply.
+            if current is not None and getattr(current, 'runtime', None) is not None:
+                try:
+                    from cognition.reading import recent_notes, reading_block
+                    async with asyncio.timeout(.3):
+                        notes = await recent_notes(current.runtime.pool, current.runtime.clock())
+                    block = reading_block(notes, current.runtime.clock())
+                    if block:
+                        tail.append(block)
+                except Exception as exc:
+                    logger.debug('Reading notes skipped: %s', type(exc).__name__)
     if not is_rp_mode and (not custom_system_prompt or custom_system_prompt.startswith(ARTI_SYSTEM_PROMPT)):
         tail.append(ARTI_VOICE_ANCHOR)
     actual_role = '\n\n'.join(service+[actual_role]+tail)

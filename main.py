@@ -175,6 +175,12 @@ def run_with_restart():
                 # H4b (M3): tentative patterns after a conversation pauses; ARTI_REFLECTION_ENABLED=0 turns it off.
                 from cognition.reflection import reflection_scheduler
                 spawn_worker(run_supervised(reflection_scheduler,'cognitive_reflection',get_runtime()))
+                # H4c: Arti's own initiatives (consent required) and daily reading.
+                # ARTI_INITIATIVES_ENABLED=0 / ARTI_READING_ENABLED=0 turn them off.
+                from cognition.initiatives import initiative_scheduler
+                spawn_worker(run_supervised(initiative_scheduler,'cognitive_initiatives',get_runtime(),app.bot))
+                from cognition.reading import reading_scheduler
+                spawn_worker(run_supervised(reading_scheduler,'arti_reading',get_runtime()))
                 from materials.runtime import maintenance_worker
                 spawn_worker(run_supervised(maintenance_worker,'materials_maintenance'))
                 from agents.runtime import agent_worker,processing_card_worker

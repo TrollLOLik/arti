@@ -208,7 +208,13 @@ async def evaluate(runtime,conn,row,*,expected_revision=None,expected_key=None):
     if not relationship or (object_value(relationship).get('preferences') or {}).get('proactive') is not True:
         return None
     from cognition.initiative_policy import private_reason
-    if await private_reason(conn,owner,now):
+    if await private_reason(conn,owner,now,context_id=cid):
+        return None
+    # H4c (I6): ignored initiatives pause unsolicited follow-ups too; an
+    # initiative still awaiting an answer is not followed by another one.
+    from cognition.initiatives import receptivity
+    limits = await receptivity(conn,cid,now)
+    if limits['pending'] or (limits['paused_until'] is not None and now<limits['paused_until']):
         return None
     recent = await conn.fetch('''SELECT * FROM cognitive_events WHERE context_id=$1 AND owner_id=$2
         AND origin IN ('user','delivered_action') AND suppressed_at IS NULL AND id>$3

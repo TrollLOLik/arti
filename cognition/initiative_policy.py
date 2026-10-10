@@ -20,15 +20,26 @@ OWNER_SPACING_SECONDS = 3600
 GLOBAL_BURST_LIMIT = 3
 
 
-async def private_reason(conn, owner_id, now):
-    """Fail closed when a personal timezone was never explicitly supplied."""
+async def private_reason(conn, owner_id, now, *, context_id=None):
+    """Fail closed when the person's local time was never explicitly supplied.
+
+    The organizer timezone wins; otherwise the UTC offset derived from the
+    person's own answer about their local time (H4c, I1) is used for quiet hours.
+    """
     name = await conn.fetchval('SELECT timezone FROM arti_organizer_preferences WHERE owner_id=$1 FOR SHARE', owner_id)
-    if not name or now.tzinfo is None:
+    if now.tzinfo is None:
         return 'unknown_timezone'
-    try:
-        hour = now.astimezone(ZoneInfo(name)).hour
-    except (ZoneInfoNotFoundError, ValueError, TypeError):
-        return 'unknown_timezone'
+    if name:
+        try:
+            hour = now.astimezone(ZoneInfo(name)).hour
+        except (ZoneInfoNotFoundError, ValueError, TypeError):
+            return 'unknown_timezone'
+    else:
+        from cognition.initiatives import local_offset
+        offset = await local_offset(conn, context_id, owner_id) if context_id is not None else None
+        if offset is None:
+            return 'unknown_timezone'
+        hour = (now + timedelta(minutes=offset)).astimezone(ZoneInfo('UTC')).hour
     return 'quiet_hours' if hour >= 23 or hour < 9 else None
 
 

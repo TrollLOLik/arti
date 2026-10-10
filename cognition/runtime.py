@@ -321,6 +321,12 @@ class CognitiveRuntime:
                         p = replace(p,appraisals=(),situation=replace(p.situation,beliefs=own,preferences={},social_signal='contact',revisions=()))
                     else:
                         p = replace(p,appraisals=())
+                elif event.evidence.origin==Origin.USER:
+                    # H4c (I1): a clear answer to Arti's consent question, or a stop
+                    # after an initiative, is an explicit channel preference.
+                    from cognition.initiatives import consent_patch
+                    async with self.pool.acquire() as conn:
+                        p = await consent_patch(conn,cid,event,eid,p)
                 # The dependency epoch is checked by the state commit. Store the
                 # exact eligible raw-source registry for later invalidation.
                 async with self.pool.acquire() as conn,conn.transaction():

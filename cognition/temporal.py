@@ -67,6 +67,8 @@ def _clock(moment):
 
 
 def _zone(name):
+    if isinstance(name, timezone):
+        return name
     if not name or not isinstance(name, str):
         return None
     try:
@@ -135,6 +137,12 @@ async def temporal_context(turn, *, budget=.3, transcript=True, person_name=None
                     user_timezone = await conn.fetchval(
                         'SELECT timezone FROM arti_organizer_preferences WHERE owner_id=$1',
                         event.evidence.owner_id)
+                    if not user_timezone:
+                        # H4c (I1): the person's own answer about their local time.
+                        from cognition.initiatives import local_offset
+                        offset = await local_offset(conn, turn.context_id, event.evidence.owner_id)
+                        if offset is not None:
+                            user_timezone = timezone(timedelta(minutes=offset))
                     previous = await conn.fetchval(
                         '''SELECT max(occurred_at) FROM cognitive_events
                            WHERE context_id=$1 AND id<$2 AND suppressed_at IS NULL

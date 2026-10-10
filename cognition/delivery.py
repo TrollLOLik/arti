@@ -101,6 +101,9 @@ async def _send_with_receipt(method,args,kwargs,channel):
         if getattr(turn,'private_intention_id',None):
             from cognition.private_followup import delivery_guard
             if not await delivery_guard(turn,conn): raise DeliverySuppressed()
+        # H4c: an initiative re-checks its own occasion under the same lock.
+        guard = getattr(turn,'delivery_guard',None)
+        if guard is not None and not await guard(turn,conn): raise DeliverySuppressed()
         if channel=='sticker' and await conn.fetchval("""SELECT 1 FROM cognitive_outbox WHERE context_id=$1 AND channel='sticker'
             AND status IN ('sending','delivered','delivery_unknown') AND created_at>NOW()-INTERVAL '2 minutes'""",turn.context_id):
             raise DeliverySuppressed()
