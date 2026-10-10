@@ -309,14 +309,43 @@ class RequestStoreTests(unittest.IsolatedAsyncioTestCase):
             row=await self.store.claim(['text'])
             self.assertFalse(await self.store.checkpoint(row['id'],row['token'],'private',encoded))
 
-    async def test_debounce_never_extends_two_second_budget(self):
-        a=await self.store.enqueue('text',1,-1,'A',self.envelope('A'))
+    async def test_debounce_never_extends_the_burst_budget(self):
+        from bot.human_rhythm import DEBOUNCE_MAX_SECONDS
+        a=await self.store.enqueue('text',1,-1,'A',self.envelope('A'),debounce_seconds=6)
         async with self.pool.acquire() as conn:
-            await conn.execute("UPDATE arti_requests SET created_at=NOW()-INTERVAL '1.8 seconds' WHERE id=$1",a['id'])
-        b=await self.store.enqueue('text',1,-1,'B',self.envelope('B',message=2))
+            await conn.execute("UPDATE arti_requests SET created_at=NOW()-make_interval(secs=>$2) WHERE id=$1",a['id'],DEBOUNCE_MAX_SECONDS-.2)
+        b=await self.store.enqueue('text',1,-1,'B',self.envelope('B',message=2),debounce_seconds=6)
         self.assertEqual(a['id'],b['id'])
-        self.assertLessEqual((b['available_at']-b['created_at']).total_seconds(),2)
+        self.assertLessEqual((b['available_at']-b['created_at']).total_seconds(),DEBOUNCE_MAX_SECONDS)
         async with self.pool.acquire() as conn:
-            await conn.execute("UPDATE arti_requests SET created_at=NOW()-INTERVAL '2.1 seconds' WHERE id=$1",a['id'])
+            await conn.execute("UPDATE arti_requests SET created_at=NOW()-make_interval(secs=>$2),available_at=NOW()+INTERVAL '1 second' WHERE id=$1",
+                a['id'],DEBOUNCE_MAX_SECONDS+.1)
         c=await self.store.enqueue('text',1,-1,'C',self.envelope('C',message=3))
         self.assertNotEqual(a['id'],c['id'])
+        huge=await self.store.enqueue('text',2,-1,'H',self.envelope('H'),debounce_seconds=60)
+        self.assertLessEqual((huge['available_at']-huge['created_at']).total_seconds(),DEBOUNCE_MAX_SECONDS+.01)
+
+    async def test_adaptive_debounce_waits_for_an_unfinished_fragment(self):
+        a=await self.store.enqueue('text',1,-1,'A',self.envelope('слушай'),debounce_seconds=6)
+        self.assertGreater((a['available_at']-a['created_at']).total_seconds(),5)
+        self.assertIsNone(await self.store.claim(['text']))
+        # A finished sentence shortens the wait for the whole burst.
+        b=await self.store.enqueue('text',1,-1,'B',self.envelope('тут такое случилось.',message=2),debounce_seconds=1.5)
+        self.assertEqual(a['id'],b['id'])
+        self.assertLess((b['available_at']-b['created_at']).total_seconds(),3)
+        self.assertEqual('слушай\nтут такое случилось.',b['payload']['value']['items']['user_message'])
+        await self.ready()
+        row=await self.store.claim(['text'])
+        self.assertEqual(a['id'],row['id'])
+
+    async def test_newer_request_in_lane_requires_a_quoted_reply(self):
+        a=await self.store.enqueue('text',1,-1,'A',self.envelope('A',owner=1))
+        b=await self.store.enqueue('text',1,-1,'B',self.envelope('B',owner=2,message=2))
+        other=await self.store.enqueue('text',3,-1,'X',self.envelope('X',owner=1))
+        self.assertTrue(await self.store.newer_in_lane(a['id']))
+        self.assertFalse(await self.store.newer_in_lane(b['id']))
+        self.assertFalse(await self.store.newer_in_lane(other['id']))
+        await self.ready()
+        row=await self.store.claim(['text'])
+        await self.store.finish(row['id'],row['token'],'completed')
+        self.assertFalse(await self.store.newer_in_lane(other['id']))

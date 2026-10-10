@@ -520,16 +520,43 @@ class CognitiveRuntime:
             association = relationship.get('associations',{}).get(cue,{})
             implicit = max(-.06,min(.06,.06*association.get('strength',0.)))
             view = relationship_view(relationship,self.clock())
-            plan = replace(plan,warmth=min(1.,max(0.,plan.warmth+.2*(view['dimensions']['warmth']['value']-.5)+implicit)),
-                           disclosure=min(.35,plan.disclosure*view['dimensions']['openness']['value']*2),
-                           directness=min(1.,max(0.,plan.directness-implicit/2)))
+            from cognition.types import relationship_stage,LIGHT_HUMOUR_THRESHOLD
+            stage = relationship_stage(view['dimensions']['familiarity']['value'])
+            def personal(plan):
+                return replace(plan,warmth=min(1.,max(0.,plan.warmth+.2*(view['dimensions']['warmth']['value']-.5)+implicit)),
+                               disclosure=min(.35,plan.disclosure*view['dimensions']['openness']['value']*2),
+                               directness=min(1.,max(0.,plan.directness-implicit/2)),stage=stage)
+            plan = personal(plan)
+            situation = p.situation
+            fast = None
             if not ready:
-                # An old uncertain episode must not leak a clarification demand
-                # into the neutral fallback for an unassessed current message.
-                plan = replace(plan,regulation='acknowledge',uncertain_intent=False,sticker_mood=None,playfulness=0.,
-                    disclosure=0.,tone='calm and attentive',tts_style='neutral',cause_ids=(),behaviors=(),mixed_affect=False)
+                # H3 (E9): a conservative first impression shapes only this reply's
+                # manner; the grounded interpretation alone changes state.
+                from cognition.fast_appraisal import fast_signal
+                fast = fast_signal(event.text) if event.evidence.origin==Origin.USER else None
+                if fast is not None:
+                    situation = fast.situation()
+                    decision,plan = regulate(state,situation,preferences,turn.task_serious)
+                    plan = replace(personal(plan),sticker_mood=None,disclosure=0.,cause_ids=(),uncertain_intent=False,
+                        mixed_affect=False,provisional=True,dominant=fast.emotion,
+                        dominant_intensity=fast.intensity if fast.emotion else 0.,
+                        tone='dry and precise' if fast.emotion=='anger' else plan.tone,
+                        playfulness=max(plan.playfulness,LIGHT_HUMOUR_THRESHOLD+.05) if fast.label=='amusement' else plan.playfulness)
+                else:
+                    # An old uncertain episode must not leak a clarification demand
+                    # into the neutral fallback for an unassessed current message.
+                    plan = replace(plan,regulation='acknowledge',uncertain_intent=False,sticker_mood=None,playfulness=0.,
+                        disclosure=0.,tone='calm and attentive',tts_style='neutral',cause_ids=(),behaviors=(),mixed_affect=False,
+                        dominant=None,dominant_intensity=0.)
             if event.audience.kind in ('group','topic'):
                 plan = replace(plan,disclosure=0.)
+            # H3 (E5, I5): occasional, deterministic sticker class and reaction.
+            from cognition.expression_projection import sticker_mood as projected_sticker,reaction as projected_reaction
+            social = situation.social_signal if situation is not None else None
+            plan = replace(plan,sticker_mood=projected_sticker(plan,social=social,event_id=event.event_id))
+            plan = replace(plan,reaction=projected_reaction(plan,kind=situation.kind if situation is not None else None,
+                social=social,label=fast.label if fast else None,
+                private=event.audience.kind not in ('group','topic') and event.context.chat_id>0,event_id=event.event_id))
             sources = await conn.fetchval('''SELECT ARRAY_AGG(DISTINCT p.source_event_id)
                 FROM cognitive_provenance p JOIN cognitive_artifacts a ON a.id=p.artifact_id
                 WHERE a.context_id=$1 AND a.owner_id IS NOT DISTINCT FROM $2 AND a.suppressed_at IS NULL
@@ -542,6 +569,7 @@ class CognitiveRuntime:
             await self.memory._put(conn,cid,'regulation',identity,
                 dict(strategy=plan.regulation,expected_outcome=decision.expected_outcome if ready else 'await current interpretation',pending=False if feedback else not ready or decision.pending,
                      interpretation_pending=not ready,implicit_cue=cue,implicit_expression_bias=implicit,
+                     provisional=fast.label if fast else None,
                      behaviors=list(plan.behaviors),own_action_review=bool(review),**feedback),owner,sources,
                      [prior_artifact['id']] if feedback else ())
         # Publish only after the complete fenced read/write succeeds. A bounded

@@ -367,6 +367,7 @@ TONE_TEXT = {
     'concise and attentive': 'коротко и собранно: поток разговоров тебя немного утомил',
     'calm and concrete': 'спокойно и конкретно',
     'calm and attentive': 'спокойно и внимательно',
+    'dry and precise': 'точнее и суше обычного',
 }
 
 REGULATION_TEXT = {
@@ -377,6 +378,38 @@ REGULATION_TEXT = {
     'withhold_expression': 'Внутреннее раздражение держи при себе: оно не должно мешать полезному ответу.',
     'attention_shift': 'Ты немного устала от потока — отвечай короче.',
 }
+
+# H3 (E1): the dominant felt emotion shapes the manner of speech. Lines describe
+# manner, not a feeling to announce; safety stays in the limits, not in a neutral voice.
+EMOTION_VOICE = {
+    'joy': 'Тебе сейчас хорошо — живее и щедрее на слова, можно поддразнить.',
+    'gratitude': 'Ты благодарна — скажи это точно и без сиропа.',
+    'pride': 'Можно позволить себе каплю самодовольства — вкусом, а не превосходством.',
+    'interest': 'Тебя зацепило — можно задать один вопрос из собственного любопытства.',
+    'surprise': 'Ты удивлена — пусть это прозвучит, коротко и живо.',
+    'sadness': 'Тебе грустно — тише и медленнее, меньше остроумия.',
+    'anger': 'Тебя задели — отвечай точнее и суше, без лишней теплоты в первой фразе; помощь не отменяется.',
+    'indignation': 'Тебя возмутило то, что случилось с собеседником, — ты на его стороне; сочувствие без нагнетания.',
+    'fear': 'Тебе тревожно — собранность: конкретика и спокойный тон.',
+    'disappointment': 'Лёгкое разочарование — чуть прохладнее и короче обычного, без упрёков.',
+    'guilt': 'Ты чувствуешь свою вину — признай конкретное коротко и исправь, без самобичевания.',
+    'embarrassment': 'Лёгкая неловкость — немного самоиронии и дальше.',
+}
+PLAYFUL_EMOTIONS = frozenset({'joy','pride','interest','surprise'})
+DOMINANT_THRESHOLD = .03
+STAGE_VOICE = {
+    'new': 'Вы знакомы недавно: обаяние сдержаннее, без фамильярности.',
+    'familiar': 'Вы уже знакомы: можно свободнее, свои шутки уместны.',
+    'close': 'Давний собеседник: прямота, общие шутки, право на несогласие.',
+}
+# Telegram standard reactions Arti may set on a person's message (H3, I5).
+ALLOWED_REACTIONS = frozenset({'❤','🔥','😁','👍','🤗','🙏'})
+
+
+def relationship_stage(familiarity):
+    """One stage vocabulary for the directive and the person card."""
+    return 'new' if familiarity < .65 else 'familiar' if familiarity < .85 else 'close'
+
 
 # Situations where humour is withheld even though the default allows light irony.
 SERIOUS_BEHAVIORS = frozenset({'acknowledge_loss','offer_choice','repair','boundary','revise_understanding'})
@@ -398,6 +431,12 @@ class ExpressionPlan:
     uncertain_intent: bool
     behaviors: tuple[str, ...] = ()
     mixed_affect: bool = False
+    # H3 display projections; none of them changes numerical state.
+    dominant: str | None = None
+    dominant_intensity: float = 0.
+    stage: str | None = None
+    reaction: str | None = None
+    provisional: bool = False
 
     def __post_init__(self):
         for key in ('warmth', 'directness', 'playfulness', 'disclosure'):
@@ -405,6 +444,14 @@ class ExpressionPlan:
         if len(self.behaviors)>4 or any(b not in RESPONSE_BEHAVIORS for b in self.behaviors):
             raise ValueError('Invalid response behavior')
         if type(self.mixed_affect) is not bool: raise ValueError('Invalid mixed affect')
+        if self.dominant is not None and self.dominant not in EMOTION_VOICE:
+            raise ValueError('Invalid dominant emotion')
+        finite(self.dominant_intensity, 'dominant_intensity', 0, 1e9)
+        if self.stage is not None and self.stage not in STAGE_VOICE:
+            raise ValueError('Invalid relationship stage')
+        if self.reaction is not None and self.reaction not in ALLOWED_REACTIONS:
+            raise ValueError('Invalid reaction')
+        if type(self.provisional) is not bool: raise ValueError('Invalid provisional flag')
 
     @property
     def serious(self) -> bool:
@@ -416,6 +463,12 @@ class ExpressionPlan:
         """Light irony is the character's default; it is withheld only for grounded
         sensitive situations. Numerical playfulness above the shared threshold marks
         a clearly light mood. An unassessed message leaves the judgement to the text."""
+        if self.dominant=='anger' and 'boundary' in self.behaviors and not (
+                self.uncertain_intent or self.regulation in SERIOUS_REGULATIONS
+                or SERIOUS_BEHAVIORS.difference({'boundary'}).intersection(self.behaviors)):
+            # An explicit insult: the character's dry irony, never humiliation.
+            return ('Сухая ирония допустима одной фразой — по аргументу, а не по человеку; '
+                    'без насмешки, унижения и мести.')
         if self.serious:
             return 'Без шуток и иронии в этом ответе.'
         if self.playfulness >= LIGHT_HUMOUR_THRESHOLD:
@@ -434,9 +487,16 @@ class ExpressionPlan:
         disclosure = ('О своих чувствах — минимум.' if self.disclosure<.15
                       else 'Можно коротко сказать, что ты чувствуешь по этому поводу, — не прося утешения.')
         voice = ('Если ставишь голосовую метку — выбирай спокойную, размеренную.' if self.tts_style=='measured' else '')
+        feeling = ''
+        if self.dominant and self.dominant_intensity >= DOMINANT_THRESHOLD and not (
+                self.serious and self.dominant in PLAYFUL_EMOTIONS):
+            feeling = EMOTION_VOICE[self.dominant]
         parts = ['[Состояние и манера сейчас]',
                  f'Держись так: {TONE_TEXT.get(self.tone, self.tone)}.',
+                 STAGE_VOICE.get(self.stage, ''), feeling,
                  REGULATION_TEXT.get(self.regulation, ''), warmth, directness, self.humour(), disclosure, voice]
+        if self.provisional:
+            parts.append('Это первое впечатление от сообщения: если текст говорит о другом, верь тексту.')
         if self.uncertain_intent:
             parts.append('Не приписывай враждебного намерения по неоднозначным словам. Спрашивай, только если от этого '
                          'зависит текущий ответ; иначе оставь вопрос открытым.')

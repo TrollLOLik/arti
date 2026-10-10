@@ -113,13 +113,17 @@ class RequestStore:
             if count!=len(deps['material_ids']): return False
         return True
 
-    async def enqueue(self, kind, chat_id, topic_id, dedupe_key, payload, budget_seconds=900, *, resources=()):
+    async def enqueue(self, kind, chat_id, topic_id, dedupe_key, payload, budget_seconds=900, *, resources=(), debounce_seconds=None):
         if not isinstance(payload, dict) or not dedupe_key or not 1 <= budget_seconds <= (604800 if kind in ('dubbing','vclone') else 86400):
             raise ValueError('invalid_request')
         resources=self._resource_names(resources)
         deps=self._dependencies(payload)
         debounce=kind=='text' and payload.get('kind')=='request'
         if debounce and resources: raise ValueError('disk_resources_not_debounceable')
+        from bot.human_rhythm import DEBOUNCE_MAX_SECONDS, LEGACY_WAIT
+        # The latest fragment decides how long to wait for the rest of a burst;
+        # the whole burst never waits longer than DEBOUNCE_MAX_SECONDS.
+        wait=LEGACY_WAIT if debounce_seconds is None else min(DEBOUNCE_MAX_SECONDS,max(.3,float(debounce_seconds)))
         async with self.pool.acquire() as conn, conn.transaction():
             await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",f'request:{chat_id}:{topic_id}:{kind}')
             existing=await conn.fetchrow('SELECT * FROM arti_requests WHERE chat_id=$1 AND topic_id=$2 AND dedupe_key=$3',chat_id,topic_id,dedupe_key)
@@ -133,7 +137,7 @@ class RequestStore:
             if debounce:
                 # Only newest non-child lane row may absorb input. Never jump
                 # across another author's incompatible or already completed turn.
-                parent=await conn.fetchrow("SELECT *, updated_at>NOW()-INTERVAL '0.6 seconds' AND created_at>NOW()-INTERVAL '2 seconds' AS recent FROM arti_requests WHERE chat_id=$1 AND topic_id=$2 AND kind=$3 AND parent_id IS NULL ORDER BY seq DESC LIMIT 1 FOR UPDATE",chat_id,topic_id,kind)
+                parent=await conn.fetchrow("SELECT *, available_at>NOW() AND created_at>NOW()-make_interval(secs=>$4) AS recent FROM arti_requests WHERE chat_id=$1 AND topic_id=$2 AND kind=$3 AND parent_id IS NULL ORDER BY seq DESC LIMIT 1 FOR UPDATE",chat_id,topic_id,kind,float(DEBOUNCE_MAX_SECONDS))
                 if parent and parent['state']=='queued' and parent['recent']:
                     from bot.request_codec import coalesce_requests
                     merged=coalesce_requests(_row(parent)['payload'],payload)
@@ -144,12 +148,13 @@ class RequestStore:
                     VALUES($1,$2,$3,$4,$5,'{}','coalesced',$6,NOW()+make_interval(secs=>$7),$8,$9,$10)""",uuid.uuid4().hex,kind,chat_id,topic_id,dedupe_key,parent['id'],float(budget_seconds),deps['context_ids'],deps['source_event_ids'],deps['material_ids'])
                 return _row(await conn.fetchrow("""UPDATE arti_requests SET payload=$2::jsonb,context_ids=$3,source_event_ids=$4,material_ids=$5,
                     deadline_at=LEAST(deadline_at,NOW()+make_interval(secs=>$6)),updated_at=NOW(),
-                    available_at=LEAST(created_at+INTERVAL '2 seconds',NOW()+INTERVAL '0.6 seconds') WHERE id=$1 RETURNING *""",
-                    parent['id'],_json(merged),combined['context_ids'],combined['source_event_ids'],combined['material_ids'],float(budget_seconds)))
+                    available_at=LEAST(created_at+make_interval(secs=>$7),NOW()+make_interval(secs=>$8)) WHERE id=$1 RETURNING *""",
+                    parent['id'],_json(merged),combined['context_ids'],combined['source_event_ids'],combined['material_ids'],float(budget_seconds),
+                    float(DEBOUNCE_MAX_SECONDS),wait))
             row=_row(await conn.fetchrow("""INSERT INTO arti_requests
                 (id,kind,chat_id,topic_id,dedupe_key,payload,deadline_at,available_at,context_ids,source_event_ids,material_ids)
                 VALUES($1,$2,$3,$4,$5,$6::jsonb,NOW()+make_interval(secs=>$7),NOW()+make_interval(secs=>$8),$9,$10,$11) RETURNING *""",
-                uuid.uuid4().hex,kind,chat_id,topic_id,dedupe_key,_json(payload),float(budget_seconds),.6 if debounce else 0.,deps['context_ids'],deps['source_event_ids'],deps['material_ids']))
+                uuid.uuid4().hex,kind,chat_id,topic_id,dedupe_key,_json(payload),float(budget_seconds),wait if debounce else 0.,deps['context_ids'],deps['source_event_ids'],deps['material_ids']))
             await self._bind_resources(conn,row['id'],resources)
             return row
 
@@ -310,6 +315,13 @@ class RequestStore:
 
     async def erase_materials(self, asset_ids, conn=None):
         return await self._erase_dependencies('material_ids',asset_ids,conn)
+
+    async def newer_in_lane(self, id):
+        """A later independent request already waits in the same lane (reply must quote)."""
+        async with self.pool.acquire() as conn:
+            return bool(await conn.fetchval('''SELECT EXISTS(SELECT 1 FROM arti_requests n JOIN arti_requests r ON r.id=$1
+                WHERE n.chat_id=r.chat_id AND n.topic_id=r.topic_id AND n.kind=r.kind AND n.parent_id IS NULL
+                AND n.seq>r.seq AND n.state IN ('queued','running'))''',id))
 
     async def status(self, id):
         async with self.pool.acquire() as conn:

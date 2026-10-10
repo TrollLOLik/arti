@@ -68,7 +68,13 @@ async def submit(request, *, resources=()):
         budget = float(os.getenv('ARTI_REQUEST_DISK_MEDIA_BUDGET_SECONDS', '604800'))
         if not 60 <= budget <= 604800:
             raise ValueError('invalid_disk_media_budget')
-    job = await store().enqueue(kind, request['chat_id'], topic, key, payload, budget_seconds=budget, resources=resources)
+    wait = None
+    if kind == 'text' and request['chat_id'] > 0:
+        # Private chats: wait longer when the fragment looks unfinished (H3 R1).
+        from bot.human_rhythm import continuation_wait
+        wait = continuation_wait(request.get('user_message'))
+    job = await store().enqueue(kind, request['chat_id'], topic, key, payload, budget_seconds=budget,
+                                resources=resources, debounce_seconds=wait)
     from bot.intake import note_accepted
     note_accepted(job['id'])
     diagnostic(job, 'accepted')

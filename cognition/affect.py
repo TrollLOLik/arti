@@ -250,8 +250,11 @@ def expression(state: CognitiveState, *, task_serious: bool = False,
     uncertain = any(e.confidence < .6 and e.intensity >= .025 and EMOTIONS[e.emotion][0] < 0
                     for e in active)
     negative = mixed or (negative_weight >= .025 and negative_weight > positive)
+    dominant,dominant_intensity = dominant_emotion(active)
     if mixed: tone = 'warm but measured'
-    elif negative: tone = 'gentle and concrete'
+    # Anger addressed to the person sharpens the voice (H3, E1); other negative
+    # states, including indignation on the person's behalf, stay gentle.
+    elif negative: tone = 'dry and precise' if dominant=='anger' else 'gentle and concrete'
     elif positive >= .025: tone = 'warm and attentive'
     else: tone = 'calm'
     regulation = 'clarify' if uncertain else 'problem_solve' if task_serious else 'acknowledge'
@@ -268,4 +271,22 @@ def expression(state: CognitiveState, *, task_serious: bool = False,
                           LIGHT_HUMOUR_THRESHOLD + .05 if playful else 0.,
                           .3 * (1 - temperament.expression_reserve),
                           sticker, 'measured' if negative or task_serious else 'conversational',
-                          tuple(selected[:6]), uncertain, behaviors, mixed)
+                          tuple(selected[:6]), uncertain, behaviors, mixed,
+                          dominant=dominant, dominant_intensity=dominant_intensity)
+
+
+def dominant_emotion(active):
+    """Strongest felt emotion among working episodes, order-independent.
+
+    Anger without an observed target (for example at a third party in the
+    person's story) is indignation on the person's behalf, not anger at them.
+    """
+    from cognition.types import DOMINANT_THRESHOLD
+    totals = {}
+    for ep in active:
+        name = 'indignation' if ep.emotion=='anger' and ep.target_id is None else ep.emotion
+        totals[name] = totals.get(name,0.) + ep.intensity
+    if not totals:
+        return None,0.
+    name = min(totals,key=lambda e:(-totals[e],e))
+    return (name,totals[name]) if totals[name] >= DOMINANT_THRESHOLD else (None,0.)

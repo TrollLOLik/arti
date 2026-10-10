@@ -91,14 +91,37 @@ def html_chunks(text, limit=4000):
     return parts
 
 
-async def send_html_reply(bot, *, chat_id, text, reply_to_message_id=None, reply_markup=None):
+async def typing_pause(bot, chat_id, seconds):
+    """Show 'typing' for the whole pause; the status is cosmetic and never fails a reply."""
+    import asyncio
+    loop = asyncio.get_running_loop()
+    end = loop.time() + max(0., seconds)
+    while (left := end - loop.time()) > 0:
+        try:
+            await bot.send_chat_action(chat_id=chat_id, action='typing')
+        except Exception:
+            pass
+        await asyncio.sleep(min(4., left))
+
+
+async def send_html_reply(bot, *, chat_id, text, reply_to_message_id=None, reply_markup=None, bubbles=False, pacing=None):
+    """bubbles: short paragraphs become separate messages (H3, R2);
+    pacing(parts) -> seconds to show 'typing' before each part."""
     from bot.request_runtime import checkpoint
     async def plan():
-        return html_chunks(text) or ['Не удалось подготовить текст ответа. Отправь запрос ещё раз.']
+        if bubbles:
+            from bot.human_rhythm import split_bubbles
+            parts = [chunk for bubble in split_bubbles(text) for chunk in html_chunks(bubble)]
+        else:
+            parts = html_chunks(text)
+        return parts or ['Не удалось подготовить текст ответа. Отправь запрос ещё раз.']
     # A stored plan protects part identities even after code/format changes.
     parts = await checkpoint('reply_html_parts', plan)
+    delays = list(pacing(parts)) if pacing else []
     result = None
     for index, part in enumerate(parts):
+        if index < len(delays) and delays[index] > 0:
+            await typing_pause(bot, chat_id, delays[index])
         result = await bot.send_message(chat_id=chat_id, text=part, parse_mode='HTML',
             reply_to_message_id=reply_to_message_id,
             reply_markup=reply_markup if index == len(parts)-1 else None)

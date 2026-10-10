@@ -865,7 +865,87 @@ def check_event_pre_filter(text: str) -> bool:
 
 
 
+def _previous_reply(turns):
+    """Arti's last reply when at most the current message follows it; None otherwise."""
+    trailing = 0
+    for role, text in reversed(tuple(turns)):
+        if role == 'assistant':
+            return text if trailing <= 1 else None
+        trailing += 1
+    return None
+
+
+async def _acknowledge_only(request, bot, mode):
+    """H3, I5: a pure «спасибо»/«ок» after Arti's finished answer gets a reaction, not a reply."""
+    from cognition.scope import CURRENT_SCOPE
+    from bot.human_rhythm import acknowledgement_reaction
+    scope = CURRENT_SCOPE.get()
+    text = request.get('user_message')
+    if (mode != 'default' or scope is None or scope.chat_type != 'private' or request.get('message_id') is None
+            or any(request.get(key) for key in ('base64_image', 'document_text', 'video_file_id', '_material_uses'))
+            or acknowledgement_reaction(text) is None):
+        return False
+    async def decide():
+        from utils.chat_history import get_dialogue_turns
+        turns = await get_dialogue_turns(request['chat_id'], 'default', limit=6)
+        previous = _previous_reply(turns.turns if turns else ())
+        return {'emoji': acknowledgement_reaction(text, previous) if previous is not None else None}
+    emoji = (await checkpoint('ack_reaction', decide)).get('emoji')
+    if not emoji:
+        return False
+    from cognition.delivery import DeliveryUnknown, DeliverySuppressed
+    try:
+        await bot.set_message_reaction(chat_id=request['chat_id'], message_id=request['message_id'], reaction=emoji)
+    except DeliveryUnknown:
+        return True
+    except DeliverySuppressed:
+        raise
+    except Exception:
+        logger.warning('ack_reaction_failed_fallback_to_text')
+        return False
+    return True
+
+
+async def _react(bot, chat_id, message_id, emoji):
+    """H3, I5: best-effort reaction on the user's message before the reply; never blocks it."""
+    from cognition.delivery import DeliverySuppressed
+    try:
+        await bot.set_message_reaction(chat_id=chat_id, message_id=message_id, reaction=emoji)
+        return True
+    except DeliverySuppressed:
+        raise
+    except Exception:
+        logger.info('reaction_skipped')
+        return False
+
+
+def _conversational_reply(request, mode, display_text, reply_markup, *, task):
+    """H3, R2: only plain private small talk is paced and split; tasks and cards stay as they are."""
+    from cognition.scope import CURRENT_SCOPE
+    from bot.human_rhythm import conversational
+    scope = CURRENT_SCOPE.get()
+    if mode != 'default' or scope is None or scope.chat_type != 'private':
+        return False
+    intent = request.get('_intent') or {}
+    task = bool(task or intent.get('web_search') or intent.get('maps') or intent.get('work') or request.get('_project_context'))
+    return conversational(display_text, task=task, card=bool(request.get('_result_card')), markup=reply_markup is not None)
+
+
+async def _reply_quote_needed():
+    """Quote the user's message only when a later message of theirs already waits."""
+    from bot.request_runtime import CURRENT_REQUEST, store
+    job = CURRENT_REQUEST.get()
+    return True if job is None else await store().newer_in_lane(job['id'])
+
+
+def _resumed_request():
+    from bot.request_runtime import CURRENT_REQUEST
+    job = CURRENT_REQUEST.get()
+    return job is not None and job.get('attempts', 1) > 1
+
+
 async def process_user_reply(request, bot):
+    turn_started = asyncio.get_running_loop().time()
     from cognition.scope import CURRENT_SCOPE
     CURRENT_SCOPE.set(request.get('_telegram_scope'))
     from materials.runtime import CURRENT_MATERIAL_USE, guard_current
@@ -957,6 +1037,8 @@ async def process_user_reply(request, bot):
         return
     from bot.organizer_commands import handle_natural as handle_organizer_request
     if mode != 'rp' and await handle_organizer_request(request, bot):
+        return
+    if await _acknowledge_only(request, bot, mode):
         return
     from ai.intents import resolve_intent
     from bot.intent_context import routing_context
@@ -1214,6 +1296,16 @@ async def process_user_reply(request, bot):
         sent_msg = None
         has_text = bool(display_text.strip())
 
+        # H3, I5: like a person, react to the message first, then answer. The
+        # decision is durable so a retried request keeps its send ordinals; a
+        # request resumed without it (e.g. started before this code) never reacts.
+        if has_text and not generation_failed and cognitive_turn.expression.reaction and message_id is not None:
+            async def decide_reaction():
+                return {'emoji': None if _resumed_request() else cognitive_turn.expression.reaction}
+            emoji = (await checkpoint('reply_reaction', decide_reaction)).get('emoji')
+            if emoji:
+                await _react(callback_context.bot, chat_id, message_id, emoji)
+
         if has_text and request.get('_result_card'):
             from bot.cards import document_analysis_html
             display_text=document_analysis_html(request['_result_card'],display_text)
@@ -1269,9 +1361,18 @@ async def process_user_reply(request, bot):
                         reply_to_message_id=message_id
                     )
             else:
-                # ТЕКСТОВЫЙ ОТВЕТ
+                # ТЕКСТОВЫЙ ОТВЕТ. Разговорная реплика в личке — пузырями и в человеческом темпе (H3, R2).
+                paced = not generation_failed and _conversational_reply(request, mode, display_text, reply_markup,
+                    task=bool(used_search or document_text))
+                quote, pacing = message_id, None
+                if paced:
+                    from bot.human_rhythm import plan_pacing, pacing_enabled
+                    if not await checkpoint('reply_quote', _reply_quote_needed):
+                        quote = None
+                    if pacing_enabled() and not _resumed_request():
+                        pacing = lambda parts: plan_pacing(user_message, parts, asyncio.get_running_loop().time() - turn_started)
                 sent_msg = await send_html_reply(callback_context.bot, chat_id=chat_id, text=display_text,
-                    reply_to_message_id=message_id, reply_markup=reply_markup)
+                    reply_to_message_id=quote, reply_markup=reply_markup, bubbles=paced, pacing=pacing)
 
         # === ОТПРАВКА СТИКЕРА В ФОНЕ ===
         if sticker_mood:

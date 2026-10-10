@@ -456,8 +456,9 @@ class MemoryRepository:
                     WHERE context_id=$1 AND owner_id=$2 AND origin='user' AND suppressed_at IS NULL''',cid,owner)
             view = relationship_view(relationship['payload'],at)
             messages,days,first = int(stats['messages'] or 0),int(stats['days'] or 0),stats['first_contact']
-            span = (at-first).days if first else 0
-            stage = 'new' if messages<30 or span<3 else 'familiar' if messages<300 and span<45 else 'close'
+            # One stage vocabulary for the card and the expression directive (H3).
+            from cognition.types import relationship_stage
+            stage = relationship_stage(view['dimensions']['familiarity']['value'])
             card.append(dict(card='acquaintance',artifact_id=relationship['id'],source_id=None,
                 first_contact=first.isoformat() if first else None,messages=messages,days=days,stage=stage,
                 warm=view['dimensions']['warmth']['value']>=.65,

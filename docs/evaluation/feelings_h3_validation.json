@@ -1,0 +1,41 @@
+{
+  "batch": "H3-feelings",
+  "date": "2026-10-11",
+  "base_commit": "26cf3a9",
+  "model_version": "cognition-2026-09-30.4 (unchanged)",
+  "schema_changes": false,
+  "environment": {
+    "python": "3.12.14",
+    "postgresql": "16.4 disposable, localhost only, without pgvector",
+    "network": "test process proxied to a closed port; no provider or Telegram calls",
+    "working_database_mutated": false,
+    "credentials_used": false
+  },
+  "new_tests": {"module": "tests.cognition.test_humanlike_feelings", "tests": 47, "passed": 47, "database_tests": 10},
+  "updated_contract": "tests.cognition.test_request_store: burst cap 2 s -> DEBOUNCE_MAX_SECONDS (8 s); plus adaptive-window and newer_in_lane tests",
+  "database_cognition_suite": {
+    "tests": 1101,
+    "failures": ["tests.cognition.test_native_agent_safety.NativeOrganizerSafetyTests.test_legacy_erasure_during_transport_fences_late_confirmation"],
+    "errors": 2,
+    "error_cause": "relation memory_chunks does not exist (created only with pgvector); same as before H1"
+  },
+  "non_database_full_discovery": {"tests": 1551, "failure_set_identical_to_h2": true},
+  "measurements": {
+    "fast_appraisal_synthetic_corpus": {
+      "size": 46, "labelled_positive": 27, "traps": 19,
+      "classes": {"crisis": 3, "loss": 4, "setback": 2, "fear": 2, "insult": 3, "apology": 2, "success": 5, "care": 3, "amusement": 3},
+      "precision": 1.0, "recall": 1.0,
+      "caveat": "corpus written together with the rules; shows the guards work, not live precision"
+    },
+    "sticker_rate_10000_events": {"new": 0.3472, "familiar": 0.495, "close": 0.5963, "target": {"new": 0.35, "familiar": 0.5, "close": 0.6}},
+    "sticker_classes_used": ["happy", "love", "blush", "thinking", "shock", "teasing"],
+    "sticker_classes_deliberately_unused": ["sad", "angry", "bored"],
+    "reaction_rate_10000_events": {"measured": 0.4944, "target": 0.5},
+    "continuation_wait_seconds": {"finished_sentence": 1.5, "default": 2.5, "short_unpunctuated": 4.0, "unfinished": 6.0, "burst_cap": 8.0, "groups": 0.6, "previous": {"window": 0.6, "cap": 2.0}},
+    "pacing_example": {
+      "user": "Я сдала экзамен!", "bubbles": ["Ого, поздравляю!", "Как будешь отмечать?"],
+      "delays_seconds_by_elapsed": {"0": [2.05, 0.73], "1.5": [0.55, 0.73], "3": [0.0, 0.73]}
+    }
+  },
+  "limits": "Contract and data-path checks only; live reply quality, perceived humanlikeness and the share of provisional plans in production (appendix A6) were not measured."
+}
