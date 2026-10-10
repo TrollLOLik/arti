@@ -3,7 +3,7 @@ import asyncio
 import logging
 import shlex
 from artifacts.computation import ComputationSpec
-from artifacts.material_cards import dataset_card, computation_card, WARNINGS
+from artifacts.material_cards import dataset_card, computation_card, WARNINGS, OPERATIONS
 from bot.material_search import send_material_card, _bounded, bounded_report
 from materials.datasets import DatasetPolicy,ColumnPolicy
 from materials.dataset_repository import DatasetRepository
@@ -93,7 +93,7 @@ async def _run(update,context,action):
         async def validate_datasets():
             for snapshot in snapshots:
                 await derivative_repository.load_dataset(snapshot.id,actor)
-        card=None; footer=''
+        card=None; footer=''; headers=(); rows=()
         if action=='dataset' and not options.get('sheet'):
             lines=['Таблицы:']
             reports=[]
@@ -104,6 +104,9 @@ async def _run(update,context,action):
                 for finding in report['findings'][:4]: lines.append(f'  {finding["address"]}: '+quality_text(finding['codes']))
             output='\n'.join(lines)+'\nДля конкретного листа: sheet=номер.'
             card=dataset_card(snapshots,reports)
+            from artifacts.material_cards import COVERAGE
+            headers=('Лист','Ячеек','Покрытие','Замечаний')
+            rows=tuple((d.name,str(len(d.cells)),COVERAGE[d.coverage],str(len(r['findings']))) for d,r in zip(snapshots,reports))
         else:
             dataset=choose(snapshots,options.get('sheet'))
             if action=='dataset':
@@ -112,6 +115,9 @@ async def _run(update,context,action):
                 output+='\nЗамечания:\n'+'\n'.join(f'{f["address"]}: '+quality_text(f['codes']) for f in report['findings'][:15])
                 if not report['findings']: output+='Не обнаружены в извлечённых ячейках; это не гарантия точности.'
                 card=dataset_card((dataset,),(report,))
+                from artifacts.material_cards import COVERAGE
+                headers=('Лист','Ячеек','Покрытие','Замечаний')
+                rows=((dataset.name,str(len(dataset.cells)),COVERAGE[dataset.coverage],str(len(report['findings']))),)
             elif action=='calc':
                 if len(positional)!=2: raise MaterialError('invalid_table_command')
                 spec=ComputationSpec(positional[0],positional[1].upper(),reference=options.get('reference','').upper() or None,
@@ -121,7 +127,7 @@ async def _run(update,context,action):
                 await DatasetRepository(service.repository).load_computation(result.id,actor)
                 computation_token=CURRENT_COMPUTATION_USE.set((ComputationUse(result.id,actor,DatasetRepository(service.repository)),))
                 r=result.result
-                output=f'{spec.operation} {spec.selection}: {r["value"]} {r["unit"]}\nЛист: {dataset.name}'
+                output=f'{OPERATIONS.get(spec.operation,spec.operation)} {spec.selection}: {r["value"]} {r["unit"]}\nЛист: {dataset.name}'
                 if r['lower']!=r['upper']: output+=f'\nДиапазон: {r["lower"]}…{r["upper"]}; учитывает границы входов и округление, это не вероятность.'
                 output+='\nИсточники: '+', '.join(source_text(i,dataset.name) for i in result.inputs[:12])
                 if result.formula_steps: output+='\nФормулы: '+', '.join(f'{s["address"]}: '+{'stale':'сохранённый итог устарел','missing':'рассчитано заново','matches_recomputed':'итог подтверждён повторным расчётом'}.get(s['cache_status'],'сохранённый итог не подтверждён') for s in result.formula_steps)
@@ -130,6 +136,9 @@ async def _run(update,context,action):
                     if check['kind']=='tukey_hinges_outliers' and check['addresses']:
                         output+='\nПроверь возможные выбросы: '+', '.join(check['addresses'])+'. Исходные значения сохранены.'
                 card=computation_card(dataset,result)
+                headers=('Показатель','Значение')
+                rows=(('Результат',str(r['value'])+' '+r['unit']),('Диапазон',spec.selection),('Лист',dataset.name),('Нижняя граница',str(r['lower'])),('Верхняя граница',str(r['upper'])))
+                if spec.reference: rows+=(('Сравнение с',spec.reference),)
                 footer='\nРасчёт: '+result.id[:12]
                 if result.warnings: footer+='\nОграничения расчёта: '+_bounded('; '.join(WARNINGS.get(w,w) for w in result.warnings),600)
                 footer+='\nОригинал: '+_bounded(document.file_name or 'документ',180)+'; документ над командой.'
@@ -147,7 +156,7 @@ async def _run(update,context,action):
             footer+='\nИсточники: '+_bounded(', '.join(d.name+' / '+d.id[:12] for d in snapshots),500)
             footer+='\nОригинал — документ, на который отвечает команда. Заголовки включены в число ячеек.'
         await send_material_card(message,context,card,bounded_report(output,footer),
-            validate=validate_datasets if action!='fix' else None)
+            validate=validate_datasets if action!='fix' else None,headers=headers,rows=rows)
     except (ValueError,MaterialError) as exc:
         code=getattr(exc,'code','invalid_table_command')
         logger.info('Table command refused: %s',code)

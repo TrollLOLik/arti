@@ -74,7 +74,7 @@ class CommandProvenanceTests(unittest.IsolatedAsyncioTestCase):
              patch('bot.media_jobs.spool', return_value=disk), \
              patch('bot.request_runtime.store', return_value=NS(pool=object())):
             async with ns['_vclone_save_reference']({'media_retained_id': 'request', 'reference_path': '/stale'}, 10, 7) as path:
-                self.assertEqual(path, '/synthetic/verified.wav')
+                self.assertEqual(path, str(Path('/synthetic/verified.wav')))
                 self.assertEqual(held, ['owned'])
             self.assertEqual(held, [])
             self.assertEqual(retention.load.await_count, 2)

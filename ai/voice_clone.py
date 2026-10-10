@@ -511,7 +511,7 @@ async def normalize_text_via_llm(raw_text: str) -> str:
             prompt=raw_text,
             user_name="vclone",
             chat_context="",
-            model="gemini-3.1-flash-lite-preview",
+            model="gemini",
             temperature=0.3,
             custom_system_prompt=_NORMALIZER_SYSTEM_PROMPT,
         )

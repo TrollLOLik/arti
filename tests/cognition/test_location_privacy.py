@@ -1,3 +1,4 @@
+from tests.support.model_connections import google_generation
 """Synthetic scoped location shares; all geocoding/provider calls mocked."""
 import asyncio
 import os
@@ -204,7 +205,7 @@ class LocationPrivacyTests(unittest.IsolatedAsyncioTestCase):
                   (CURRENT_MATERIAL_USE, ()), (CURRENT_DERIVATIVE_USE, ()), (CURRENT_COMPUTATION_USE, ()))]
         try:
             mock = AsyncMock(return_value=NS(text='Synthetic answer', candidates=[]))
-            with patch.object(generation.genai_client.aio.models, 'generate_content', new=mock):
+            with google_generation(mock):
                 await generation.generate_response_stream(-100, 'Hello', 'Synthetic', '', user_id=1,
                     user_location=private_loc, request_intent={}, custom_system_prompt='Synthetic system')
             cfg = mock.await_args.kwargs['config']
@@ -214,7 +215,7 @@ class LocationPrivacyTests(unittest.IsolatedAsyncioTestCase):
             # A fresh explicit share in that same topic enables the real tool.
             await self.share(GROUP)
             mock.reset_mock()
-            with patch.object(generation.genai_client.aio.models, 'generate_content', new=mock):
+            with google_generation(mock):
                 await generation.generate_response_stream(-100, 'Places nearby', 'Synthetic', '', user_id=1,
                     user_location=private_loc, request_intent={}, custom_system_prompt='Synthetic system')
             cfg = mock.await_args.kwargs['config']

@@ -5,7 +5,8 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from ai.capabilities import CapabilityRegistry, ModelEndpoint, registry_for
+from ai.capabilities import CapabilityRegistry, ModelEndpoint
+from tests.support.model_connections import connection
 from ai.providers.contracts import GenerationRequest, ImageInput
 from materials.extractors.basic import BasicExtractor, render_text
 from materials.storage import LocalBlobStore
@@ -102,20 +103,14 @@ class ContractTests(unittest.TestCase):
         with self.assertRaises(MaterialError): CapabilityRegistry([replace(old,available=False)]).route('old',GenerationRequest('hi'))
 
     def test_unknown_endpoint_is_not_trusted_by_model_name(self):
-        with patch.dict('os.environ',{'ARTI_CAPABILITY_MANIFEST':''}):
-            registry = registry_for('qwen-future','proxy')
+        registry = CapabilityRegistry(connection('qwen-future',capabilities={'inputs':['text'],'features':[]}).endpoints())
         image = GenerationRequest('hi',images=(ImageInput(png(),'image/png'),))
-        decision = registry.route('qwen-future',image,provider='openai',endpoint='proxy')
-        self.assertEqual('gemini',decision.endpoint.provider)
+        with self.assertRaises(MaterialError):
+            registry.route('qwen-future',image,provider='openai')
 
     def test_manifest_does_not_authorize_arbitrary_destination(self):
-        import json
-        with tempfile.TemporaryDirectory() as root:
-            manifest = Path(root)/'manifest.json'
-            manifest.write_text(json.dumps({'version':1,'endpoints':[dict(model='private',provider='openai',endpoint='https://other.example',inputs=['text','image'],evidence='configured')]}))
-            with patch.dict('os.environ',{'ARTI_CAPABILITY_MANIFEST':str(manifest)}):
-                registry=registry_for('private','proxy')
-            self.assertFalse(any(c.endpoint=='https://other.example' for c in registry.endpoints))
+        with self.assertRaises(MaterialError):
+            connection('private',capabilities={'inputs':['text','image'],'endpoint':'https://other.example'})
 
     def test_media_budget(self):
         with self.assertRaises(MaterialError): GenerationRequest('hi',images=tuple(ImageInput(png(),'image/png') for _ in range(9)))

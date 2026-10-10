@@ -130,12 +130,13 @@ async def summarize_transcript(
         f"Сделай конспект."
     )
 
+    from utils.model_selection import get_chat_model
     response_text, _used_search, _links, _imgs = await generate_response_stream(
         chat_id=chat_id,
         prompt=prompt,
         user_name=user_name,
         chat_context="",
-        model="gemini-3.1-flash-lite-preview",
+        model=await get_chat_model(chat_id),
         temperature=0.4,
         custom_system_prompt=system_prompt,
     )

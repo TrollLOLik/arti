@@ -26,11 +26,9 @@ async def _run(update,context,action):
         derivative_token=CURRENT_DERIVATIVE_USE.set((DerivativeUse(id,actor,DerivativeRepository(service.repository),'transcript'),))
         parts=shlex.split(message.text)[1:]
         if action=='transcript':
-            text='Расшифровка '+id[:12]+'; говорящие обозначены только внутри записи.\n'
-            text+='\n'.join(f'{s.id}: {s.start_ms/1000:g}–{s.end_ms/1000:g} с; {s.speaker or "говорящий неизвестен"}; {s.status}\n{s.text}' for s in timeline.segments[:24])
-            if not timeline.segments: text+='Нет доступной расшифровки с достоверными временными метками.'
-            if timeline.limitations: text+='\nРаспознавание и разделение голосов могут быть неточными; проверь спорный отрезок.'
-            await guard_current(message.chat_id); await message.reply_text(text[:3900]); return
+            from bot.cards import transcript_card, reply_card
+            await reply_card(message,context,transcript_card(descriptor.file_name,id,timeline))
+            return
         if not parts: raise MaterialError('segment_required')
         segment=next((s for s in timeline.segments if s.id==parts[0]),None)
         if segment is None: raise MaterialError('segment_missing')

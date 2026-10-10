@@ -3,7 +3,7 @@ from functools import lru_cache
 import struct
 from html import escape
 from PIL import Image,ImageDraw,ImageFont
-from artifacts.rendering import scene,FONT,WIDTH,HEIGHT
+from artifacts.rendering import scene,FONT,WIDTH,HEIGHT,TEXT_FEATURES
 from materials.types import canonical
 
 
@@ -57,8 +57,8 @@ def export(spec,illustrations=None):
                 font=ImageFont.truetype(str(FONT),p['size'])
                 # y is the measured ink top. The same TTF baseline is used by
                 # every backend, including descenders and Cyrillic capitals.
-                baseline=y-font.getbbox(p['text'],anchor='ls',features=['-kern','-liga'])[1]
-                draw.text((x,baseline),p['text'],font=font,fill=color,anchor='ls',features=['-kern','-liga'])
+                baseline=y-font.getbbox(p['text'],anchor='ls',features=TEXT_FEATURES)[1]
+                draw.text((x,baseline),p['text'],font=font,fill=color,anchor='ls',features=TEXT_FEATURES)
                 owner=f' data-owner="{escape(str(p["owner"]),quote=True)}"' if p.get('owner') else ''
                 svg.append(f'<text x="{x}" y="{baseline}" font-family="ArtiEmbeddedSubset, sans-serif" font-size="{p["size"]}" fill="{color}"{owner}>{escape(p["text"])}</text>')
                 pdf.setFont('ArtiDejaVu',p['size']); pdf.drawString(x,HEIGHT-baseline,p['text'])

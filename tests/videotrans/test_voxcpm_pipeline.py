@@ -3,6 +3,7 @@ import argparse
 import ast
 from dataclasses import dataclass, field
 import logging
+import json
 import os
 from pathlib import Path
 import re
@@ -18,6 +19,8 @@ from unittest.mock import Mock, patch
 import numpy as np
 import requests
 import soundfile as sf
+
+from videotrans.stt_pipeline import WordTiming
 
 
 ROOT = Path(__file__).resolve().parents[2]

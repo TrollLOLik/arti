@@ -9,7 +9,7 @@ from materials.types import MaterialError
 logger = logging.getLogger(__name__)
 
 
-async def send_material_card(message, context, card, output, *, validate=None):
+async def send_material_card(message, context, card, output, *, validate=None, headers=(), rows=()):
     """One optional preview, followed by copyable text, with late source fences.
 
     Render errors fall back to text. A photo delivery with an unknown outcome is
@@ -56,7 +56,8 @@ async def send_material_card(message, context, card, output, *, validate=None):
         else:
             await send_with_receipt(send_photo, (), kwargs, 'photo')
     await guard()
-    await message.reply_text(output, parse_mode=None)
+    from bot.cards import material_report_card, reply_card
+    await reply_card(message, context, material_report_card(card, output, headers=headers, rows=rows), validate=validate)
 
 
 def _bounded(value, limit):

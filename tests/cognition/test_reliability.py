@@ -1,3 +1,4 @@
+from tests.support.model_connections import google_generation
 import asyncio
 import json
 import os
@@ -106,13 +107,16 @@ class IntentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_fast_classification_does_not_change_cognition_thinking(self):
         from ai.providers.structured import SelectedModelClient
-        google=NS(aio=NS(models=NS(generate_content=AsyncMock(return_value=NS(text='{}',candidates=[])))))
-        client=SelectedModelClient(google_client=google,fast=True)
+        from tests.support.model_connections import connection
+        import httpx
+        http=NS(post=AsyncMock(return_value=httpx.Response(200)))
+        selected=connection('gemini',request_options={'reasoning_effort':'high'},fast_request_options={'reasoning_effort':'low'})
+        client=SelectedModelClient(client=http,connection_resolver=AsyncMock(return_value=selected),fast=True)
         await client.complete('gemini-3.1-flash-lite-preview',[dict(role='user',content='fixture')],128)
-        self.assertEqual(google.aio.models.generate_content.await_args.kwargs['config'].thinking_config.thinking_level.value,'MINIMAL')
+        self.assertEqual(http.post.await_args.kwargs['json']['reasoning_effort'],'low')
         client.fast=False
         await client.complete('gemini-3.1-flash-lite-preview',[dict(role='user',content='fixture')],128)
-        self.assertIsNone(google.aio.models.generate_content.await_args.kwargs['config'].thinking_config)
+        self.assertEqual(http.post.await_args.kwargs['json']['reasoning_effort'],'high')
 
     async def test_worker_shutdown_propagates_cancellation(self):
         from bot import queue as module
@@ -152,7 +156,7 @@ class IntentTests(unittest.IsolatedAsyncioTestCase):
         async def slow(**kwargs):
             try: await asyncio.sleep(10)
             finally: cancelled.set()
-        with patch.object(generation,'GENERATION_TIMEOUT',.03),patch.object(generation.genai_client.aio.models,'generate_content',new=slow):
+        with patch.object(generation,'GENERATION_TIMEOUT',.03),google_generation(slow):
             result=await generation.generate_response_stream(1,'Привет','User','',custom_system_prompt='Hello',request_intent={})
         self.assertTrue(generation.is_error_response(result[0])); self.assertTrue(cancelled.is_set())
 

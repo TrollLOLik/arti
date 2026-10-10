@@ -24,6 +24,9 @@ WARNINGS = {'missing_inputs_excluded': 'Пропуски исключены',
             'uncertain_source_input': 'Входные значения требуют проверки',
             'partial_dataset_selection_only': 'Извлечение частичное; учтён только выбранный диапазон',
             'excel_blank_reference_as_zero': 'Формула Excel трактует пустую ссылку как ноль'}
+OPERATIONS = {'sum':'Сумма', 'mean':'Среднее', 'min':'Минимум', 'max':'Максимум',
+              'count':'Количество', 'percent':'Доля', 'change':'Изменение', 'ratio':'Отношение',
+              'difference':'Разность', 'convert':'Перевод единиц', 'compare':'Сравнение', 'reconcile':'Сверка'}
 
 
 @dataclass(frozen=True)
@@ -96,7 +99,7 @@ def computation_card(dataset, result):
     if result.dataset_id != dataset.id:
         raise MaterialError('material_card_dataset_mismatch')
     value = result.result
-    details = [f'Лист: {dataset.name}', f'Операция: {result.spec.operation} {result.spec.selection}']
+    details = [f'Лист: {dataset.name}', f'Операция: {OPERATIONS.get(result.spec.operation,result.spec.operation)} {result.spec.selection}']
     if result.spec.reference:
         details.append('Сравнение с: ' + result.spec.reference)
     if value['lower'] != value['upper']:
@@ -106,7 +109,7 @@ def computation_card(dataset, result):
         if check['kind'] == 'reconciliation':
             details.append('Сверка номинального итога: ' + ('сходится' if check['passes'] else 'не сходится'))
     return MaterialCard('РАСЧЁТ', value['value'] + ' ' + value['unit'],
-        'Детерминированный результат по выбранным ячейкам',
+        'Результат по выбранным ячейкам',
         ((str(len(result.inputs)), 'Входных ячеек'), (str(len(result.formula_steps)), 'Шагов формул'),
          (str(len(result.warnings)), 'Предупреждений расчёта')),
         tuple(details), 'Границы учитывают входные интервалы и округление. Это не вероятность и не оценка модели.',

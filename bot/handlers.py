@@ -10,7 +10,8 @@ import random
 from pathlib import Path
 from datetime import datetime, timedelta
 
-from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InputFile, InlineKeyboardMarkup
+from bot.buttons import inline_button
 from telegram.ext import ContextTypes
 from cognition.scope import requested
 
@@ -27,7 +28,7 @@ from utils.chat_history import (
 )
 from utils.text_processing import (
     contains_arti, extract_urls_and_make_keyboard, 
-    repeat_chat_action, fix_html_tags
+    repeat_chat_action, fix_html_tags, strip_voice_tags
 )
 from utils.document_parser import extract_document_text, extract_text_from_file
 from ai.generation import generate_response_stream
@@ -192,7 +193,8 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
 
     image_flow = context.user_data.get("image_flow", {})
-    if image_flow and image_flow.get("chat_id") == chat_id and not image_flow.get("waiting"):
+    menu_input = getattr(context.bot, '_menu_panel', None) is not None
+    if menu_input and image_flow and image_flow.get("chat_id") == chat_id and not image_flow.get("waiting"):
         handled = await handle_image_flow(update, context)
         if handled:
             return
@@ -203,7 +205,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
     # Если ожидается описание изображения
-    if is_waiting_for_image:
+    if is_waiting_for_image and (menu_input or not image_flow):
         prompt = update.message.text or ""
         image_urls = pending_image_inputs[chat_id].get(user_id, []) or image_flow.get("image_urls", [])
         # Подхватываем base64 изображения из фото-кнопок (photo_act:gen_image)
@@ -221,7 +223,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     video_flow = context.user_data.get("video_flow", {})
-    if video_flow and video_flow.get("chat_id") == chat_id and not video_flow.get("waiting"):
+    if menu_input and video_flow and video_flow.get("chat_id") == chat_id and not video_flow.get("waiting"):
         handled = await handle_video_flow(update, context)
         if handled:
             return
@@ -231,7 +233,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
         or (video_flow.get("waiting") and video_flow.get("chat_id") == chat_id)
     )
 
-    if is_waiting_for_video:
+    if is_waiting_for_video and (menu_input or not video_flow):
         prompt = update.message.text or ""
         image_urls = pending_video_inputs[chat_id].get(user_id, []) or video_flow.get("image_urls", [])
         # Подхватываем base64 изображения из фото-кнопок (photo_act:gen_video)
@@ -255,7 +257,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     # Если пользователь в процессе диалога /music
-    if music_flow_state.get(chat_id, {}).get(user_id):
+    if menu_input and music_flow_state.get(chat_id, {}).get(user_id):
         user_text = update.message.text or ""
         handled = await handle_music_flow(update, context, chat_id, user_id, user_text)
         if handled:
@@ -263,7 +265,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # Если пользователь в процессе диалога /dub
     from config import dub_flow_state
-    if dub_flow_state.get(chat_id, {}).get(user_id):
+    if menu_input and dub_flow_state.get(chat_id, {}).get(user_id):
         handled = await handle_dub_flow(update, context)
         if handled:
             return
@@ -398,15 +400,15 @@ def _photo_action_keyboard() -> InlineKeyboardMarkup:
     """Инлайн-кнопки быстрых действий с фото."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🔍 Что на фото?", callback_data="photo_act:analyze"),
-            InlineKeyboardButton("📝 Описать детально", callback_data="photo_act:describe"),
+            inline_button("🔍 Что на фото?", callback_data="photo_act:analyze"),
+            inline_button("📝 Описать детально", callback_data="photo_act:describe"),
         ],
         [
-            InlineKeyboardButton("🎨 Сгенерировать картинку", callback_data="photo_act:gen_image"),
-            InlineKeyboardButton("🎬 Сгенерировать видео", callback_data="photo_act:gen_video"),
+            inline_button("🎨 Сгенерировать картинку", callback_data="photo_act:gen_image"),
+            inline_button("🎬 Сгенерировать видео", callback_data="photo_act:gen_video"),
         ],
         [
-            InlineKeyboardButton("❌ Отмена", callback_data="photo_act:cancel"),
+            inline_button("❌ Отмена", callback_data="photo_act:cancel"),
         ],
     ])
 
@@ -560,7 +562,7 @@ async def _process_images_impl(
             '', response_text, flags=re.IGNORECASE | re.DOTALL
         ).strip()
 
-        display_text = re.sub(r'\[[^\]]+\]', '', display_text).strip()
+        display_text = strip_voice_tags(display_text)
         display_text, reply_markup = extract_urls_and_make_keyboard(display_text, extra_links=grounding_links)
         display_text = fix_html_tags(display_text)
 
@@ -649,7 +651,7 @@ async def _process_images_impl(
                 try:
                     await bot.send_photo(
                         chat_id=chat_id, photo=img_url,
-                        caption="<i>[Вот что я нашла в интернете по теме:]</i>",
+                        caption="<i>Вот что нашлось по теме:</i>",
                         parse_mode='HTML'
                     )
                 except Exception as e:
@@ -845,7 +847,7 @@ async def handle_image_message(update: Update, context: ContextTypes.DEFAULT_TYP
         or (video_flow.get("chat_id") == chat_id and video_flow.get("step"))
     )
 
-    if is_waiting_for_video:
+    if is_waiting_for_video and (getattr(context.bot, '_menu_panel', None) is not None or not video_flow):
         user_caption = update.message.caption or ""
         image_urls = pending_video_inputs[chat_id].get(user_id, []) or video_flow.get("image_urls", [])
         new_image_urls = await _extract_photo_urls(update, context)
@@ -878,7 +880,7 @@ async def handle_image_message(update: Update, context: ContextTypes.DEFAULT_TYP
         or (image_flow.get("waiting") and image_flow.get("chat_id") == chat_id)
     )
 
-    if is_waiting_for_image:
+    if is_waiting_for_image and (getattr(context.bot, '_menu_panel', None) is not None or not image_flow):
         user_caption = update.message.caption or ""
         image_urls = pending_image_inputs[chat_id].get(user_id, []) or image_flow.get("image_urls", [])
         new_image_urls = await _extract_photo_urls(update, context)
@@ -1273,15 +1275,15 @@ def _doc_action_keyboard() -> InlineKeyboardMarkup:
     """Инлайн-кнопки быстрых действий с документом."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📖 Прочитай", callback_data="doc_act:read"),
-            InlineKeyboardButton("📋 Суммаризируй", callback_data="doc_act:summarize"),
+            inline_button("📖 Прочитай", callback_data="doc_act:read"),
+            inline_button("📋 Суммаризируй", callback_data="doc_act:summarize"),
         ],
         [
-            InlineKeyboardButton("🔍 Найди ключевое", callback_data="doc_act:keypoints"),
-            InlineKeyboardButton("✍️ Перепиши кратко", callback_data="doc_act:rewrite"),
+            inline_button("🔍 Найди ключевое", callback_data="doc_act:keypoints"),
+            inline_button("✍️ Перепиши кратко", callback_data="doc_act:rewrite"),
         ],
         [
-            InlineKeyboardButton("❌ Отмена", callback_data="doc_act:cancel"),
+            inline_button("❌ Отмена", callback_data="doc_act:cancel"),
         ],
     ])
 
@@ -1362,8 +1364,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Читаем документ
+    from bot.cards import MessageCard
     status_msg = await update.message.reply_text(
-        "<i>подхватывает файл, разворачивает первую страницу...</i>",
+        MessageCard(doc.file_name or 'Документ','⏳ Извлекаю доступный текст',
+            ('Открою действия, когда подготовлю материал.',)).html(),
         parse_mode='HTML'
     )
 
@@ -1371,9 +1375,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not extracted_text:
         await status_msg.edit_text(
-            "<i>хмурится, листая пустые страницы</i>\n\n"
-            "<blockquote>«Ничего не вышло — документ пустой или защищён. "
-            "Попробуй другой формат.»</blockquote>",
+            MessageCard(doc.file_name or 'Документ','⚠️ Не удалось извлечь текст',
+                ('Попробуй другой формат или файл без защиты.',)).html(),
             parse_mode='HTML'
         )
         return
@@ -1388,11 +1391,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "user_name": user_name,
     }
 
-    short_name = (doc.file_name or "документ")[:40]
     await status_msg.edit_text(
-        f"<i>откладывает в сторону, поднимает взгляд</i>\n\n"
-        f"<blockquote>«<b>{short_name}</b> — получила.\n"
-        f"Что с ним делать?»</blockquote>",
+        MessageCard(doc.file_name or 'Документ','📄 Доступный текст подготовлен',
+            ('Выбери, какой результат собрать.',),
+            footer=('Полнота и качество зависят от исходного файла и извлечения.',)).html(),
         reply_markup=_doc_action_keyboard(),
         parse_mode='HTML'
     )
@@ -1443,9 +1445,11 @@ async def document_action_callback(update: Update, context: ContextTypes.DEFAULT
     file_name = pending["file_name"]
     extracted_text = pending["text"]
     message_id = pending["message_id"]
+    from bot.cards import MessageCard
 
     await query.edit_message_text(
-        "<i>склоняется над страницами, начинает читать...</i>",
+        MessageCard(file_name,'⏳ Разбираю документ',
+            ('Готовлю результат по выбранному действию.',)).html(),
         parse_mode='HTML'
     )
 
@@ -1456,7 +1460,7 @@ async def document_action_callback(update: Update, context: ContextTypes.DEFAULT
     await enqueue_reply(
         chat_id, user_id, user_name,
         final_prompt, message_id, context,
-        is_voice=False, document_text=extracted_text
+        is_voice=False, document_text=extracted_text, result_card=dict(filename=file_name,action=action)
     )
 
 
@@ -1620,10 +1624,10 @@ import tempfile as _tempfile
 
 def _video_url_action_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📝 Транскрипция", callback_data="vurl:transcribe")],
-        [InlineKeyboardButton("📋 Краткий конспект", callback_data="vurl:summary")],
-        [InlineKeyboardButton("🎬 Озвучить", callback_data="vurl:dub")],
-        [InlineKeyboardButton("❌ Отмена", callback_data="vurl:cancel")],
+        [inline_button("📝 Транскрипция", callback_data="vurl:transcribe")],
+        [inline_button("📋 Краткий конспект", callback_data="vurl:summary")],
+        [inline_button("🎬 Озвучить", callback_data="vurl:dub")],
+        [inline_button("❌ Отмена", callback_data="vurl:cancel")],
     ])
 
 
@@ -1887,8 +1891,8 @@ async def video_url_action_callback(update: Update, context: ContextTypes.DEFAUL
 
     if action == "dub":
         # Переиспользуем dub flow: сразу шаг про сабы
-        from config import dub_flow_state, TTS_ENABLED
-        from bot.commands import _dub_subs_keyboard
+        from config import TTS_ENABLED
+        from bot.menu import media_command
         from utils.admin import is_admin
 
         # CONF-01: озвучка требует TTS-бэкендов — при выключенном TTS честный отказ.
@@ -1915,30 +1919,7 @@ async def video_url_action_callback(update: Update, context: ContextTypes.DEFAUL
                 pass
             return
 
-        try:
-            await query.edit_message_text(
-                "<i>Готовится к озвучке</i>",
-                parse_mode='HTML',
-            )
-        except Exception:
-            pass
-
-        dub_flow_state[chat_id][user_id] = {
-            "step": "subs",
-            "url": url,
-            "audio_only": False,
-            "message_id": src_message_id,
-        }
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=(
-                "<i>Касается банта</i>\n\n"
-                "<blockquote>«Принято. Нужны субтитры? Я могу вшить русские прямо в кадр.»</blockquote>"
-            ),
-            reply_to_message_id=src_message_id,
-            reply_markup=_dub_subs_keyboard(),
-            parse_mode='HTML',
-        )
+        await media_command(update, context, 'dub', source=url)
         return
 
 

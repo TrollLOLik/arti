@@ -729,7 +729,9 @@ class GroupService:
             event=load_event(source['payload'])
             style=expression(await self.runtime.personal_state(frame.context_id,event.evidence.owner_id),task_serious=frame.serious)
             if p.get('subscription_id'): text=p['workflow_text']
-            elif row['kind']=='reminder': text=('Напоминание: '+p['description'])[:600]
+            elif row['kind']=='reminder':
+                from cognition.private_followup import reminder_text
+                text=reminder_text(p)[:600]
             else:
                 async with asyncio.timeout(COMPOSE_TIMEOUT_SECONDS):
                     async with provider_slot(self.runtime,frame.context_id,p.get('owner_id'),'group_compose',hourly_limit=policy.assessment_hourly_limit) as admitted:

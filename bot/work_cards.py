@@ -7,6 +7,8 @@ from io import BytesIO
 from materials.types import MaterialError,EvidenceRef
 from artifacts.revisions import ArtifactRepository
 from projects.repository import ProjectRepository
+from bot.buttons import inline_button
+from bot.cards import task_card, step_label, artifact_card, card_transport
 
 async def request_sources(service,actor,message):
     source=getattr(message,'_menu_request_source',None) or f'telegram:{message.chat_id}:{message.message_id}:user'
@@ -22,14 +24,20 @@ async def request_sources(service,actor,message):
 class WorkCards:
     def __init__(self,service): self.service=service; self.pool=service.repository.pool; self.artifacts=ArtifactRepository(service.repository)
     async def actions(self,row,actor):
-        from telegram import InlineKeyboardMarkup,InlineKeyboardButton
+        from telegram import InlineKeyboardMarkup
+        from projects.types import ROLE_RIGHTS
+        project=await ProjectRepository(self.service.repository).get(row['project_id'],actor)
+        rights=ROLE_RIGHTS[project.role]
+        choices=[('sources','Источники'),('json','Данные (JSON)'),('pdf','Для печати (PDF)'),('png','Картинки (PNG)'),('svg','Для редактора (SVG)')]
+        if 'edit' in rights: choices.insert(1,('format','Формат'))
+        if 'approve' in rights: choices += [('accept','Принять'),('reject','Отклонить')]
         actions=[]
         async with self.pool.acquire() as conn:
             await conn.execute('DELETE FROM arti_work_actions WHERE expires_at<NOW()')
-            for name,label in [('sources','Источники'),('format','Формат'),('json','Данные (JSON)'),('pdf','Для печати (PDF)'),('png','Картинки (PNG)'),('svg','Для редактора (SVG)'),('accept','Принять'),('reject','Отклонить')]:
+            for name,label in choices:
                 id=uuid.uuid4().hex
                 await conn.execute('INSERT INTO arti_work_actions(id,realm,owner_id,scope_key,artifact_id,revision,action,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',id,actor.realm,actor.user_id,actor.scope.key,row['id'],row['revision'],name,datetime.now(timezone.utc)+timedelta(days=2))
-                actions.append(InlineKeyboardButton(label,callback_data='work:'+id))
+                actions.append(inline_button(label,callback_data='work:'+id))
         return InlineKeyboardMarkup([actions[i:i+2] for i in range(0,len(actions),2)])
     async def resolve(self,id,actor):
         async with self.pool.acquire() as conn: action=await conn.fetchrow('SELECT * FROM arti_work_actions WHERE id=$1',id)
@@ -40,31 +48,39 @@ class WorkCards:
         project.require('approve' if action['action'] in ('accept','reject') else 'edit' if action['action'].startswith('format_') else 'view')
         return dict(action),row
     async def task_actions(self,row,actor):
-        from telegram import InlineKeyboardMarkup,InlineKeyboardButton
+        from telegram import InlineKeyboardMarkup
         buttons=[]
-        choices=[('result','Результат')] if row['status']=='succeeded' else ([('result','Сохранённые результаты')] if row['status'] in ('partial','waiting','unknown','paused','failed') else [])+[('pause','Пауза'),('resume','Продолжить'),('cancel','Остановить')]
+        async with self.pool.acquire() as conn:
+            has_output=await conn.fetchval("SELECT EXISTS(SELECT 1 FROM arti_task_calls WHERE task_id=$1 AND status='success')",row['id'])
+        choices=[('result','Получить материалы')] if has_output and row['status'] in ('succeeded','partial','waiting','paused','unknown','failed') else []
+        project=await ProjectRepository(self.service.repository).get(row['project_id'],actor)
+        from projects.types import ROLE_RIGHTS
+        can_edit='edit' in ROLE_RIGHTS[project.role] and (row['owner_id']==actor.user_id or project.role in ('owner','manager'))
+        if can_edit:
+            if row['status'] in ('queued','running','waiting'): choices.append(('pause','Пауза'))
+            if row['status'] in ('paused','waiting','partial'): choices.append(('resume','Продолжить'))
+            if row['status'] not in ('succeeded','cancelled','unknown'): choices.append(('cancel','Остановить'))
         if row['status']=='waiting':
             from agents.tools.core import build_registry
             from materials.derivatives import DerivativeRepository
             registry=build_registry(); plan=await DerivativeRepository(self.service.repository).load(row['plan_id'],actor,'task_plan')
             async with self.pool.acquire() as conn: completed=set(r['step_id'] for r in await conn.fetch("SELECT step_id FROM arti_task_calls WHERE task_id=$1 AND status='success'",row['id']))
             for step in plan['steps']:
-                if step['id'] not in completed and set(step.get('depends',[]))<=completed and step['tool'] in registry.tools and registry.get(step['tool']).effect=='external': choices.insert(0,('preview_'+step['id'],'Проверить действие '+step['id'][:16]))
+                if 'approve' in ROLE_RIGHTS[project.role] and row['owner_id']==actor.user_id and step['id'] not in completed and set(step.get('depends',[]))<=completed and step['tool'] in registry.tools and registry.get(step['tool']).effect=='external': choices.insert(0,('preview_'+step['id'],'Проверить: '+step_label(step)))
         async with self.pool.acquire() as conn:
             await conn.execute('DELETE FROM arti_work_actions WHERE expires_at<NOW()')
             for action,label in choices:
                 id=uuid.uuid4().hex
                 await conn.execute('INSERT INTO arti_work_actions(id,realm,owner_id,scope_key,task_id,revision,action,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',id,actor.realm,actor.user_id,actor.scope.key,row['id'],row['revision'],action,datetime.now(timezone.utc)+timedelta(days=2))
-                buttons.append(InlineKeyboardButton(label,callback_data='work:'+id))
+                buttons.append(inline_button(label,callback_data='work:'+id))
         return InlineKeyboardMarkup([buttons[i:i+2] for i in range(0,len(buttons),2)])
-    def task_text(self,row):
+    async def task_text(self,row,actor):
         from agents.runtime import enabled
-        labels=dict(queued='В очереди',running='Выполняется',waiting='Нужен ввод или разрешение',paused='Пауза',succeeded='Результат проверен',partial='Сохранён частичный результат',failed='Выполнение остановлено',cancelled='Отменено',unknown='Исход внешнего действия неизвестен')
-        text=f"Задача {row['id']}; версия {row['revision']}.\n{labels.get(row['status'],row['status'])}. Вызовов инструментов: {row['used_calls']}."
-        if row['status']=='waiting': text+='\nДля внешнего действия: /task preview '+row['id']+' STEP'
-        if row['diagnostics']: text+='\nПричина: '+row['diagnostics'][:500]
-        if not enabled() and row['status'] in ('queued','running'): text+='\nИсполнитель отключён администратором; задача сохранена.'
-        return text
+        from materials.derivatives import DerivativeRepository
+        plan=await DerivativeRepository(self.service.repository).load(row['plan_id'],actor,'task_plan')
+        async with self.pool.acquire() as conn:
+            calls=await conn.fetch('SELECT step_id,attempt,status,output_id FROM arti_task_calls WHERE task_id=$1 ORDER BY step_id,attempt',row['id'])
+        return task_card(row,plan,[dict(c) for c in calls],worker_enabled=enabled()).html()
     async def show_task(self,row,actor,bot,key,*,force=False):
         from agents.tasks import TaskRepository
         from agents.tools.core import build_registry
@@ -79,7 +95,7 @@ class WorkCards:
         async def guard():
             fresh=await repo.get(row['id'],actor)
             if fresh['revision']!=row['revision']: raise MaterialError('stale_task_revision')
-        text=self.task_text(row); kwargs=dict(chat_id=actor.scope.chat_id,text=text,reply_markup=markup)
+        text=await self.task_text(row,actor); kwargs=dict(chat_id=actor.scope.chat_id,text=text,parse_mode='HTML',reply_markup=markup)
         if actor.scope.topic_id>0: kwargs['message_thread_id']=actor.scope.topic_id
         result=await self.send(actor,row['project_id'],row['id'],row['revision'],key,bot.send_message,kwargs,guard)
         if row['owner_id']==actor.user_id and getattr(bot,'_menu_panel',None) is None:
@@ -89,7 +105,7 @@ class WorkCards:
     async def update_task_card(self,row,actor,bot):
         from agents.tasks import TaskRepository
         from agents.tools.core import build_registry
-        repo=TaskRepository(self.service.repository,build_registry()); text=self.task_text(row); digest=sha256(text.encode()).hexdigest()
+        repo=TaskRepository(self.service.repository,build_registry()); text=await self.task_text(row,actor); digest=sha256(text.encode()).hexdigest()
         async with self.pool.acquire() as conn:
             card=await conn.fetchrow("UPDATE arti_processing_cards SET updated_at=NOW(),content_hash=$2 WHERE task_id=$1 AND owner_id=$3 AND realm=$4 AND scope_key=$5 AND status='active' AND content_hash<>$2 AND updated_at<NOW()-INTERVAL '5 seconds' RETURNING *",row['id'],digest,actor.user_id,actor.realm,actor.scope.key)
         if not card or not card['message_id']: return
@@ -109,7 +125,7 @@ class WorkCards:
             method=getattr(super(RetryBot,bot),'edit_message_text') if isinstance(bot,RetryBot) else bot.edit_message_text
             return await method(**kwargs)
         try:
-            await self.send(actor,row['project_id'],row['id'],row['revision'],'task-edit:'+row['id']+':'+digest,edit,dict(chat_id=actor.scope.chat_id,message_id=card['message_id'],text=text,reply_markup=markup),guard)
+            await self.send(actor,row['project_id'],row['id'],row['revision'],'task-edit:'+row['id']+':'+digest,edit,dict(chat_id=actor.scope.chat_id,message_id=card['message_id'],text=text,parse_mode='HTML',reply_markup=markup),guard)
         except Exception as exc:
             from telegram.error import BadRequest
             status='gone' if isinstance(exc,BadRequest) else 'unknown'
@@ -229,13 +245,20 @@ class WorkCards:
         photo=BytesIO(pixels); photo.name='preview.png'
         title=' '.join(row['spec']['title'].split())[:240]
         pages=sum(name.startswith('page-') and name.endswith('.png') for name in files)
-        caption=f"{title}\nВерсия {row['revision']} · {len(row['spec']['elements'])} блоков"
+        caption=f"📊 {title}\nГотов обзор и файлы отчёта"
         if pages>1: caption+=f" · Обзор 1/{pages}"
         caption+='\nСкачать или изменить результат можно кнопками ниже.'
         kwargs=dict(chat_id=actor.scope.chat_id,photo=photo,caption=caption,parse_mode=None,reply_markup=markup)
         if reply_to is not None: kwargs['reply_to_message_id']=reply_to
         if actor.scope.topic_id>0: kwargs['message_thread_id']=actor.scope.topic_id
         result=await self.send(actor,row['project_id'],row['id'],row['revision'],key,bot.send_photo,kwargs,guard,dependencies=dependencies)
+        report=artifact_card(row)
+        preview=getattr(result,'photo',None)
+        file_id=preview[-1].file_id if preview else None
+        report_kwargs=dict(chat_id=actor.scope.chat_id,text=report.html(),rich_html=report.rich_html(preview=file_id),reply_markup=markup)
+        if file_id: report_kwargs['rich_media']=[dict(id='preview',media=dict(type='photo',media=file_id))]
+        if actor.scope.topic_id>0: report_kwargs['message_thread_id']=actor.scope.topic_id
+        await self.send(actor,row['project_id'],row['id'],row['revision'],key+':report',card_transport(getattr(bot,'real_bot',bot)),report_kwargs,guard,dependencies=dependencies)
         await self.result_panel(bot)
         return result
 
@@ -272,13 +295,13 @@ async def work_callback(update,context):
         await query.answer()
         name=action['action']
         if name=='format':
-            from telegram import InlineKeyboardMarkup,InlineKeyboardButton
+            from telegram import InlineKeyboardMarkup
             choices=[('comparison','Сравнение'),('timeline','Хронология'),('process','Процесс'),('roadmap','План'),('arguments','Аргументы'),('statistical','График'),('cards','Карточки'),('table','Таблица'),('teaching','Учебная схема')]; buttons=[]
             async with cards.pool.acquire() as conn:
                 for fmt,label in choices:
                     id=uuid.uuid4().hex
                     await conn.execute('INSERT INTO arti_work_actions(id,realm,owner_id,scope_key,artifact_id,revision,action,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',id,actor.realm,actor.user_id,actor.scope.key,row['id'],row['revision'],'format_'+fmt,datetime.now(timezone.utc)+timedelta(days=2))
-                    buttons.append(InlineKeyboardButton(label,callback_data='work:'+id))
+                    buttons.append(inline_button(label,callback_data='work:'+id))
             await query.message.reply_text('Выбери форму результата. Числа и свидетельства сохранятся.',reply_markup=InlineKeyboardMarkup([buttons[i:i+2] for i in range(0,len(buttons),2)])); return
         if name.startswith('format_'):
             from types import SimpleNamespace

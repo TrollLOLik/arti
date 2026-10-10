@@ -1,5 +1,5 @@
 """
-Генерация изображений и видео через OmniRoute/FreeTheAI API
+Генерация изображений и видео через настроенные медиа-API
 """
 import logging
 import base64

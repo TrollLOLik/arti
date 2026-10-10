@@ -1,3 +1,4 @@
+from tests.support.model_connections import configured_models, model_row
 import asyncio
 import json
 import math
@@ -227,7 +228,7 @@ class OperationalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.pool.acquire() as conn:
             for i in range(3):
                 await conn.execute("INSERT INTO memory_messages(chat_id,user_id,user_name,role,mode,source,message_text) VALUES(10,1,'User','user','default','test','Hello')")
-        with patch('config.genai_client.models.generate_content',side_effect=AssertionError('retired provider')) as call:
+        with patch('ai.providers.google.genai.Client',side_effect=AssertionError('retired provider')) as call:
             first = await timeline.build_timeline_events(10,dry_run=False)
             second = await timeline.build_timeline_events(10,dry_run=False)
         self.assertEqual(first['status'],'retired')
@@ -241,14 +242,14 @@ class OperationalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         from ai import generation
         create = AsyncMock(return_value=SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='Reply'))]))
         fake = SimpleNamespace(close=AsyncMock(),chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
-        with patch.object(generation,'AsyncOpenAI',return_value=fake),patch.object(generation,'analyze_intent',new=AsyncMock(return_value={'web_search':False})):
+        with patch.object(generation,'AsyncOpenAI',return_value=fake),patch.object(generation,'analyze_intent',new=AsyncMock(return_value={'web_search':False})),configured_models(model_row('synthetic-chat')):
             output = await generation.generate_response_stream(10,'Remember this project.','User','Recent dialogue',
                 model='synthetic-chat',custom_system_prompt='Be helpful.',memory_context=turn.memory,expression_plan=turn.expression)
         self.assertEqual(output[0],'Reply')
         submitted = create.call_args.kwargs
         self.assertEqual(submitted['max_tokens'],8192)
         self.assertIn('Текущее сообщение:',submitted['messages'][1]['content'])
-        self.assertIn('Use a friendly',submitted['messages'][0]['content'])
+        self.assertIn('Дружелюбно и внимательно',submitted['messages'][0]['content'])
         async with self.pool.acquire() as conn:
             included = await conn.fetchval("SELECT artifact_ids FROM cognitive_retrievals WHERE stage='included'")
         self.assertTrue(included)

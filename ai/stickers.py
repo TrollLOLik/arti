@@ -2,6 +2,7 @@
 Управление настроениями Арти, кэшированием стикеров и их семантическим картированием.
 """
 import os
+import base64
 import re
 import json
 import random
@@ -195,12 +196,15 @@ async def _save_mappings_to_db(pack_name: str, mappings: Dict[str, List[str]], s
 
 
 async def _classify_via_gemini_vision(bot: Bot, pack_name: str, stickers: List) -> Optional[Dict[str, List[str]]]:
-    """Использует Gemini Vision для анализа лиц на первых 15 стикерах пака."""
+    """Classify up to 15 stickers through the default database vision route."""
+    from config import DEFAULT_MODEL
+    from ai.providers.connections import load_model_routes, provider_http_client
+    from ai.providers.contracts import GenerationRequest, ImageInput
+    from ai.providers.google import google_client_for, google_config
     logger.info(f"Запуск Gemini Vision для визуальной классификации '{pack_name}'...")
     
     # Анализируем первые 15 стикеров для оптимизации
     target_stickers = stickers[:15]
-    parts = []
     
     system_prompt = (
         "Перед тобой набор стикеров с персонажем Арти. Проанализируй визуальные эмоции на каждом изображении "
@@ -209,56 +213,50 @@ async def _classify_via_gemini_vision(bot: Bot, pack_name: str, stickers: List) 
         "Ответь строго в формате JSON, где ключи — это названия настроений, а значения — списки индексов картинок (начиная с 1).\n"
         "Пример: {\"happy\": [1, 2], \"teasing\": [3, 4], ...}"
     )
-    parts.append(system_prompt)
-
-    # Скачиваем и прикрепляем WebP файлы в Parts
-    for idx, sticker in enumerate(target_stickers, 1):
-        try:
+    try:
+        images = []
+        for sticker in target_stickers:
             file = await bot.get_file(sticker.file_id)
             file_bytes = await file.download_as_bytearray()
-            parts.append(f"Изображение {idx}:")
-            from google.genai import types
-            parts.append(
-                types.Part.from_bytes(
-                    data=bytes(file_bytes),
-                    mime_type='image/webp'
-                )
-            )
-        except Exception as e:
-            logger.error(f"Не удалось скачать стикер {idx} для Vision: {e}")
+            images.append(ImageInput.from_base64(base64.b64encode(bytes(file_bytes)).decode()))
+        if not images:
             return None
-
-    # Вызываем Gemini
-    from config import genai_client
-    try:
-        response = await asyncio.to_thread(
-            genai_client.models.generate_content,
-            model="gemini-2.5-flash",
-            contents=parts,
-            config=types.GenerateContentConfig(
-                temperature=0.1,
-                response_mime_type="application/json"
-            )
-        )
-        
-        if response.text:
-            classification_data = json.loads(response.text)
-            logger.info(f"Gemini Vision успешно распределила стикеры: {classification_data}")
-            
-            # Собираем file_id по категориям
-            mappings = {mood: [] for mood in SUPPORTED_MOODS}
+        routes = await load_model_routes(DEFAULT_MODEL)
+        mappings = {mood: [] for mood in SUPPORTED_MOODS}
+        for offset in range(0, len(images), 8):
+            request = GenerationRequest(system_prompt, images=tuple(images[offset:offset+8]))
+            route = routes.route(request)
+            connection = routes.connection_for(route)
+            async with asyncio.timeout(45):
+                if route.endpoint.provider == 'gemini':
+                    schema = {'response_json_schema': {
+                        'type':'object', 'additionalProperties':False,
+                        'properties':{mood:{'type':'array','items':{
+                            'type':'integer','minimum':1,'maximum':len(request.images)}}
+                            for mood in sorted(SUPPORTED_MOODS)}}} if 'structured_output' in connection.capabilities.get('features',[]) else {}
+                    async with google_client_for(connection, timeout=40) as client:
+                        response = await client.aio.models.generate_content(model=connection.model,
+                            contents=request.gemini_parts(), config=google_config(connection,2048,.1,structured=True,**schema))
+                        text = response.text
+                else:
+                    from openai import AsyncOpenAI, Omit
+                    async with AsyncOpenAI(base_url=connection.base_url, api_key=connection.api_key,
+                            timeout=min(40,connection.timeout_seconds), max_retries=0,
+                            default_headers={'Authorization':Omit()} if not connection.api_key else None,
+                            http_client=provider_http_client()) as client:
+                        response = await client.chat.completions.create(
+                            **connection.payload(request.openai_messages(),2048,.1,structured=True))
+                        text = response.choices[0].message.content
+            classification_data = json.loads(text)
             for mood, indices in classification_data.items():
-                if mood not in SUPPORTED_MOODS:
+                if mood not in SUPPORTED_MOODS or not isinstance(indices, list):
                     continue
                 for idx in indices:
-                    # Корректируем 1-based индекс к 0-based
-                    zero_idx = idx - 1
-                    if 0 <= zero_idx < len(target_stickers):
-                        mappings[mood].append(target_stickers[zero_idx].file_id)
-            
-            return mappings
+                    if type(idx) is int and 1 <= idx <= len(request.images):
+                        mappings[mood].append(target_stickers[offset+idx-1].file_id)
+        return mappings
     except Exception as e:
-        logger.error(f"Исключение при вызове Gemini Vision: {e}")
+        logger.error('Ошибка классификации стикеров: %s', type(e).__name__)
     
     return None
 

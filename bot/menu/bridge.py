@@ -4,7 +4,7 @@ import shlex
 from datetime import datetime, timezone
 from html import escape
 from types import SimpleNamespace
-from telegram import InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram import InlineKeyboardMarkup
 from materials.types import MaterialError
 
 HANDLERS = {
@@ -37,6 +37,8 @@ for key in ('decision', 'assignment', 'procedure', 'subscription', 'scenario'):
     HANDLERS[key] = ('bot.workflow_commands', 'workflow_command')
 
 CALLBACKS = [('work:', 'bot.work_cards', 'work_callback'),
+    ('request_', 'bot.request_runtime', 'request_card_callback'),
+    ('media_choice:', 'bot.commands', 'media_choice_callback'),
     ('model_', 'bot.commands', 'model_callback'), ('rps_', 'bot.commands', 'rps_callback'),
     ('prof_', 'bot.commands', 'profile_callback'), ('forget_', 'bot.commands', 'forget_callback'),
     ('vclone_clean:', 'bot.commands', 'vclone_clean_callback'), ('vsave:', 'bot.commands', 'vclone_save_callback'),
@@ -173,6 +175,4 @@ def buttons_from_markup(markup):
         return [[(b.text, dict(legacy=b.callback_data)) if b.callback_data else
                  (b.text, dict(url=b.url)) for b in line if b.callback_data or b.url]
                 for line in markup.inline_keyboard]
-    if isinstance(markup, ReplyKeyboardMarkup):
-        return [[(b.text, dict(legacy_text=b.text)) for b in line] for line in markup.keyboard]
     return []

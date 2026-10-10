@@ -22,7 +22,7 @@ class CodecError(ValueError):
 
 
 REQUEST_FIELDS = frozenset('type chat_id user_id user_name user_message message_id is_voice base64_image base64_images document_text video_file_id is_video_note prompt image_urls image_aspect_ratio image_resolution image_num_images video_model video_duration video_aspect_ratio style instrumental _cognitive_context _cognitive_source_ids _material_uses _derivative_uses _computation_uses _cognitive_turn _telegram_scope _request_mode _request_no_coalesce url input_media reference_media synthesis_text cleaned source_kind with_subs audio_only'.split())
-REQUEST_FIELDS = REQUEST_FIELDS | {'saved_voice_id','saved_voice_version','_native_user_message'}
+REQUEST_FIELDS = REQUEST_FIELDS | {'saved_voice_id','saved_voice_version','_native_user_message','_result_card'}
 # These are process-local bookkeeping, never input to the resumed operation.
 TRANSIENT_FIELDS = frozenset(('bot', 'context', 'enqueued_at', 'started_at'))
 TELEGRAM_TYPES = frozenset(('Message', 'ReplyParameters', 'MessageEntity', 'InputMediaPhoto',

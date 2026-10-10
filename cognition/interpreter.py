@@ -286,7 +286,8 @@ beliefs: [{span, subject: actual actor/target integer or "arti", predicate: stab
 value: exact substring of cited span for explicit/correction/exception, condition: scope qualifier or empty string,
 assertion: explicit|inferred|exception|correction, confidence: 0..1}],
 intentions: [{span,key: stable short identifier,description,cue,deadline: ISO timestamp with UTC offset or null,
-status: open|fulfilled|cancelled|reminder,confidence: 0..1}],
+status: open|fulfilled|cancelled|reminder,confidence: 0..1}] (write description and cue as short phrases
+in the language of the CURRENT text: a reminder or follow-up may show them to the person),
 revisions: [{span,source_id: one eligible memory source_id,interpretation: new grounded explanation,confidence: 0..1,
 attribution: intentional|accidental|unknown|resolved}],
 preferences: object with only explicitly stated boolean text/voice/stickers/proactive preferences,

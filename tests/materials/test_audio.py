@@ -93,6 +93,16 @@ class AudioDecoderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual('verbose_json',call.call_args.kwargs['response_format'])
         self.assertEqual(['word','segment'],call.call_args.kwargs['timestamp_granularities'])
 
+    async def test_assembly_submission_requests_speaker_confidence_without_repeating_paid_post(self):
+        from ai.stt import _aai_submit,ASSEMBLYAI_SPEECH_MODELS
+        response=SimpleNamespace(raise_for_status=lambda: None,json=lambda: {'id':'fixture-job'})
+        with patch('ai.stt._aai_request_with_retries',AsyncMock(return_value=response)) as request:
+            self.assertEqual('fixture-job',await _aai_submit(object(),'fixture-upload','en',structured=True))
+        payload=request.call_args.kwargs['json']
+        self.assertEqual(ASSEMBLYAI_SPEECH_MODELS,payload['speech_models'])
+        self.assertTrue(payload['speaker_options']['include_speaker_confidence'])
+        self.assertEqual(1,request.call_args.kwargs['attempts'])
+
     async def test_large_timeline_stays_inside_block_budget(self):
         timeline=Timeline(3000,tuple(Segment('s'+str(i),'word',0,100,(Word('word',0,100),)*3) for i in range(2000)),method='fixture')
         analysis=dict(start_ms=0,end_ms=3000,duration_ms=3000,acoustic=[],streams=[],silence=[],limitations=[])

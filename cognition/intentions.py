@@ -104,7 +104,8 @@ async def run_intention_cycle(runtime,bot):
             from organizer.ownership import cognitive_delivery_allowed
             async with cognitive_delivery_allowed(runtime.pool,row['owner_id'],row['chat_id'],row['context_id'],row['id']) as allowed:
                 if not allowed: continue
-                text = 'Напоминание: '+p['description'] if p['status']=='reminder' else followup_text(p)
+                from cognition.private_followup import reminder_text
+                text = reminder_text(p) if p['status']=='reminder' else followup_text(p)
                 from cognition.delivery import send_with_receipt,DeliverySuppressed,DeliveryUnknown
                 from bot.retry_bot import RetryBot
                 try:

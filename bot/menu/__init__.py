@@ -1,7 +1,8 @@
 """Native Telegram menu. Shared entry points fork into user-owned working panels."""
 import logging
+import shlex
 from datetime import datetime, timezone
-from telegram import BotCommand, MenuButtonCommands
+from telegram import BotCommand, MenuButtonCommands, ReplyKeyboardRemove
 from telegram.ext import ApplicationHandlerStop
 from telegram.error import TelegramError
 from cognition.scope import CURRENT_SCOPE
@@ -33,6 +34,60 @@ async def actor():
 
 
 async def menu_command(update, context):
+    return await _open_panel(update, context)
+
+
+async def media_command(update, context, command, *, source=None):
+    if command not in ('image', 'video', 'music', 'dub'):
+        raise ValueError('Unsupported media command')
+    text = shlex.join(['/' + command, *(context.args or [])])
+    existing = getattr(context.bot, '_menu_panel', None)
+    if existing is not None:
+        controller = context.bot.controller
+        await controller.execute_command(text)
+        if source is not None:
+            await _accept_dub_source(controller, source)
+        return
+    return await _open_panel(update, context, command=text, source=source)
+
+
+async def _accept_dub_source(controller, source):
+    from config import dub_flow_state
+    state = dub_flow_state.get(controller.actor.scope.chat_id, {}).get(controller.actor.user_id) or {}
+    if state.get('step') == 'source':
+        from .bridge import surfaces
+        from bot.commands import handle_dub_flow
+        update, context = surfaces(controller, text=source)
+        await handle_dub_flow(update, context)
+
+
+async def _remove_input_keyboard(update, context, scope):
+    """Remove a keyboard left by older versions once per user's conversation."""
+    if context.user_data.get('_input_keyboard_removed'):
+        return
+    message = update.effective_message
+    if getattr(getattr(message, 'from_user', None), 'id', None) != update.effective_user.id:
+        message = getattr(message, 'reply_to_message', None)
+    # In a group selective removal must reply to this human, never to a bot.
+    if scope.group and getattr(getattr(message, 'from_user', None), 'id', None) != update.effective_user.id:
+        return
+    context.user_data['_input_keyboard_removed'] = True
+    try:
+        result = await native(context.bot, 'send_message')(
+            chat_id=scope.chat_id, text='Открываю меню…',
+            reply_to_message_id=message.message_id if message else None,
+            reply_markup=ReplyKeyboardRemove(selective=True), **scope.send_kwargs())
+    except TelegramError:
+        logger.info('Old input keyboard removal is unconfirmed; no duplicate send')
+        return
+    if type(getattr(result, 'message_id', None)) is int:
+        try:
+            await native(context.bot, 'delete_message')(chat_id=scope.chat_id,message_id=result.message_id)
+        except TelegramError:
+            logger.info('Temporary keyboard cleanup notice could not be deleted')
+
+
+async def _open_panel(update, context, *, command=None, source=None):
     scope = CURRENT_SCOPE.get()
     if not scope or not update.effective_user or scope.sender_kind != 'user' or scope.topic_id < 0 and scope.group:
         return
@@ -45,7 +100,8 @@ async def menu_command(update, context):
         current = await actor()
         row = await store.get(scope.chat_id,scope.topic_id,current.user_id)
         existed = row is not None
-        request_id='message:'+str(update.effective_message.message_id)
+        query = getattr(update, 'callback_query', None)
+        request_id = 'callback:' + query.id if query else 'message:' + str(update.effective_message.message_id)
         if row and not await store.consume(row,request_id):
             return
         previous_message_id = row['message_id'] if row else None
@@ -54,17 +110,27 @@ async def menu_command(update, context):
             await store.consume(row,request_id)
         # An explicit request must appear at the bottom of the conversation.
         # Buttons continue editing this new panel; redelivery stays deduplicated.
-        await store.save(row,message_id=None,status='new',content_hash=None)
+        await store.save(row,message_id=query.message.message_id if query else None,
+                         status='active' if query else 'new',content_hash=None)
         panel = Panel(store,row,context.bot)
-        controller = Controller(panel,update,context,current)
+        controller = Controller(panel,update,context,current,allow_create=True)
         controller.clear_legacy(force=True)
+        await _remove_input_keyboard(update, context, scope)
+        if command is not None:
+            from .views import COMMAND_PARENTS
+            await store.save(row,screen=COMMAND_PARENTS.get(command.split()[0].lstrip('/'),'home'))
         try:
-            await controller.show('home',allow_create=True)
+            if command is None:
+                await controller.show('home',allow_create=True)
+            else:
+                await controller.execute_command(command,reply=update.effective_message.reply_to_message)
+                if source is not None:
+                    await _accept_dub_source(controller, source)
         except TelegramError:
             logger.info('Menu opening outcome is unconfirmed; no automatic replacement')
         # Old tokens are already invalid in SQL. Remove their visible buttons
         # once; failure to clean an old message must not hide the new menu.
-        if previous_message_id is not None:
+        if previous_message_id is not None and previous_message_id != row['message_id']:
             try:
                 await native(context.bot,'edit_message_reply_markup')(
                     chat_id=scope.chat_id,message_id=previous_message_id,reply_markup=None)

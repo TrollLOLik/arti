@@ -122,7 +122,12 @@ class MaterialCardDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(kwargs['caption'].encode('utf-16-le'))//2, 1024)
         self.assertEqual(9, kwargs['reply_parameters'].message_id)
         self.assertTrue(kwargs['photo'].startswith(b'\x89PNG'))
-        self.message.reply_text.assert_awaited_once_with('2 ячейки; источник fixture', parse_mode=None)
+        self.message.reply_text.assert_awaited_once()
+        text=self.message.reply_text.await_args.args[0]
+        self.assertIn('2 ячейки; источник fixture',text)
+        self.assertIn('<blockquote expandable>',text)
+        self.assertIn(self.card.caution,text)
+        self.assertEqual('HTML',self.message.reply_text.await_args.kwargs['parse_mode'])
         self.assertGreaterEqual(guard.await_count, 4)
 
     async def test_render_failure_keeps_text(self):

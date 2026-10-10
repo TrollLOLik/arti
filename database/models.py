@@ -1545,12 +1545,43 @@ class ChatEmotionalState:
 class AIModel:
     """Работа со списком ИИ моделей"""
 
+    # Public catalog methods deliberately never fetch credentials or headers.
+    PUBLIC_COLUMNS = """key, name, model, provider, speed, intelligence, api_type,
+        is_active, is_maintenance,
+        (NULLIF(btrim(base_url), '') IS NOT NULL AND api_key IS NOT NULL
+            AND (api_type <> 'gemini' OR NULLIF(btrim(api_key), '') IS NOT NULL)) AS is_configured"""
+
+    @staticmethod
+    async def get_connection(selection: str, *, conn=None) -> Optional[Dict[str, Any]]:
+        """Private request configuration. Stable key wins over a legacy model ID."""
+        if conn is None:
+            async with get_db() as conn:
+                return await AIModel.get_connection(selection, conn=conn)
+        row = await conn.fetchrow("SELECT * FROM ai_models WHERE key = $1", selection)
+        if row:
+            return dict(row)
+        rows = await conn.fetch("SELECT * FROM ai_models WHERE model = $1 LIMIT 2", selection)
+        if len(rows) > 1:
+            raise ValueError('ambiguous_model_selection')
+        return dict(rows[0]) if rows else None
+
+    @staticmethod
+    async def get_available_connections() -> List[Dict[str, Any]]:
+        """Private candidates, each bound to its own endpoint and credential."""
+        async with get_db() as conn:
+            rows = await conn.fetch("""SELECT * FROM ai_models
+                WHERE is_active AND NOT is_maintenance
+                    AND NULLIF(btrim(base_url), '') IS NOT NULL AND api_key IS NOT NULL
+                    AND (api_type <> 'gemini' OR NULLIF(btrim(api_key), '') IS NOT NULL)
+                ORDER BY created_at, key""")
+            return [dict(row) for row in rows]
+
     @staticmethod
     async def get_all_active() -> List[Dict[str, Any]]:
         """Получить все активные модели"""
         async with get_db() as conn:
-            rows = await conn.fetch("""
-                SELECT key, name, model, provider, speed, intelligence, is_active, is_maintenance
+            rows = await conn.fetch(f"""
+                SELECT {AIModel.PUBLIC_COLUMNS}
                 FROM ai_models
                 WHERE is_active = TRUE
                 ORDER BY created_at ASC, key ASC
@@ -1561,8 +1592,8 @@ class AIModel:
     async def get_by_key(key: str) -> Optional[Dict[str, Any]]:
         """Получить модель по ключу"""
         async with get_db() as conn:
-            row = await conn.fetchrow("""
-                SELECT key, name, model, provider, speed, intelligence, is_active, is_maintenance
+            row = await conn.fetchrow(f"""
+                SELECT {AIModel.PUBLIC_COLUMNS}
                 FROM ai_models
                 WHERE key = $1
             """, key)
@@ -1570,14 +1601,18 @@ class AIModel:
 
     @staticmethod
     async def get_by_model_id(model_id: str) -> Optional[Dict[str, Any]]:
-        """Получить модель по ее идентификатору (модели)"""
+        """Public lookup accepting stable keys and unambiguous legacy IDs."""
+        row = await AIModel.get_by_key(model_id)
+        if row:
+            return row
         async with get_db() as conn:
-            row = await conn.fetchrow("""
-                SELECT key, name, model, provider, speed, intelligence, is_active, is_maintenance
+            rows = await conn.fetch(f"""
+                SELECT {AIModel.PUBLIC_COLUMNS}
                 FROM ai_models
                 WHERE model = $1
+                LIMIT 2
             """, model_id)
-            return dict(row) if row else None
+            return dict(rows[0]) if len(rows) == 1 else None
 
     @staticmethod
     async def search_and_filter(
@@ -1622,7 +1657,7 @@ class AIModel:
 
             # Получаем страницу записей
             select_query = f"""
-                SELECT key, name, model, provider, speed, intelligence, is_active, is_maintenance
+                SELECT {AIModel.PUBLIC_COLUMNS}
                 FROM ai_models
                 WHERE {where_clause}
                 ORDER BY created_at ASC, key ASC

@@ -63,9 +63,13 @@ async def submit_media(task, bot, chat_id, kind):
         # Cosmetic receipt cannot turn a committed request into an intake failure.
         try:
             from telegram.ext import ExtBot
+            from bot.cards import media_card
+            from bot.buttons import inline_button
+            from telegram import InlineKeyboardMarkup
             async with asyncio.timeout(5):
                 await ExtBot.send_message(bot, chat_id=chat_id,
-                    text=f"Запрос {job['id']} сохранён. Статус: /request {job['id']}",
+                    text=media_card(job,request).html(), parse_mode='HTML',
+                    reply_markup=InlineKeyboardMarkup([[inline_button('Состояние и действия',callback_data='request_view:'+job['id'])]]),
                     reply_to_message_id=request.get('message_id'))
         except Exception:
             pass
@@ -167,10 +171,12 @@ async def execute(request, bot):
         raise ValueError('invalid_disk_media_channel')
     kwargs = dict(chat_id=request['chat_id'], reply_to_message_id=request.get('message_id'))
     kwargs[channel] = {'_arti_spooled_file': descriptor}
-    if channel != 'voice':
-        kwargs['caption'] = 'Готово!'
+    from bot.cards import media_card
+    kwargs['caption']=media_card(job,request,ready=True).html(limit=950)
+    kwargs['parse_mode']='HTML'
     if request['type']=='vclone' and request.get('source_kind')!='saved_voice':
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        from telegram import InlineKeyboardMarkup
+        from bot.buttons import inline_button
         from bot.media_retention import RetentionUnavailable
         from bot.media_spool import SpoolError
         try:
@@ -180,7 +186,7 @@ async def execute(request, bot):
             # Existing prepared payloads may contain the old, safely expired button.
             pass
         else:
-            kwargs['reply_markup']=InlineKeyboardMarkup([[InlineKeyboardButton('Сохранить голос (15 минут)',callback_data='media_voice_save:'+job['id'])]])
+            kwargs['reply_markup']=InlineKeyboardMarkup([[inline_button('Сохранить голос (15 минут)',callback_data='media_voice_save:'+job['id'])]])
     await getattr(bot, 'send_'+channel)(**kwargs)
 
 

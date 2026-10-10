@@ -1,15 +1,17 @@
-"""Bounded JSON calls through the same model selection as chat responses."""
+"""Bounded JSON requests using the selected model's database connection."""
 import asyncio
-import os
 
 import httpx
+from ai.providers.connections import resolve_connection
+from ai.providers.contracts import GenerationRequest
+from materials.types import MaterialError
 
 
 class SelectedModelClient:
-    def __init__(self, *, resolver=None, client=None, google_client=None, timeout=90, fast=False):
+    def __init__(self, *, resolver=None, client=None, connection_resolver=None, timeout=90, fast=False):
         self.resolver = resolver
         self.client = client
-        self.google_client = google_client
+        self.connection_resolver = connection_resolver or resolve_connection
         self.timeout = timeout
         self.owned = client is None
         self.fast = fast
@@ -27,53 +29,29 @@ class SelectedModelClient:
     async def close(self):
         if self.owned and self.client is not None:
             await self.client.aclose()
+            self.client = None
 
     async def complete(self, model, messages, tokens, temperature=0):
         # The caller pins selection once for a bounded retry sequence. A model
         # changed in another chat cannot change this request or its retries.
         async with asyncio.timeout(self.timeout):
-            if model.startswith('gemini'):
-                from google.genai import types
-                client = self.google_client
-                if client is None:
-                    from config import genai_client
-                    client = genai_client
-                system = '\n\n'.join(m['content'] for m in messages if m['role'] == 'system')
-                contents = [types.Content(role='model' if m['role'] == 'assistant' else 'user',
-                    parts=[types.Part(text=m['content'])]) for m in messages if m['role'] != 'system']
-                thinking = None
-                if self.fast:
-                    if model.startswith(('gemini-3.1-flash-lite','gemini-3-flash')):
-                        thinking = types.ThinkingConfig(thinking_level='minimal')
-                    elif model.startswith('gemini-2.5-flash'):
-                        thinking = types.ThinkingConfig(thinking_budget=0)
-                try:
-                    result = await client.aio.models.generate_content(model=model, contents=contents,
-                        config=types.GenerateContentConfig(system_instruction=system, temperature=temperature,
-                            max_output_tokens=tokens, response_mime_type='application/json',thinking_config=thinking))
-                except (asyncio.CancelledError, httpx.TimeoutException):
-                    raise
-                except Exception as exc:
-                    status = getattr(exc, 'code', None) or getattr(exc, 'status_code', None)
-                    return httpx.Response(status if isinstance(status, int) and 400 <= status <= 599 else 503,
-                        json={'error': {'code': 'structured_provider_failed'}})
-                try:
-                    text = result.text
-                except (ValueError, AttributeError):
-                    text = None
-                usage = getattr(result, 'usage_metadata', None)
-                candidates = getattr(result, 'candidates', None) or []
-                finish = str(getattr(candidates[0], 'finish_reason', '')) if candidates else ''
-                return httpx.Response(200, json={'choices': [{'message': {'content': text},
-                    'finish_reason': 'length' if 'MAX_TOKENS' in finish else 'stop'}],
-                    'usage': {'prompt_tokens': getattr(usage, 'prompt_token_count', 0),
-                        'completion_tokens': getattr(usage, 'candidates_token_count', 0)}})
-            from config import OMNIROUTE_BASE_URL
-            if not OMNIROUTE_BASE_URL:
-                return httpx.Response(503, json={'error': {'code': 'missing_chat_endpoint'}})
+            try:
+                connection = await self.connection_resolver(model)
+                request = GenerationRequest('\n'.join(message['content'] for message in messages),
+                    structured_output='structured_output' in connection.capabilities.get('features', []))
+                if not connection.endpoints()[0].supports(request):
+                    raise MaterialError('model_capabilities_unavailable')
+            except MaterialError as exc:
+                return httpx.Response(503, json={'error': {'code': exc.code}})
+            if connection.api_type == 'gemini':
+                from ai.providers.google import google_complete
+                return await google_complete(connection, messages, tokens, temperature, fast=self.fast,
+                    timeout=self.timeout, http_client=self.client)
+            payload = connection.payload(messages, tokens, temperature, structured=True, fast=self.fast)
+            payload.update(payload.pop('extra_body', {}))
             if self.client is None:
-                self.client = httpx.AsyncClient(timeout=self.timeout, trust_env=False)
-            return await self.client.post(OMNIROUTE_BASE_URL.rstrip('/') + '/chat/completions',
-                headers={'Authorization': 'Bearer ' + os.getenv('OMNIROUTE_API_KEY', '')},
-                json={'model': model, 'messages': messages, 'temperature': temperature,
-                    'max_tokens': tokens, 'response_format': {'type': 'json_object'}})
+                self.client = httpx.AsyncClient(timeout=self.timeout, trust_env=False, follow_redirects=False)
+            headers = {'Authorization': 'Bearer ' + connection.api_key} if connection.api_key else {}
+            return await self.client.post(connection.base_url + '/chat/completions',
+                headers=headers, json=payload, timeout=min(self.timeout, connection.timeout_seconds),
+                follow_redirects=False)

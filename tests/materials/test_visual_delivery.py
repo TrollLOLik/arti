@@ -118,7 +118,8 @@ class VisualDeliverySQLTests(unittest.IsolatedAsyncioTestCase):
         from artifacts.export import export_current
         row=await self.artifact(); bot=self.bot(); cards=WorkCards(self.service)
         await cards.show(row,self.actor,bot,'preview')
-        self.assertEqual(1,len(self.sent)); channel,kwargs=self.sent[0]; self.assertEqual('photo',channel)
+        self.assertEqual(['photo','message'],[kind for kind,_ in self.sent]); channel,kwargs=self.sent[0]; self.assertEqual('photo',channel)
+        self.assertIn('Отчёт готов',self.sent[1][1]['text'])
         self.assertTrue(kwargs['photo'].getvalue().startswith(b'\x89PNG\r\n\x1a\n'))
         with Image.open(BytesIO(kwargs['photo'].getvalue())) as image:
             image.load(); self.assertEqual((1080,1440),image.size); self.assertGreater(len(image.getcolors(image.width*image.height)),3)
@@ -130,7 +131,7 @@ class VisualDeliverySQLTests(unittest.IsolatedAsyncioTestCase):
         with patch('artifacts.export.export_current',new=AsyncMock()) as render:
             with self.assertRaises(MaterialError): await cards.show(row,self.actor,bot,'preview')
             render.assert_not_awaited()
-        self.assertEqual(1,len(self.sent))
+        self.assertEqual(2,len(self.sent))
 
     async def test_progress_stays_text(self):
         from bot.work_cards import WorkCards
@@ -301,10 +302,10 @@ class VisualDeliverySQLTests(unittest.IsolatedAsyncioTestCase):
         row=await self.repo.get(row['id'],self.actor); output=(await self.repo.outputs(row))['build']
         self.assertNotIn('derivative_id',output)
         bot=self.bot(); await deliver_task(self.service,self.repo,row,bot,'planned')
-        self.assertEqual(['photo'],[kind for kind,_ in self.sent])
+        self.assertEqual(['photo','message'],[kind for kind,_ in self.sent])
         await ArtifactRepository(self.materials).revise(output['id'],self.actor,output['revision'],[dict(op='title',value='Changed after task')])
         with self.assertRaises(MaterialError): await deliver_task(self.service,self.repo,row,bot,'stale-planned')
-        self.assertEqual(1,len(self.sent))
+        self.assertEqual(2,len(self.sent))
 
     async def test_create_then_patch_delivers_newest_terminal_artifact(self):
         from agents.tools.core import build_registry
@@ -318,7 +319,7 @@ class VisualDeliverySQLTests(unittest.IsolatedAsyncioTestCase):
         row=await self.create(plan); result=await Executor(self.repo,self.service).run(row['id']); self.assertEqual('succeeded',result['status'])
         row=await self.repo.get(row['id'],self.actor); bot=self.bot()
         await deliver_task(self.service,self.repo,row,bot,'revised')
-        self.assertEqual(['photo'],[kind for kind,_ in self.sent]); self.assertIn('Final revised title',self.sent[0][1]['caption']); self.assertIn('Версия 2',self.sent[0][1]['caption'])
+        self.assertEqual(['photo','message'],[kind for kind,_ in self.sent]); self.assertIn('Final revised title',self.sent[0][1]['caption']); self.assertIn('Версия 2',self.sent[1][1]['text'])
 
     async def test_missing_artifact_head_dependency_cannot_deliver(self):
         from agents.tools.core import build_registry
@@ -379,7 +380,7 @@ class VisualDeliverySQLTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(2,len(navigation)); self.assertTrue(all('nav' in action for action in navigation))
             self.assertIn(dict(nav='home'),navigation)
             await controller.act(dict(nav='home')); self.assertEqual('home',panel.row['screen'])
-        self.assertEqual(['photo'],[kind for kind,_ in self.sent])
+        self.assertEqual(['photo','message'],[kind for kind,_ in self.sent])
         self.assertEqual('delivered',await self.delivery_state('menu-photo'))
 
     async def test_unknown_photo_does_not_mark_menu_complete_or_retry(self):

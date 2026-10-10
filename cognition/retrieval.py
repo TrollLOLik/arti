@@ -17,14 +17,14 @@ def retrieval_guidance(diagnostics):
         return ''
     status = diagnostics.get('status', 'unavailable')
     if status == 'complete':
-        return ('Retrieval finished within its permitted scope. An empty result means '
-                'no matching evidence was found by this query, not proof an event never happened.')
+        return ('Поиск по памяти завершён в допустимых пределах. Пустой результат значит лишь, что по этому '
+                'запросу совпадений не нашлось, а не что события не было.')
     if status == 'incomplete':
-        reason = 'The permitted semantic index is still being filled.'
+        reason = 'Смысловой индекс памяти ещё заполняется.'
     elif status == 'timeout':
-        reason = 'A bounded retrieval step ran out of time.'
+        reason = 'Один из шагов поиска по памяти не уложился во время.'
     else:
-        reason = 'Local semantic retrieval is unavailable; any returned lexical evidence is partial.'
-    return (reason + ' Retrieval is incomplete. Use any returned evidence with its original '
-            'attribution and uncertainty. If relevant, say you could not finish checking; never '
-            'claim that an empty or partial result proves there is no stored evidence.')
+        reason = 'Смысловой поиск по памяти сейчас недоступен; найденное по словам — лишь часть.'
+    return (reason + ' Поиск неполный. Используй найденное с исходным авторством и неопределённостью. '
+            'Если это важно, честно скажи, что не успела всё проверить; никогда не утверждай, что пустой '
+            'или частичный результат доказывает, будто ничего не сохранилось.')

@@ -121,8 +121,8 @@ class RequestRuntimeTests(unittest.IsolatedAsyncioTestCase):
         from bot.request_runtime import request_status
         own=await store().enqueue('text',1,-1,'own',{})
         foreign=await store().enqueue('text',2,-1,'foreign',{})
-        message=NS(message_thread_id=None,reply_text=AsyncMock())
-        update=NS(effective_message=message,effective_chat=NS(id=1,type='private'))
+        message=NS(chat_id=1,message_thread_id=None,reply_text=AsyncMock())
+        update=NS(effective_message=message,effective_chat=NS(id=1,type='private'),effective_user=NS(id=7))
         await request_status(update,NS(args=[]))
         self.assertIn(own['id'],message.reply_text.await_args.args[0])
         await request_status(update,NS(args=[foreign['id']]))

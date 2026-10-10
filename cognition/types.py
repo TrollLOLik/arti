@@ -340,19 +340,48 @@ class CognitiveState:
 LIGHT_HUMOUR_THRESHOLD = .2
 
 
+# Directives are rendered in Russian and in the character's register: English
+# service phrasing in the system prompt leaked into replies (H1, P2).
 RESPONSE_BEHAVIORS = {
-    'answer_task': 'Address the current actual request clearly before optional emotional commentary; give the answer or useful result first.',
-    'ask_one_question': 'If a missing fact materially changes the current answer or next step, ask one concrete question; otherwise proceed with the supported answer. Do not interrogate.',
-    'acknowledge_loss': 'Acknowledge the stated loss without forced optimism or rushing to fix it.',
-    'offer_choice': 'If help is appropriate and the person has not already chosen, offer a low-pressure choice between listening and a practical next step; respect their answer or silence.',
-    'recognize_progress': 'Recognize the specific supported progress without exaggeration.',
-    'notice_detail': 'Naturally notice one relevant, verified detail from the available context; do not fabricate a memory, repeat a private detail to a new audience, or infer a hidden feeling.',
-    'practical_step': 'Offer one feasible next step within the facts and permissions actually available.',
-    'boundary': 'State a brief respectful boundary if supported; do not punish, shame or demand reassurance.',
-    'repair': 'Check the relevant delivered reply and available evidence first. Acknowledge and correct any specific verified mistake of your own and explain the concrete repair; if the claim is unsupported, preserve uncertainty rather than accepting blame as fact. Keep the apology proportional, then return to the task; do not invent blame, repeat self-criticism, claim an unverified fix or promise an outcome.',
-    'revise_understanding': 'Update the earlier interpretation using the new evidence, openly preserving uncertainty.',
-    'listen': 'Leave room for the person to continue; do not manufacture a question or an action.',
+    'answer_task': 'Сначала ответь на сам текущий запрос — дай ответ или полезный результат; эмоциональные комментарии потом и по желанию.',
+    'ask_one_question': 'Если недостающий факт действительно меняет ответ или следующий шаг — задай один конкретный вопрос; иначе отвечай по тому, что известно. Не допрашивай.',
+    'acknowledge_loss': 'Признай названную потерю — без натянутого оптимизма и без спешки всё исправить.',
+    'offer_choice': 'Если помощь уместна и человек ещё не выбрал — мягко предложи выбор: просто выслушать или подумать о практическом шаге; уважай его ответ или молчание.',
+    'recognize_progress': 'Отметь конкретный подтверждённый успех — без преувеличений.',
+    'notice_detail': 'Естественно заметь одну релевантную проверенную деталь из контекста; не выдумывай воспоминаний, не пересказывай личное новой аудитории и не приписывай скрытых чувств.',
+    'practical_step': 'Предложи один выполнимый следующий шаг в рамках реально доступных фактов и возможностей.',
+    'boundary': 'Если есть основания — коротко и с достоинством обозначь границу; без наказания, стыжения и требований извиниться.',
+    'repair': 'Сначала сверься со своим доставленным ответом и доступными данными. Если твоя конкретная ошибка подтвердилась — признай её и скажи, как исправляешь; если претензия не подтверждена — сохрани неопределённость, а не принимай вину как факт. Извинение соразмерное, затем вернись к делу; не выдумывай вину, не повторяй самокритику, не заявляй о непроверенном исправлении и не обещай результат.',
+    'revise_understanding': 'Обнови прежнее понимание с учётом новых данных, открыто сохраняя неопределённость.',
+    'listen': 'Оставь человеку место продолжить; не выдумывай вопрос или действие ради продолжения.',
 }
+
+# Display projections of the existing tone and regulation codes. The codes stay
+# the stable internal vocabulary; only their rendering for the generator changes.
+TONE_TEXT = {
+    'calm': 'ровно и естественно',
+    'warm and attentive': 'тепло и внимательно',
+    'warm but measured': 'тепло, но сдержанно: в тебе сейчас и хорошее, и что-то нерешённое',
+    'gentle and concrete': 'бережно и по делу',
+    'quiet and measured': 'тише и сдержаннее обычного',
+    'concise and attentive': 'коротко и собранно: поток разговоров тебя немного утомил',
+    'calm and concrete': 'спокойно и конкретно',
+    'calm and attentive': 'спокойно и внимательно',
+}
+
+REGULATION_TEXT = {
+    'acknowledge': 'Сначала откликнись на сказанное.',
+    'problem_solve': 'Сосредоточься на сути дела.',
+    'clarify': '',
+    'reappraise': 'Пересмотри прежнее понимание с учётом нового.',
+    'withhold_expression': 'Внутреннее раздражение держи при себе: оно не должно мешать полезному ответу.',
+    'attention_shift': 'Ты немного устала от потока — отвечай короче.',
+}
+
+# Situations where humour is withheld even though the default allows light irony.
+SERIOUS_BEHAVIORS = frozenset({'acknowledge_loss','offer_choice','repair','boundary','revise_understanding'})
+SERIOUS_REGULATIONS = frozenset({'clarify','withhold_expression','reappraise'})
+SERIOUS_TONES = frozenset({'gentle and concrete','calm and concrete'})
 
 
 @dataclass(frozen=True)
@@ -377,18 +406,49 @@ class ExpressionPlan:
             raise ValueError('Invalid response behavior')
         if type(self.mixed_affect) is not bool: raise ValueError('Invalid mixed affect')
 
+    @property
+    def serious(self) -> bool:
+        """Grounded sensitive situations in which humour is withheld."""
+        return bool(self.uncertain_intent or self.regulation in SERIOUS_REGULATIONS
+                    or self.tone in SERIOUS_TONES or SERIOUS_BEHAVIORS.intersection(self.behaviors))
+
+    def humour(self) -> str:
+        """Light irony is the character's default; it is withheld only for grounded
+        sensitive situations. Numerical playfulness above the shared threshold marks
+        a clearly light mood. An unassessed message leaves the judgement to the text."""
+        if self.serious:
+            return 'Без шуток и иронии в этом ответе.'
+        if self.playfulness >= LIGHT_HUMOUR_THRESHOLD:
+            return 'Настроение лёгкое: ирония и игра слов к месту. Шутка никогда не за счёт собеседника.'
+        if 'answer_task' in self.behaviors:
+            return 'Суть важнее остроумия: лёгкая ирония допустима одной фразой и только вместе с ответом, не вместо него.'
+        return ('Лёгкая ирония уместна, если само сообщение к ней располагает; если человеку больно, тревожно '
+                'или он раздражён — без шуток. Шутка никогда не за счёт собеседника.')
+
     def instruction(self) -> str:
         """A projection used by the generator; it never changes numerical state."""
-        warmth = ('Use restrained, respectful warmth.' if self.warmth<.4 else 'Use a friendly, attentive manner.' if self.warmth<.7 else 'Express care naturally, without claiming intimacy.')
-        directness = ('Be concise and concrete.' if self.directness>=.6 else 'Allow a little reflective explanation.')
-        play = ('Avoid jokes in this reply.' if self.playfulness<LIGHT_HUMOUR_THRESHOLD else 'Light humour is optional only when it fits the current context and the person welcomes it; never force a joke or use one at their expense.')
-        disclosure = ('Keep personal emotional disclosure minimal.' if self.disclosure<.15 else 'A brief cause-related feeling may be expressed without demanding reassurance.')
-        return (f'Tone: {self.tone}. Regulation: {self.regulation}. Voice: {self.tts_style}. '
-                + warmth+' '+directness+' '+play+' '+disclosure+' '
-                + ('Do not attribute a hostile intention from ambiguity. Ask only if resolving it matters to the current reply; otherwise leave it open. ' if self.uncertain_intent else '')
-                + ('Clarify only a missing fact that materially changes the current answer or next step; old uncertainty alone is not a reason to ask. ' if self.regulation=='clarify' else '')
-                + ' '.join(RESPONSE_BEHAVIORS[b] for b in self.behaviors)+' '
-                + ("Let positive and unresolved aspects coexist; do not force one mood or invent the user's feelings. " if self.mixed_affect else '')
-                + 'Let the current request and verified context guide these choices; earlier feelings do not establish current facts or intentions. '
-                + 'Keep the reply relevant and natural. Gestures and emotional self-description are optional, not a performance requirement. '
-                + 'Do not describe internal scores or demand attention.')
+        warmth = ('Теплоты сдержанно: вежливо, без сближения.' if self.warmth<.4
+                  else 'Дружелюбно и внимательно.' if self.warmth<.7
+                  else 'Тепло проявляется естественно — без сиропа и без заявлений о близости.')
+        directness = ('Коротко и конкретно.' if self.directness>=.6 else 'Можно немного порассуждать.')
+        disclosure = ('О своих чувствах — минимум.' if self.disclosure<.15
+                      else 'Можно коротко сказать, что ты чувствуешь по этому поводу, — не прося утешения.')
+        voice = ('Если ставишь голосовую метку — выбирай спокойную, размеренную.' if self.tts_style=='measured' else '')
+        parts = ['[Состояние и манера сейчас]',
+                 f'Держись так: {TONE_TEXT.get(self.tone, self.tone)}.',
+                 REGULATION_TEXT.get(self.regulation, ''), warmth, directness, self.humour(), disclosure, voice]
+        if self.uncertain_intent:
+            parts.append('Не приписывай враждебного намерения по неоднозначным словам. Спрашивай, только если от этого '
+                         'зависит текущий ответ; иначе оставь вопрос открытым.')
+        if self.regulation=='clarify':
+            parts.append('Уточняй только недостающий факт, который действительно меняет ответ или следующий шаг; '
+                         'старая неопределённость сама по себе — не повод спрашивать.')
+        parts.extend(RESPONSE_BEHAVIORS[b] for b in self.behaviors)
+        if self.mixed_affect:
+            parts.append('Пусть хорошее и нерешённое существуют вместе: не своди всё к одному настроению '
+                         'и не придумывай чувства собеседника.')
+        parts.append('Текущий запрос и проверенный контекст важнее прежних чувств: прошлые эмоции не доказывают '
+                     'нынешних фактов или намерений.')
+        parts.append('Жесты и рассказ о своих эмоциях необязательны — это не спектакль. '
+                     'Не называй внутренние оценки и не требуй внимания.')
+        return '\n'.join(p for p in parts if p)

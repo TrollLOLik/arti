@@ -32,7 +32,8 @@ from utils.text_processing import (
     extract_urls_and_make_keyboard, 
     send_continuous_action, 
     repeat_chat_action,
-    fix_html_tags
+    fix_html_tags,
+    strip_voice_tags
 )
 from utils.chat_history import save_chat_message, get_chat_context, save_chat_message_rp, get_chat_context_rp
 from utils.model_selection import get_chat_model
@@ -422,12 +423,13 @@ async def _execute_generation_task(task: dict):
             title_system = "Ты — Арти: андроид с аристократичными манерами и точным, чуть ироничным умом. Придумай короткое и стильное название для песни (до 5 слов). Ответь ТОЛЬКО названием, без кавычек и лишних слов."
             
             try:
+                title_model = await get_chat_model(chat_id)
                 generated_title, _, _, _ = await checkpoint("music_title", lambda: generate_response_stream(
                     chat_id=chat_id,
                     prompt=title_prompt,
                     user_name=user_name,
                     chat_context="",
-                    model="gemini-3.1-flash-lite-preview",
+                    model=title_model,
                     custom_system_prompt=title_system
                 ))
                 song_title = (generated_title or "").strip().replace('"', '').replace("'", "")
@@ -629,7 +631,7 @@ async def enqueue_generation(task: dict, bot, chat_id):
     return await submit(task)
 
 
-async def enqueue_reply(chat_id, user_id, user_name, user_message, message_id, context, is_voice=True, base64_image=None, document_text=None, video_file_id=None, is_video_note=False, *, native_user_message=None):
+async def enqueue_reply(chat_id, user_id, user_name, user_message, message_id, context, is_voice=True, base64_image=None, document_text=None, video_file_id=None, is_video_note=False, *, native_user_message=None, result_card=None):
     context=_real_menu_context(context)
     native_user_message=user_message if native_user_message is None else native_user_message
     from cognition.scope import CURRENT_SCOPE
@@ -681,9 +683,12 @@ async def enqueue_reply(chat_id, user_id, user_name, user_message, message_id, c
         'is_video_note': is_video_note
     }
     request['_request_mode'] = 'rp' if rp_mode_state.get(chat_id) else 'default'
+    if result_card:
+        request['_result_card']=dict(result_card)
+        request['_request_no_coalesce']=True
     if scope and scope.chat_type=='private' and scope.user_id==chat_id:
         async with get_db() as conn:
-            request['_request_no_coalesce']=bool(await conn.fetchval('SELECT 1 FROM arti_organizer_pending WHERE owner_id=$1 AND chat_id=$1 AND expires_at>NOW()',chat_id))
+            request['_request_no_coalesce']=bool(result_card) or bool(await conn.fetchval('SELECT 1 FROM arti_organizer_pending WHERE owner_id=$1 AND chat_id=$1 AND expires_at>NOW()',chat_id))
     request['_cognitive_context'] = source_context
     for use in getattr(document_text, 'material_uses', ()):
         if use.source_event_id is not None and source_context is not None:
@@ -1019,26 +1024,13 @@ async def process_user_reply(request, bot):
                     temp_video_path = str(Path("temp") / f"temp_video_{chat_id}_{message_id}.mp4")
                     await tg_file.download_to_drive(custom_path=temp_video_path)
                     
-                    from config import genai_client
-                    logger.info(f"Загружаю видео в Gemini: {temp_video_path}")
-                    video_file = await asyncio.to_thread(genai_client.files.upload, file=temp_video_path)
-                    
-                    deadline=asyncio.get_running_loop().time()+90
-                    while video_file.state.name == "PROCESSING":
-                        if asyncio.get_running_loop().time()>=deadline: raise TimeoutError('video_processing_timeout')
-                        from materials.runtime import guard_current
-                        await guard_current(chat_id)
-                        await asyncio.sleep(2)
-                        video_file = await asyncio.wait_for(asyncio.to_thread(genai_client.files.get, name=video_file.name),15)
-                        
-                    if video_file.state.name == "FAILED":
-                        logger.error("Ошибка обработки видео в Gemini")
-                    else:
-                        uploaded_video_file = video_file
+                    # The provider adapter uploads and cleans up this file with
+                    # the same database connection that generates the response.
+                    uploaded_video_file = Path(temp_video_path)
                 else:
                     logger.warning(f"Видео слишком большое для загрузки: {tg_file.file_size} bytes")
             except Exception as e:
-                logger.error(f"Ошибка при обработке видео: {e}")
+                logger.error('Ошибка при обработке видео: %s', type(e).__name__)
 
         # --- АНАЛИЗ НАМЕРЕНИЙ (КАРТЫ) ---
         import time
@@ -1126,11 +1118,6 @@ async def process_user_reply(request, bot):
         from cognition.runtime import CURRENT_TURN
         cognitive_turn = CURRENT_TURN.get() or cognitive_turn
         
-        if uploaded_video_file:
-            try:
-                await asyncio.to_thread(uploaded_video_file.delete)
-            except Exception as e:
-                logger.error(f"Failed to delete uploaded video file: {e}")
         logger.debug(f"RAW ИИ ОТВЕТ: {response_text}")  # PRIV-01: полный ответ только в DEBUG
 
         # MEM-06: ответ-заглушка об ошибке генерации — покажем пользователю, но НЕ
@@ -1202,7 +1189,7 @@ async def process_user_reply(request, bot):
         ).strip()
         
         # Убираем маркеры эмоций для отображения
-        display_text = re.sub(r'\[[^\]]+\]', '', display_text).strip()
+        display_text = strip_voice_tags(display_text)
 
         # Извлекаем ссылки и создаем кнопки
         display_text, reply_markup = extract_urls_and_make_keyboard(display_text, extra_links=grounding_links)
@@ -1222,6 +1209,10 @@ async def process_user_reply(request, bot):
         from cognition.delivery import DeliveryUnknown, DeliverySuppressed
         sent_msg = None
         has_text = bool(display_text.strip())
+
+        if has_text and request.get('_result_card'):
+            from bot.cards import document_analysis_html
+            display_text=document_analysis_html(request['_result_card'],display_text)
 
         if has_text:
             # === ГЕНЕРАЦИЯ ГОЛОСА ===
@@ -1304,7 +1295,7 @@ async def process_user_reply(request, bot):
                     await callback_context.bot.send_photo(
                         chat_id=chat_id,
                         photo=img_url,
-                        caption="<i>[Вот что я нашла в интернете по теме:]</i>",
+                        caption="<i>Вот что нашлось по теме:</i>",
                         parse_mode='HTML'
                     )
                 except Exception as e:

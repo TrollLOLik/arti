@@ -262,6 +262,38 @@ async def confirm_delivery(turn,conn):
     await conn.execute('UPDATE cognitive_artifacts SET payload=$2::jsonb,revision=revision+1 WHERE id=$1',row['id'],dump(payload))
 
 
+# Initiative texts in Arti's voice (H1, I2). A form-letter wording such as
+# «Ты планировал(а)» read as a CRM mailing from someone who knows the person.
+# The variant is chosen from the stable delivery identity, so a retry of the
+# same slot repeats exactly the same text.
+FOLLOWUP_VARIANTS = (
+    'Вспомнила про «{d}». Как продвигается? Если нужен следующий шаг — подумаем вместе.',
+    'Я тут подумала о твоих планах: «{d}». Это ещё актуально? Могу помочь со следующим шагом.',
+    'Как там «{d}»? Если ещё в планах — помогу разложить следующий шаг.',
+)
+REMINDER_VARIANTS = (
+    'Напоминаю, как договаривались: {d}.',
+    'Обещала напомнить: {d}.',
+    'Пора: {d}. Напоминаю, как договаривались.',
+)
+
+
+def _description(payload):
+    text = ' '.join(str(payload.get('description') or '').split())
+    return text.rstrip(' .!;,') or 'то, о чём мы договаривались'
+
+
+def _variant(payload, variants):
+    import hashlib
+    seed = str(payload.get('delivery_key') or payload.get('key') or payload.get('description') or '')
+    return variants[int.from_bytes(hashlib.sha256(seed.encode('utf-8')).digest()[:4], 'big') % len(variants)]
+
+
 def followup_text(payload):
     """A bounded question, without pretending an outcome or permission exists."""
-    return 'Ты планировал(а): '+payload['description']+'. Это ещё актуально, нужна помощь со следующим шагом?'
+    return _variant(payload, FOLLOWUP_VARIANTS).format(d=_description(payload))
+
+
+def reminder_text(payload):
+    """An explicitly requested reminder; its requested content stays verbatim."""
+    return _variant(payload, REMINDER_VARIANTS).format(d=_description(payload))

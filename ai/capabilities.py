@@ -1,9 +1,6 @@
-"""Endpoint-specific capability registry. Unknown proxy models are text-only."""
-from dataclasses import dataclass, field
+"""Endpoint-specific capability contracts; credentials never enter the registry."""
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-import json
-import os
-from pathlib import Path
 from materials.types import MaterialError
 
 
@@ -18,9 +15,11 @@ class ModelEndpoint:
     observed_at: datetime | None = None
     max_input_chars: int = 500_000
     available: bool = True
+    key: str | None = None
 
     def supports(self, request):
-        fresh = self.observed_at is None or datetime.now(timezone.utc) - self.observed_at < timedelta(days=7)
+        age = datetime.now(timezone.utc) - self.observed_at if self.observed_at is not None else None
+        fresh = age is None or -timedelta(minutes=5) <= age < timedelta(days=7)
         return self.available and fresh and request.inputs <= self.inputs and request.features <= self.features and len(request.prompt) + len(request.system) <= self.max_input_chars
 
 
@@ -35,8 +34,8 @@ class CapabilityRegistry:
     def __init__(self, endpoints=()):
         self.endpoints = list(endpoints)
 
-    def route(self, model, request, provider=None, endpoint=None):
-        preferred = [c for c in self.endpoints if c.model == model and (provider is None or c.provider == provider) and (endpoint is None or c.endpoint == endpoint)]
+    def route(self, model, request, provider=None, endpoint=None, key=None):
+        preferred = [c for c in self.endpoints if c.model == model and (provider is None or c.provider == provider) and (endpoint is None or c.endpoint == endpoint) and (key is None or c.key == key)]
         for candidate in preferred:
             if candidate.supports(request):
                 return RouteDecision(candidate, model, 'selected_model_supports_request')
@@ -60,26 +59,3 @@ class CapabilityRegistry:
                 raise MaterialError('missing_capability_clock')
             endpoints.append(ModelEndpoint(**{**row, 'inputs': frozenset(row.get('inputs', ['text'])), 'features': frozenset(row.get('features', [])), 'observed_at': at}))
         return cls(endpoints)
-
-
-def registry_for(model, proxy_endpoint):
-    """Explicit operator config + conservative existing Google adapters.
-
-    Manifest capabilities bind to an exact API URL. Metadata/probe evidence
-    expires; a probe script can regenerate it without changing application code.
-    """
-    manifest_path = os.getenv('ARTI_CAPABILITY_MANIFEST', '').strip()
-    registry = CapabilityRegistry.from_manifest(json.loads(Path(manifest_path).read_text(encoding='utf-8'))) if manifest_path else CapabilityRegistry()
-    # A capability declaration is not permission to send prompts/API keys to an
-    # arbitrary URL. Only the configured proxy and the Google adapter are usable.
-    registry.endpoints = [c for c in registry.endpoints if c.provider == 'gemini' and c.endpoint == 'google-ai-studio'
-        or c.provider == 'openai' and c.endpoint == proxy_endpoint]
-    known_google = ('gemini-3.1-flash-lite-preview', 'gemini-3-flash-preview', 'gemini-2.5-flash')
-    for name in known_google:
-        if not any(c.model == name and c.provider == 'gemini' for c in registry.endpoints):
-            registry.endpoints.append(ModelEndpoint(name, 'gemini', 'google-ai-studio', frozenset({'text', 'image', 'video'}),
-                frozenset({'search', 'maps'}) if name == 'gemini-2.5-flash' else frozenset(), evidence='configured'))
-    if not any(c.model == model for c in registry.endpoints):
-        provider = 'gemini' if model.startswith('gemini') else 'openai'
-        registry.endpoints.insert(0, ModelEndpoint(model, provider, 'google-ai-studio' if provider == 'gemini' else proxy_endpoint))
-    return registry

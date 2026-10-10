@@ -305,8 +305,9 @@ def run_with_restart():
             application.add_handler(MessageHandler(filters.VIDEO_NOTE, bounded_intake(handle_video_note)), group=5)
             application.add_handler(MessageHandler(filters.AUDIO, bounded_intake(handle_audio_message)), group=5)
             application.add_handler(MessageHandler(filters.LOCATION, bounded_intake(handle_location_message)), group=6)
-            from bot.request_runtime import request_status
+            from bot.request_runtime import request_status, request_card_callback
             application.add_handler(CommandHandler('request', request_status))
+            application.add_handler(CallbackQueryHandler(request_card_callback, pattern='^request_(?:view|cancel):[0-9a-f]{32}$'))
             application.add_handler(MessageReactionHandler(handle_message_reaction))
 
             # Обработчик ошибок

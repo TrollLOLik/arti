@@ -28,7 +28,7 @@ class BehavioralExpressionTests(unittest.TestCase):
         state=mixed_state(); before=asdict(state); plan=expression(state)
         self.assertTrue(plan.mixed_affect); self.assertIsNone(plan.sticker_mood)
         self.assertEqual(set(plan.cause_ids),{'progress','risk'})
-        self.assertIn('do not force one mood',plan.instruction())
+        self.assertIn('не своди всё к одному настроению',plan.instruction())
         self.assertEqual(asdict(state),before)
 
     def test_same_affect_different_situations_choose_different_actions(self):
@@ -148,4 +148,4 @@ class ContextualPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.interpreter.frames[text]=situation(ev,kind='loss',modality='interaction')
         turn=await self.runtime.prepare(10,1,text,1)
         self.assertEqual(turn.expression.behaviors,('acknowledge_loss','offer_choice'))
-        self.assertIn('without forced optimism',turn.expression.instruction())
+        self.assertIn('без натянутого оптимизма',turn.expression.instruction())

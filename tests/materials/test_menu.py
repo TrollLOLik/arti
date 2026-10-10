@@ -29,9 +29,10 @@ def context_for():
     bot=NS(send_message=AsyncMock(return_value=NS(message_id=80,chat=NS(id=55))),
         edit_message_text=AsyncMock(return_value=NS(message_id=80,chat=NS(id=55))),
         edit_message_reply_markup=AsyncMock(return_value=True),
+        delete_message=AsyncMock(return_value=True),
         send_document=AsyncMock(return_value=NS(message_id=81,chat=NS(id=55))),
         get_me=AsyncMock(return_value=NS(id=99)), id=99,username='arti')
-    return NS(bot=bot,user_data={},chat_data={},bot_data={},application=NS())
+    return NS(bot=bot,user_data={'_input_keyboard_removed':True},chat_data={},bot_data={},application=NS())
 
 
 class MenuPureTests(unittest.TestCase):
@@ -461,7 +462,7 @@ class MenuSQLTests(unittest.IsolatedAsyncioTestCase):
     async def test_other_user_cannot_click_generation_settings_even_with_group_access(self):
         from bot.menu import menu_callback
         store,panel,actor=await self.setup_panel(group=True)
-        await panel.render('Выбери размер',[[('1:1',dict(legacy_text='1:1'))]],state=dict(pending='legacy'))
+        await panel.render('Выбери размер',[[('1:1',dict(legacy='media_choice:image:aspect_ratio:0'))]],state=dict(pending='legacy'))
         token=next(iter(panel.row['actions']))
         update=update_for(user=8,chat=-55,topic=4,group=True)
         update.effective_message=update.message=Message(80,datetime.now(timezone.utc),update.effective_chat,from_user=User(99,'Арти',True))
@@ -528,15 +529,15 @@ class MenuSQLTests(unittest.IsolatedAsyncioTestCase):
         self.context.bot.send_document.assert_awaited_once()
         self.assertEqual(80,panel.row['message_id'])
 
-    async def test_legacy_reply_keyboard_becomes_owned_inline_settings(self):
-        from telegram import ReplyKeyboardMarkup
+    async def test_media_choices_become_owned_inline_settings(self):
+        from bot.menu.media import choice_keyboard
         store,panel,actor=await self.setup_panel()
         c=Controller(panel,self.update,self.context,actor)
         await store.save(panel.row,state=dict(pending='legacy',legacy_command='image'))
         with patch('materials.runtime.actor_for_current',AsyncMock(return_value=actor)):
-            await c.capture('Выбери размер',ReplyKeyboardMarkup([['1:1','16:9']]))
+            await c.capture('Выбери размер',choice_keyboard('image','aspect_ratio',['1:1','16:9']))
         self.assertFalse(panel.row['state'].get('shared',False))
-        self.assertTrue(any(v.get('legacy_text')=='1:1' for v in panel.row['actions'].values()))
+        self.assertTrue(any(v.get('legacy')=='media_choice:image:aspect_ratio:0' for v in panel.row['actions'].values()))
 
     async def test_source_erasure_filters_artifact_from_current_project_list(self):
         from artifacts.revisions import ArtifactRepository

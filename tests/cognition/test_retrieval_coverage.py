@@ -1,3 +1,4 @@
+from tests.support.model_connections import configured_models, model_row
 """Bounded hybrid retrieval integration; synthetic ledger and offline providers."""
 import os
 import json
@@ -20,9 +21,10 @@ class RetrievalHealthTests(unittest.TestCase):
         self.assertEqual(unavailable,[])
         self.assertEqual(complete,[])
         self.assertNotEqual(unavailable.diagnostics,complete.diagnostics)
-        self.assertIn('could not finish',retrieval_guidance(unavailable.diagnostics))
-        self.assertIn('no matching evidence',retrieval_guidance(complete.diagnostics))
-        self.assertNotIn('unavailable',retrieval_guidance(complete.diagnostics))
+        self.assertIn('не успела всё проверить',retrieval_guidance(unavailable.diagnostics))
+        self.assertIn('совпадений не нашлось',retrieval_guidance(complete.diagnostics))
+        self.assertNotIn('недоступен',retrieval_guidance(complete.diagnostics))
+        self.assertNotIn('неполный',retrieval_guidance(complete.diagnostics))
 
 
 @unittest.skipUnless(os.getenv('ARTI_TEST_DB')=='1','disposable PostgreSQL required')
@@ -115,12 +117,12 @@ class RetrievalCoverageTests(unittest.IsolatedAsyncioTestCase):
         from ai import generation
         create=AsyncMock(return_value=SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='Reply'))]))
         fake=SimpleNamespace(close=AsyncMock(),chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
-        with patch.object(generation,'AsyncOpenAI',return_value=fake),patch.object(generation,'analyze_intent',new=AsyncMock(return_value={'web_search':False})):
+        with patch.object(generation,'AsyncOpenAI',return_value=fake),patch.object(generation,'analyze_intent',new=AsyncMock(return_value={'web_search':False})),configured_models(model_row('synthetic-chat')):
             await generation.generate_response_stream(910,'What did I say about the missing project?','User','',
                 model='synthetic-chat',custom_system_prompt='Be helpful.',memory_context='',expression_plan=turn.expression)
         system=create.call_args.kwargs['messages'][0]['content']
-        self.assertIn('index is still being filled',system)
-        self.assertIn('never claim',system)
+        self.assertIn('индекс памяти ещё заполняется',system)
+        self.assertIn('никогда не утверждай',system)
         self.assertNotIn('total_chunks',system)
 
     async def test_private_prompt_inclusion_rechecks_revoked_source(self):

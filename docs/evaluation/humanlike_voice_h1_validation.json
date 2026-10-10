@@ -1,0 +1,32 @@
+{
+  "batch": "H1-voice",
+  "date": "2026-10-10",
+  "base_commit": "d5f96e7 (with uncommitted working-tree changes present before H1)",
+  "model_version": "cognition-2026-09-30.4 (unchanged)",
+  "environment": {
+    "python": "3.12.14",
+    "postgresql": "16.4 disposable, localhost only, without pgvector",
+    "network": "test process proxied to a closed port; no provider or Telegram calls",
+    "working_database_mutated": false,
+    "credentials_used": false
+  },
+  "new_tests": {"module": "tests.cognition.test_humanlike_voice", "tests": 16, "passed": 16},
+  "database_cognition_suite": {
+    "modules": 59,
+    "tests": 1034,
+    "failures": ["tests.cognition.test_native_agent_safety.NativeOrganizerSafetyTests.test_legacy_erasure_during_transport_fences_late_confirmation"],
+    "errors": 2,
+    "error_cause": "relation memory_chunks does not exist (created only with pgvector)",
+    "same_on_pre_change_copy": true
+  },
+  "non_database_full_discovery": {
+    "tests": 1484,
+    "failures_outside_h1_scope": ["tests.materials OCR/video environment (tesseract/ffmpeg versions)", "tests.videotrans import (soundfile missing)", "tests.materials.test_model_connections.DirectRequestTests.test_anonymous_sdk_connection_omits_authorization_header (OpenAI SDK 2.x rejects empty api_key; same on pre-change copy)"]
+  },
+  "prompt_budget_regression": {
+    "scenario": "persona + directive + time + anchor, 8 memories, 20 dialogue lines, model=gemini (UTF-8 byte counter)",
+    "before": "old 32k default: new persona does not fit; previous persona left ~1 of 5 memories and ~11 of 20 short lines",
+    "after": "per-connection budget: 7 of 7 memories, 20 of 20 lines, 33412 of 96000 counter units"
+  },
+  "limits": "Contract and data-path checks only; naturalness of live model replies was not measured."
+}

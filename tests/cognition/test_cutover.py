@@ -18,6 +18,7 @@ from cognition.repositories import SuppressedEvidence
 from cognition.types import ContextKey
 from tests.cognition.test_affect import event, AT
 from tests.cognition.test_full_model import RecordedInterpreter
+from tests.support.model_connections import connection
 
 
 def completion(body):
@@ -34,9 +35,10 @@ class SelectedProviderTests(unittest.IsolatedAsyncioTestCase):
             return completion({'appraisals': []})
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         self.addAsyncCleanup(client.aclose)
-        transport = SelectedModelClient(resolver=AsyncMock(side_effect=lambda cid: models[cid]), client=client)
+        transport = SelectedModelClient(resolver=AsyncMock(side_effect=lambda cid: models[cid]), client=client,
+            connection_resolver=AsyncMock(side_effect=lambda model: connection(model,base_url='https://selected.invalid/v1')))
         interpreter = SelectedModelInterpreter(transport, max_attempts=1)
-        with patch('config.OMNIROUTE_BASE_URL', 'https://selected.invalid/v1'):
+        with patch.dict(os.environ, {'OMNIROUTE_API_KEY':'ignored'}):
             await asyncio.gather(interpreter.interpret(event()),
                 interpreter.interpret(replace(event(), context=ContextKey('arti',20))))
             models[10] = 'fixture/changed'
@@ -47,21 +49,25 @@ class SelectedProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(body['response_format'] == {'type': 'json_object'} for _, body in captured))
 
     async def test_gemini_uses_selected_model_without_openrouter_credentials(self):
-        google = NS(aio=NS(models=NS(generate_content=AsyncMock(return_value=NS(
-            text='{"appraisals":[]}', usage_metadata=NS(prompt_token_count=4,candidates_token_count=6),
-            candidates=[NS(finish_reason='STOP')])))))
+        calls=[]
+        def handler(request):
+            calls.append(json.loads(request.content))
+            return httpx.Response(200,json={'choices':[{'message':{'content':'{"appraisals":[]}'}}],
+                'usage':{'prompt_tokens':4,'completion_tokens':6}})
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)); self.addAsyncCleanup(client.aclose)
         resolver = AsyncMock(return_value='gemini-fixture-selected')
-        transport = SelectedModelClient(resolver=resolver, google_client=google)
+        transport = SelectedModelClient(resolver=resolver, client=client,
+            connection_resolver=AsyncMock(side_effect=lambda model: connection('gemini',model)))
         interpreter = SelectedModelInterpreter(transport, max_attempts=1)
         with patch.dict(os.environ, {'OPENROUTER_API_KEY':'', 'OPENROUTER_API_KEYS':'',
                 'ARTI_COGNITION_MODEL':'ignored/old-model'}):
             result = await interpreter.interpret(event())
-        kwargs = google.aio.models.generate_content.await_args.kwargs
+        kwargs = calls[0]
         self.assertEqual(kwargs['model'], 'gemini-fixture-selected')
-        self.assertEqual(kwargs['config'].response_mime_type, 'application/json')
+        self.assertEqual(kwargs['response_format'], {'type':'json_object'})
         self.assertEqual(result.prompt_tokens, 4)
         self.assertEqual(result.completion_tokens, 6)
-        self.assertIsNone(transport.client)
+        self.assertIs(transport.client,client)
 
     async def test_retry_pins_selection_and_never_changes_provider(self):
         transport = NS(model_for=AsyncMock(return_value='fixture/first'),
@@ -189,7 +195,7 @@ class CutoverSQLTests(unittest.IsolatedAsyncioTestCase):
         from memory.consolidator import consolidate_chat_facts
         from memory.timeline import build_timeline_events
         fid=await MemoryFact.create(10,'OLD_DERIVATIVE',user_id=1)
-        with patch('config.genai_client.models.generate_content',side_effect=AssertionError('legacy provider call')):
+        with patch('ai.providers.google.genai.Client',side_effect=AssertionError('legacy provider call')):
             await ChatEmotionalState.get_or_create(10)
             await ChatEmotionalState.update_state(10,'angry',user_id=1)
             await ChatEmotionalState.apply_mood_delta(10,{'angry':1})
@@ -211,13 +217,17 @@ class CutoverSQLTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_menu_selection_is_shared_by_new_interpreter_and_can_change(self):
         from utils.model_selection import set_chat_model
+        async with self.pool.acquire() as conn:
+            await conn.executemany("""INSERT INTO ai_models(key,name,model,base_url,api_key)
+                VALUES($1,$1,$1,'https://fixture.invalid/v1','fixture-key')""",
+                [('fixture/first',),('fixture/second',)])
         await set_chat_model(10,'fixture/first')
         calls=[]
         def handler(request):
             calls.append(json.loads(request.content)['model']); return completion({'appraisals':[]})
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)); self.addAsyncCleanup(client.aclose)
         interpreter=SelectedModelInterpreter(SelectedModelClient(client=client),max_attempts=1)
-        with patch('config.OMNIROUTE_BASE_URL','https://fixture.invalid/v1'):
+        with patch.dict(os.environ, {'OMNIROUTE_API_KEY':'ignored'}):
             await interpreter.interpret(event())
             await set_chat_model(10,'fixture/second')
             await interpreter.interpret(event())
@@ -273,6 +283,9 @@ class CutoverSQLTests(unittest.IsolatedAsyncioTestCase):
         from utils.model_selection import set_chat_model
         from bot.queue import process_user_reply
         from bot.handlers import _process_images_impl
+        async with self.pool.acquire() as conn:
+            await conn.execute("""INSERT INTO ai_models(key,name,model,base_url,api_key)
+                VALUES('fixture/chosen','Chosen','fixture/chosen','https://fixture.invalid/v1','fixture-key')""")
         await set_chat_model(10,'fixture/chosen')
         bot=NS(send_message=AsyncMock(return_value=NS(message_id=80)),send_chat_action=AsyncMock())
         response=AsyncMock(return_value=('A reply.',False,[],[]))

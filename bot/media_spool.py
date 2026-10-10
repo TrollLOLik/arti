@@ -9,7 +9,7 @@ import contextvars
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import stat
 import sys
@@ -41,7 +41,7 @@ def default_root(*,platform=None,environ=None,home=None):
         base=Path(environ.get('LOCALAPPDATA') or home/'AppData'/'Local')
         return base/'Arti'/'media'
     base=Path(environ.get('XDG_DATA_HOME') or home/'.local'/'share')
-    if not base.is_absolute(): base=home/'.local'/'share'
+    if not PurePosixPath(str(base).replace('\\','/')).is_absolute(): base=home/'.local'/'share'
     return base/'arti'/'media'
 
 
@@ -66,8 +66,11 @@ def _check_path(path,*,directory=False,missing_ok=False):
 def _mkdir(path):
     path=Path(os.path.abspath(path))
     for part in (*reversed(path.parents),path):
-        try: part.mkdir(mode=0o700)
-        except FileExistsError: pass
+        # Windows rejects mkdir('C:\\') with PermissionError even when the
+        # drive already exists. Still validate every existing component below.
+        if not part.is_dir():
+            try: part.mkdir(mode=0o700)
+            except FileExistsError: pass
         _check_path(part,directory=True)
 
 
@@ -150,7 +153,11 @@ class MediaSpool:
                         visited+=1
                         if visited>self.max_entries: raise SpoolError('spool_scan_budget')
                         p=Path(entry.path)
-                        try: info=entry.stat(follow_symlinks=False)
+                        # DirEntry.stat on Windows reports zero device/inode;
+                        # lstat supplies the identity used by the deletion fence.
+                        try:
+                            info=entry.stat(follow_symlinks=False)
+                            if os.name=='nt': info=p.lstat()
                         except FileNotFoundError:
                             if missing_ok: continue
                             raise

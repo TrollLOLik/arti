@@ -1,3 +1,4 @@
+from tests.support.model_connections import google_generation
 """Synthetic delayed appraisals and response-boundary privacy/restart contracts.
 
 No Telegram, provider requests, private conversations or production database.
@@ -44,6 +45,9 @@ class EmotionalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             return NS(perception=Perception(ev.event_id,PERCEPTION_VERSION,(),situation(ev,kind=kind)))
         self.runtime.interpreter=NS(interpret=interpret)
         turn=await self.runtime.prepare(chat,owner,text,message)
+        # prepare's 10 ms budget may expire during DB work on Windows. Wait for
+        # the explicitly gated background fixture before testing its result.
+        await asyncio.wait_for(entered.wait(),1)
         self.assertTrue(entered.is_set())
         self.assertTrue(turn.expression_pending)
         self.assertEqual(turn.expression.behaviors,())
@@ -110,11 +114,11 @@ class EmotionalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         from ai import generation
         turn,gate=await self.delayed(); await self.finish_interpretation(gate)
         provider=AsyncMock(return_value=NS(text='Synthetic response',candidates=[]))
-        with patch.object(generation.genai_client.aio.models,'generate_content',new=provider):
+        with google_generation(provider):
             result=await generation.generate_response_stream(10,turn.event.text,'User','',
                 custom_system_prompt='Synthetic persona.',expression_plan=turn.expression,request_intent={})
         self.assertEqual(result[0],'Synthetic response')
-        self.assertIn('without forced optimism',provider.await_args.kwargs['config'].system_instruction)
+        self.assertIn('без натянутого оптимизма',provider.await_args.kwargs['config'].system_instruction)
         self.assertIs(CURRENT_TURN.get(),turn)
         self.assertEqual(turn.expression.behaviors,('acknowledge_loss','offer_choice'))
 
@@ -125,18 +129,18 @@ class EmotionalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             await self.finish_interpretation(gate)
             return {}
         provider=AsyncMock(return_value=NS(text='Synthetic direct response',candidates=[]))
-        with patch.object(generation,'analyze_intent',new=route),patch.object(generation.genai_client.aio.models,'generate_content',new=provider):
+        with patch.object(generation,'analyze_intent',new=route),google_generation(provider):
             result=await generation.generate_response_stream(10,turn.event.text,'User','',
                 custom_system_prompt='Synthetic persona.',expression_plan=turn.expression)
         self.assertEqual(result[0],'Synthetic direct response')
         self.assertFalse(turn.expression_pending)
-        self.assertIn('without forced optimism',provider.await_args.kwargs['config'].system_instruction)
+        self.assertIn('без натянутого оптимизма',provider.await_args.kwargs['config'].system_instruction)
 
     async def test_auxiliary_generation_without_plan_does_not_freeze_or_inherit_emotion(self):
         from ai import generation
         turn,gate=await self.delayed(); await self.finish_interpretation(gate)
         provider=AsyncMock(return_value=NS(text='Short title',candidates=[]))
-        with patch.object(generation.genai_client.aio.models,'generate_content',new=provider):
+        with google_generation(provider):
             result=await generation.generate_response_stream(10,'Write a title','User','',
                 custom_system_prompt='Return only a title.',request_intent={})
         self.assertEqual(result[0],'Short title')
@@ -276,7 +280,7 @@ class EmotionalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             confidence=.9,attribution='unknown'),))
         turn=await self.runtime.prepare(10,1,text,2)
         self.assertEqual(turn.expression.behaviors,('revise_understanding','repair'))
-        self.assertIn('if the claim is unsupported',turn.expression.instruction())
+        self.assertIn('если претензия не подтверждена',turn.expression.instruction())
         self.assertNotIn('The answer is disputed',turn.expression.instruction())
         self.assertIn(action['id'],turn.expression_support_event_ids)
         records=await self.runtime.memory.artifacts(cid,1,'own_action_review')

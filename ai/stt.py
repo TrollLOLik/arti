@@ -1,7 +1,7 @@
 """
 Speech-to-Text.
 
-Основной бэкенд: AssemblyAI (universal-3-pro / universal-2 fallback,
+Основной бэкенд: AssemblyAI (universal-3-5-pro / universal-2 fallback,
 language detection включён). При недоступности — фоллбэк на Groq
 Whisper Large V3 Turbo.
 
@@ -27,6 +27,7 @@ ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY", "").strip()
 ASSEMBLYAI_BASE = "https://api.assemblyai.com/v2"
 ASSEMBLYAI_REQUEST_TIMEOUT = float(os.getenv("ASSEMBLYAI_REQUEST_TIMEOUT", "120"))
 ASSEMBLYAI_POLL_TIMEOUT = float(os.getenv("ASSEMBLYAI_POLL_TIMEOUT", "600"))
+ASSEMBLYAI_SPEECH_MODELS = [model.strip() for model in os.getenv("ASR_SPEECH_MODELS", "universal-3-5-pro,universal-2").split(",") if model.strip()]
 
 
 # ============================================================================
@@ -70,18 +71,20 @@ async def _aai_upload(client: httpx.AsyncClient, audio_bytes: bytes) -> str:
 async def _aai_submit(client: httpx.AsyncClient, upload_url: str, language: Optional[str], *, structured=False) -> str:
     payload: dict[str, Any] = {
         "audio_url": upload_url,
-        "speech_models": ["universal-3-pro", "universal-2"],
-        "temperature": 0,
+        "speech_models": ASSEMBLYAI_SPEECH_MODELS,
     }
     if language:
         payload["language_code"] = language
     else:
         payload["language_detection"] = True
-    if structured: payload['speaker_labels']=True
+    if structured:
+        payload['speaker_labels']=True
+        payload['speaker_options']={'include_speaker_confidence':True}
     response = await _aai_request_with_retries(
         "POST", f"{ASSEMBLYAI_BASE}/transcript",
         client=client,
         json=payload,
+        attempts=1,
     )
     response.raise_for_status()
     return response.json()["id"]
@@ -221,7 +224,7 @@ class StructuredTranscriber:
         from materials.types import canonical
         self.language=language; self.assembly_key=ASSEMBLYAI_API_KEY if assembly_key is None else assembly_key
         self.groq=groq or groq_client
-        self.identity='structured-stt-1:'+sha256(canonical([language,bool(self.assembly_key),'universal-3-pro/universal-2','whisper-large-v3-turbo']).encode()).hexdigest()[:24]
+        self.identity='structured-stt-2:'+sha256(canonical([language,bool(self.assembly_key),ASSEMBLYAI_SPEECH_MODELS,'speaker-confidence','whisper-large-v3-turbo']).encode()).hexdigest()[:24]
     async def transcribe(self,data,mime,duration_ms,*,validate):
         from materials.timeline import assembly_timeline,groq_timeline
         from materials.types import MaterialError

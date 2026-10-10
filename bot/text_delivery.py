@@ -25,6 +25,8 @@ class _TelegramHTML(HTMLParser):
             or len(active) >= 16
         )
         opening = '<' + tag + '>'
+        if tag == 'blockquote' and 'expandable' in attrs:
+            opening = '<blockquote expandable>'
         if tag == 'a':
             href = attrs.get('href') or ''
             if len(href)>2048 or not re.match(r'^(?:https?://|tg://|mailto:)', href, re.I):

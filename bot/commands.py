@@ -9,7 +9,8 @@ from contextlib import asynccontextmanager
 from typing import Optional, List, Tuple, Dict, Any
 
 import telegram
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardMarkup
+from bot.buttons import inline_button
 from telegram.ext import ContextTypes
 
 from config import (
@@ -22,13 +23,15 @@ from config import (
     MEDIA_RATE_LIMIT, MEDIA_RATE_WINDOW
 )
 from cognition.scope import CURRENT_SCOPE
+from bot.menu.media import choice_keyboard, selected_choice
+from materials.types import MaterialError
 from bot.media_provenance import reference_source as _media_reference_source
 from utils.rate_limit import is_rate_limited
 from utils.spam_protection import handle_spam_protection
 from utils.admin import is_admin
 from utils.response_status import is_responses_enabled, set_responses_enabled
 from utils.chat_history import save_chat_message
-from utils.text_processing import extract_urls_and_make_keyboard
+from utils.text_processing import extract_urls_and_make_keyboard, strip_voice_tags
 from utils.model_selection import get_chat_model, set_chat_model
 from ai.generation import generate_response_stream
 from bot.queue import enqueue_generation, _extract_photo_urls, enqueue_dubbing
@@ -97,17 +100,54 @@ async def _gate_vclone_not_privileged(update, user_id: int) -> bool:
 IMAGE_ASPECT_OPTIONS = ["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9"]
 IMAGE_RESOLUTION_OPTIONS = ["512", "1K", "2K", "4K"]
 IMAGE_NUM_OPTIONS = ["1", "2", "3", "4"]
+MUSIC_FORMAT_OPTIONS = ['🎸 Инструментал (без слов)', '🎤 Со словами']
 
 
 def _image_default_flow(image_urls=None):
     return {"aspect_ratio": "1:1", "resolution": "1K", "num_images": 1, "image_urls": image_urls or []}
 
 
-def _image_reply_keyboard(options, columns=2):
-    rows = []
-    for index in range(0, len(options), columns):
-        rows.append([telegram.KeyboardButton(option) for option in options[index:index + columns]])
-    return telegram.ReplyKeyboardMarkup(rows, one_time_keyboard=True, resize_keyboard=True)
+async def media_choice_callback(update, context):
+    """Only the menu bridge may dispatch an owned, current media choice."""
+    query = update.callback_query
+    panel = getattr(context.bot, '_menu_panel', None)
+    scope = CURRENT_SCOPE.get()
+    if (panel is None or scope is None or query is None
+            or panel.row['user_id'] != update.effective_user.id
+            or (panel.row['chat_id'], panel.row['topic_id']) != (scope.chat_id, scope.topic_id)
+            or panel.row['message_id'] != query.message.message_id):
+        raise MaterialError('menu_wrong_owner_or_scope')
+    parts = (query.data or '').split(':')
+    if len(parts) != 4 or parts[0] != 'media_choice':
+        raise MaterialError('menu_stale_button')
+    _, kind, step, _ = parts
+    state = panel.row['state']
+    if state.get('pending') != 'legacy' or state.get('legacy_command') != kind:
+        raise MaterialError('menu_stale_button')
+    chat_id, user_id = scope.chat_id, update.effective_user.id
+    if kind in ('image', 'video'):
+        flow = context.user_data.get(kind + '_flow', {})
+        if flow.get('chat_id') != chat_id or flow.get('step') != step or step == 'prompt':
+            raise MaterialError('menu_stale_button')
+        handler = handle_image_flow if kind == 'image' else handle_video_flow
+        return await handler(update, context)
+    if kind == 'music':
+        flow = music_flow_state.get(chat_id, {}).get(user_id) or {}
+        if step != 'instrumental' or flow.get('step') != step:
+            raise MaterialError('menu_stale_button')
+        return await handle_music_flow(update, context, chat_id, user_id, '')
+    if kind == 'dub':
+        flow = dub_flow_state.get(chat_id, {}).get(user_id) or {}
+        if step != 'subs' or flow.get('step') != step:
+            raise MaterialError('menu_stale_button')
+        # Permissions can change while the user chooses settings.
+        if await _gate_tts_disabled(update):
+            return
+        if not await is_admin(update.effective_user, chat_id, context):
+            await update.message.reply_text('Дубляж сейчас недоступен: нужны права администратора.')
+            return
+        return await handle_dub_flow(update, context)
+    raise MaterialError('menu_stale_button')
 
 
 def _image_task(chat_id, prompt, context, message_id, image_urls, user_name, flow=None):
@@ -135,7 +175,7 @@ async def _start_image_settings_flow(update: Update, context: ContextTypes.DEFAU
     }
     await update.message.reply_text(
         "🎨 <b>Генерация изображения: шаг 1/4</b>\n\nВыбери ориентацию:",
-        reply_markup=_image_reply_keyboard(IMAGE_ASPECT_OPTIONS, columns=3),
+        reply_markup=choice_keyboard('image', 'aspect_ratio', IMAGE_ASPECT_OPTIONS, columns=3),
         parse_mode='HTML'
     )
 
@@ -158,6 +198,8 @@ async def _enqueue_image_from_flow(update: Update, context: ContextTypes.DEFAULT
 
 
 async def handle_image_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    if getattr(context.bot, '_menu_panel', None) is None:
+        return False
     chat_id = update.effective_chat.id
     user_id = update.message.from_user.id
     flow = context.user_data.get("image_flow", {})
@@ -168,8 +210,9 @@ async def handle_image_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     step = flow.get("step")
 
     if step == "aspect_ratio":
-        if text not in IMAGE_ASPECT_OPTIONS:
-            await update.message.reply_text("Выбери ориентацию кнопкой ниже.", reply_markup=_image_reply_keyboard(IMAGE_ASPECT_OPTIONS, columns=3))
+        text = selected_choice(update, 'image', step, IMAGE_ASPECT_OPTIONS)
+        if text is None:
+            await update.message.reply_text("Выбери ориентацию кнопками в сообщении.", reply_markup=choice_keyboard('image', step, IMAGE_ASPECT_OPTIONS, columns=3))
             return True
         aspect_ratio = text
         flow["aspect_ratio"] = aspect_ratio
@@ -177,14 +220,15 @@ async def handle_image_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         context.user_data["image_flow"] = flow
         await update.message.reply_text(
             "🖼 <b>Генерация изображения: шаг 2/4</b>\n\nВыбери выходное разрешение:",
-            reply_markup=_image_reply_keyboard(IMAGE_RESOLUTION_OPTIONS, columns=2),
+            reply_markup=choice_keyboard('image', 'resolution', IMAGE_RESOLUTION_OPTIONS, columns=2),
             parse_mode='HTML'
         )
         return True
 
     if step == "resolution":
-        if text not in IMAGE_RESOLUTION_OPTIONS:
-            await update.message.reply_text("Выбери разрешение кнопкой ниже.", reply_markup=_image_reply_keyboard(IMAGE_RESOLUTION_OPTIONS, columns=2))
+        text = selected_choice(update, 'image', step, IMAGE_RESOLUTION_OPTIONS)
+        if text is None:
+            await update.message.reply_text("Выбери разрешение кнопками в сообщении.", reply_markup=choice_keyboard('image', step, IMAGE_RESOLUTION_OPTIONS, columns=2))
             return True
         resolution = text
         flow["resolution"] = resolution
@@ -192,14 +236,15 @@ async def handle_image_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         context.user_data["image_flow"] = flow
         await update.message.reply_text(
             "🔢 <b>Генерация изображения: шаг 3/4</b>\n\nВыбери количество изображений для генерации:",
-            reply_markup=_image_reply_keyboard(IMAGE_NUM_OPTIONS, columns=4),
+            reply_markup=choice_keyboard('image', 'num_images', IMAGE_NUM_OPTIONS, columns=4),
             parse_mode='HTML'
         )
         return True
 
     if step == "num_images":
-        if text not in IMAGE_NUM_OPTIONS:
-            await update.message.reply_text("Выбери количество кнопкой ниже (1-4).", reply_markup=_image_reply_keyboard(IMAGE_NUM_OPTIONS, columns=4))
+        text = selected_choice(update, 'image', step, IMAGE_NUM_OPTIONS)
+        if text is None:
+            await update.message.reply_text("Выбери количество кнопками в сообщении (1–4).", reply_markup=choice_keyboard('image', step, IMAGE_NUM_OPTIONS, columns=4))
             return True
         num_images = int(text)
         flow["num_images"] = num_images
@@ -210,7 +255,6 @@ async def handle_image_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text(
             "✍️ <b>Генерация изображения: шаг 4/4</b>\n\nТеперь отправь prompt текстом или картинку с caption.\n\n"
             "💡 <i>Для отмены введи /cancel</i>",
-            reply_markup=telegram.ReplyKeyboardRemove(),
             parse_mode='HTML'
         )
         return True
@@ -242,14 +286,6 @@ def _video_default_flow(image_urls=None):
     }
 
 
-def _video_reply_keyboard(options):
-    return telegram.ReplyKeyboardMarkup(
-        [[telegram.KeyboardButton(option)] for option in options],
-        one_time_keyboard=True,
-        resize_keyboard=True
-    )
-
-
 def _video_task(chat_id, prompt, context, message_id, image_urls, user_name, flow=None):
     flow = flow or _video_default_flow(image_urls)
     return {
@@ -275,7 +311,7 @@ async def _start_video_settings_flow(update: Update, context: ContextTypes.DEFAU
     }
     await update.message.reply_text(
         "🎬 <b>Генерация видео: шаг 1/4</b>\n\nВыбери модель:",
-        reply_markup=_video_reply_keyboard(list(VIDEO_MODEL_OPTIONS.keys())),
+        reply_markup=choice_keyboard('video', 'model', list(VIDEO_MODEL_OPTIONS), columns=1),
         parse_mode='HTML'
     )
 
@@ -298,6 +334,8 @@ async def _enqueue_video_from_flow(update: Update, context: ContextTypes.DEFAULT
 
 
 async def handle_video_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    if getattr(context.bot, '_menu_panel', None) is None:
+        return False
     chat_id = update.effective_chat.id
     user_id = update.message.from_user.id
     flow = context.user_data.get("video_flow", {})
@@ -308,34 +346,37 @@ async def handle_video_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     step = flow.get("step")
 
     if step == "model":
-        if text not in VIDEO_MODEL_OPTIONS:
-            await update.message.reply_text("Выбери модель кнопкой ниже.", reply_markup=_video_reply_keyboard(list(VIDEO_MODEL_OPTIONS.keys())))
+        text = selected_choice(update, 'video', step, list(VIDEO_MODEL_OPTIONS))
+        if text is None:
+            await update.message.reply_text("Выбери модель кнопками в сообщении.", reply_markup=choice_keyboard('video', step, list(VIDEO_MODEL_OPTIONS), columns=1))
             return True
         flow["model"] = VIDEO_MODEL_OPTIONS[text]
         flow["step"] = "duration"
         await update.message.reply_text(
             "⏱ <b>Генерация видео: шаг 2/4</b>\n\nВыбери длительность:",
-            reply_markup=_video_reply_keyboard(VIDEO_DURATION_OPTIONS),
+            reply_markup=choice_keyboard('video', 'duration', VIDEO_DURATION_OPTIONS, columns=3),
             parse_mode='HTML'
         )
         return True
 
     if step == "duration":
-        if text not in VIDEO_DURATION_OPTIONS:
-            await update.message.reply_text("Выбери длительность кнопкой ниже: 4, 8, 12, 16 или 20 секунд.", reply_markup=_video_reply_keyboard(VIDEO_DURATION_OPTIONS))
+        text = selected_choice(update, 'video', step, VIDEO_DURATION_OPTIONS)
+        if text is None:
+            await update.message.reply_text("Выбери длительность кнопками в сообщении.", reply_markup=choice_keyboard('video', step, VIDEO_DURATION_OPTIONS, columns=3))
             return True
         flow["duration"] = text
         flow["step"] = "aspect_ratio"
         await update.message.reply_text(
             "📐 <b>Генерация видео: шаг 3/4</b>\n\nВыбери ориентацию:",
-            reply_markup=_video_reply_keyboard(VIDEO_ASPECT_OPTIONS),
+            reply_markup=choice_keyboard('video', 'aspect_ratio', VIDEO_ASPECT_OPTIONS),
             parse_mode='HTML'
         )
         return True
 
     if step == "aspect_ratio":
-        if text not in VIDEO_ASPECT_OPTIONS:
-            await update.message.reply_text("Выбери ориентацию кнопкой ниже.", reply_markup=_video_reply_keyboard(VIDEO_ASPECT_OPTIONS))
+        text = selected_choice(update, 'video', step, VIDEO_ASPECT_OPTIONS)
+        if text is None:
+            await update.message.reply_text("Выбери ориентацию кнопками в сообщении.", reply_markup=choice_keyboard('video', step, VIDEO_ASPECT_OPTIONS))
             return True
         flow["aspect_ratio"] = text
         flow["step"] = "prompt"
@@ -344,7 +385,6 @@ async def handle_video_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text(
             "✍️ <b>Генерация видео: шаг 4/4</b>\n\nТеперь отправь prompt текстом или картинку с caption.\n\n"
             "💡 <i>Для отмены введи /cancel</i>",
-            reply_markup=telegram.ReplyKeyboardRemove(),
             parse_mode='HTML'
         )
         return True
@@ -587,6 +627,9 @@ async def handle_rp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_image_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if getattr(context.bot, '_menu_panel', None) is None:
+        from bot.menu import media_command
+        return await media_command(update, context, 'image')
     chat_id = update.effective_chat.id
     user = update.message.from_user
     user_id = user.id
@@ -636,6 +679,9 @@ async def handle_image_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def handle_video_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает команду /video <описание>."""
+    if getattr(context.bot, '_menu_panel', None) is None:
+        from bot.menu import media_command
+        return await media_command(update, context, 'video')
     chat_id = update.effective_chat.id
     user = update.message.from_user
     user_id = user.id
@@ -672,6 +718,9 @@ async def handle_video_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def handle_music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает команду /music. Запускает пошаговый диалог."""
+    if getattr(context.bot, '_menu_panel', None) is None:
+        from bot.menu import media_command
+        return await media_command(update, context, 'music')
     chat_id = update.effective_chat.id
     user = update.message.from_user
     user_id = user.id
@@ -690,14 +739,10 @@ async def handle_music_command(update: Update, context: ContextTypes.DEFAULT_TYP
         'step': 'instrumental',
         'style': 'Pop',
         'instrumental': False,
-        'context': context,
         'message_id': update.message.message_id
     }
 
-    keyboard = [
-        [telegram.KeyboardButton("🎸 Инструментал (без слов)"), telegram.KeyboardButton("🎤 Со словами")]
-    ]
-    reply_markup = telegram.ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    reply_markup = choice_keyboard('music', 'instrumental', MUSIC_FORMAT_OPTIONS)
 
     await update.message.reply_text(
         "🎵 <b>Генерация музыки: Шаг 1/3</b>\n\n"
@@ -710,6 +755,8 @@ async def handle_music_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def handle_music_flow(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id, user_id, user_text):
     """Обрабатывает пошаговый ввод для генерации музыки."""
+    if getattr(context.bot, '_menu_panel', None) is None:
+        return False
     state = music_flow_state[chat_id][user_id]
     if not state:
         return False
@@ -717,20 +764,19 @@ async def handle_music_flow(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     message_id = update.message.message_id
 
     if state['step'] == 'instrumental':
-        text_lower = user_text.strip().lower()
-        if "инструментал" in text_lower or "без слов" in text_lower:
-            state['instrumental'] = True
-        else:
-            state['instrumental'] = False
+        selected = selected_choice(update, 'music', 'instrumental', MUSIC_FORMAT_OPTIONS)
+        if selected is None:
+            await update.message.reply_text('Выбери формат кнопками в сообщении.',
+                reply_markup=choice_keyboard('music', 'instrumental', MUSIC_FORMAT_OPTIONS))
+            return True
+        state['instrumental'] = selected == MUSIC_FORMAT_OPTIONS[0]
 
         state['step'] = 'style'
         
-        reply_markup = telegram.ReplyKeyboardRemove()
         await update.message.reply_text(
             "🎵 <b>Шаг 2/3 — Музыкальный стиль / Промпт</b>\n\n"
             "Напиши жанр, настроение, инструменты (на английском). Это ОБЯЗАТЕЛЬНО.\n"
             "Пример: <code>Russian Synthwave, upbeat, male vocal</code>",
-            reply_markup=reply_markup,
             parse_mode='HTML'
         )
         return True
@@ -790,9 +836,9 @@ async def handle_rps_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     keyboard = [
         [
-            InlineKeyboardButton("🪨 Камень", callback_data="rps_rock"),
-            InlineKeyboardButton("📜 Бумага", callback_data="rps_paper"),
-            InlineKeyboardButton("✂️ Ножницы", callback_data="rps_scissors")
+            inline_button("🪨 Камень", callback_data="rps_rock"),
+            inline_button("📜 Бумага", callback_data="rps_paper"),
+            inline_button("✂️ Ножницы", callback_data="rps_scissors")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -841,7 +887,7 @@ async def rps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id,
         f"Результат игры: {result}. Поиздевайся над ним в стиле Арти. Используй HTML теги <i> и <blockquote>.",
         user_name, "",
-        model="gemini-3.1-flash-lite-preview",
+        model=await get_chat_model(chat_id),
         temperature=0.7,
         user_id=user_id,
         is_rp_mode=rp_mode_state.get(chat_id, False),
@@ -854,7 +900,7 @@ async def rps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         '', comment, flags=re.IGNORECASE | re.DOTALL
     ).strip()
     
-    display_comment = re.sub(r'\[[^\]]+\]', '', display_comment).strip()
+    display_comment = strip_voice_tags(display_comment)
     display_comment, rps_reply_markup = extract_urls_and_make_keyboard(display_comment, extra_links=grounding_links)
     
     await query.edit_message_text(
@@ -870,13 +916,10 @@ async def _ping_single_model(model_info: dict, sem: asyncio.Semaphore) -> Tuple[
     Возвращает (model_id, результат). Результат может быть float (секунды) или str (ошибка).
     """
     import asyncio
-    import os
     import time
-    from openai import AsyncOpenAI
-    from google.genai import types
-    from config import genai_client
+    from ai.providers.structured import SelectedModelClient
 
-    model_id = model_info["model"]
+    model_id = model_info["key"]
     
     async with sem:
         start_time = time.monotonic()
@@ -884,44 +927,22 @@ async def _ping_single_model(model_info: dict, sem: asyncio.Semaphore) -> Tuple[
         timeout_sec = 5.0
         
         try:
-            if model_id.lower().startswith("gemini"):
-                # Запускаем в потоке, так как клиент google-genai синхронный
-                response = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        genai_client.models.generate_content,
-                        model=model_id,
-                        contents="1",
-                        config=types.GenerateContentConfig(
-                            max_output_tokens=5, # Увеличили до 5, чтобы избежать валидационных ошибок у некоторых провайдеров
-                            temperature=0.0
-                        )
-                    ),
-                    timeout=timeout_sec
-                )
-                if response and response.text:
+            if model_info.get('is_maintenance'):
+                return model_id, "maintenance"
+            if not model_info.get('is_configured'):
+                return model_id, "not_configured"
+            client = SelectedModelClient(timeout=timeout_sec,fast=True)
+            try:
+                response = await client.complete(model_id,[{"role":"user","content":"Return JSON with value 1."}],16)
+                if response.status_code != 200:
+                    return model_id, "error"
+                if response.json()['choices'][0]['message']['content']:
                     return model_id, time.monotonic() - start_time
                 return model_id, "empty"
-            else:
-                from config import OMNIROUTE_BASE_URL
-                client = AsyncOpenAI(
-                    base_url=OMNIROUTE_BASE_URL,
-                    api_key=os.getenv("OMNIROUTE_API_KEY", ""),
-                    max_retries=0 # Отключаем ретраи, чтобы не копить таймауты при перегрузке
-                )
-                response = await asyncio.wait_for(
-                    client.chat.completions.create(
-                        model=model_id,
-                        messages=[{"role": "user", "content": "1"}],
-                        max_tokens=5, # Увеличили до 5, чтобы избежать валидационных ошибок у некоторых провайдеров
-                        temperature=0.0
-                    ),
-                    timeout=timeout_sec
-                )
-                if response and response.choices and response.choices[0].message.content:
-                    return model_id, time.monotonic() - start_time
-                return model_id, "empty"
+            finally:
+                await client.close()
         except Exception as e:
-            logger.warning(f"Ошибка пинга модели {model_id}: {e}")
+            logger.warning("Ошибка пинга модели %s: %s", model_id, type(e).__name__)
             return model_id, "error"
 
 
@@ -930,7 +951,7 @@ async def run_pings_for_all_active_models() -> Dict[str, Any]:
     import asyncio
     from database.models import AIModel
     
-    # Ограничиваем конкурентность до 3 запросов, чтобы не перегружать локальный прокси
+    # Ограничиваем конкурентность до 3 прямых API-запросов.
     sem = asyncio.Semaphore(3)
     
     models = await AIModel.get_all_active()
@@ -1026,17 +1047,21 @@ async def _show_model_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, e
             for m in models:
                 display_name = get_model_display_name(m)
                 
-                model_id = m["model"]
+                model_id = m["key"]
                 if model_id in pings:
                     ping_val = pings[model_id]
                     if isinstance(ping_val, (int, float)):
                         display_name += f" ({ping_val:.2f}s)"
-                    else:
+                    elif ping_val == 'empty':
+                        display_name += " (API ответил без текста)"
+                    elif ping_val not in ('not_configured','maintenance'):
                         display_name += " (❌ ошибка)"
                 
-                if m["model"] == current_model:
+                if not m.get('is_configured'):
+                    display_name += " (⚙️ нет подключения)"
+                if m["key"] == current_model:
                     display_name = f"✅ {display_name}"
-                keyboard.append([InlineKeyboardButton(display_name, callback_data=f"model_choose_{m['key']}")])
+                keyboard.append([inline_button(display_name, callback_data=f"model_choose_{m['key']}")])
         
         # Статус фильтров/поиска
         status_parts = []
@@ -1055,39 +1080,39 @@ async def _show_model_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, e
         # Пагинация
         nav_row = []
         if flow["page"] > 0:
-            nav_row.append(InlineKeyboardButton("⬅️ Назад", callback_data="model_prev"))
+            nav_row.append(inline_button("⬅️ Назад", callback_data="model_prev"))
         else:
-            nav_row.append(InlineKeyboardButton(" ▪️ ", callback_data="model_noop"))
+            nav_row.append(inline_button(" ▪️ ", callback_data="model_noop"))
             
-        nav_row.append(InlineKeyboardButton(f"{flow['page'] + 1}/{total_pages}", callback_data="model_noop"))
+        nav_row.append(inline_button(f"{flow['page'] + 1}/{total_pages}", callback_data="model_noop"))
         
         if (flow["page"] + 1) * 5 < total:
-            nav_row.append(InlineKeyboardButton("Вперед ➡️", callback_data="model_next"))
+            nav_row.append(inline_button("Вперед ➡️", callback_data="model_next"))
         else:
-            nav_row.append(InlineKeyboardButton(" ▪️ ", callback_data="model_noop"))
+            nav_row.append(inline_button(" ▪️ ", callback_data="model_noop"))
             
         keyboard.append(nav_row)
         
         # Строка управления
         control_row = [
-            InlineKeyboardButton("🔍 Поиск", callback_data="model_search"),
-            InlineKeyboardButton("🏷️ Фильтры", callback_data="model_filter_menu")
+            inline_button("🔍 Поиск", callback_data="model_search"),
+            inline_button("🏷️ Фильтры", callback_data="model_filter_menu")
         ]
         keyboard.append(control_row)
         
         # Кнопка пинга
-        keyboard.append([InlineKeyboardButton("⚡ Проверить скорость ответов", callback_data="model_ping_check")])
+        keyboard.append([inline_button("⚡ Проверить скорость ответов", callback_data="model_ping_check")])
         
         # Сброс
         if flow["query"] or flow["provider"] or flow["speed"] or flow["intelligence"]:
-            keyboard.append([InlineKeyboardButton("🧹 Сбросить всё", callback_data="model_fclear")])
+            keyboard.append([inline_button("🧹 Сбросить всё", callback_data="model_fclear")])
             
     elif flow["menu_mode"] == "filters":
         text += "🏷️ <b>Фильтрация моделей</b>\n\nВыберите критерий:"
-        keyboard.append([InlineKeyboardButton("🏢 Провайдер", callback_data="model_fmenu_prov")])
-        keyboard.append([InlineKeyboardButton("⚡ Скорость", callback_data="model_fmenu_speed")])
-        keyboard.append([InlineKeyboardButton("🧠 Интеллект", callback_data="model_fmenu_intel")])
-        keyboard.append([InlineKeyboardButton("↩️ Назад к списку", callback_data="model_back")])
+        keyboard.append([inline_button("🏢 Провайдер", callback_data="model_fmenu_prov")])
+        keyboard.append([inline_button("⚡ Скорость", callback_data="model_fmenu_speed")])
+        keyboard.append([inline_button("🧠 Интеллект", callback_data="model_fmenu_intel")])
+        keyboard.append([inline_button("↩️ Назад к списку", callback_data="model_back")])
         
     elif flow["menu_mode"] == "f_provider":
         text += "🏢 <b>Фильтр по провайдеру</b>\n\nВыберите провайдера:"
@@ -1097,13 +1122,13 @@ async def _show_model_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, e
             label = p
             if flow["provider"] == p:
                 label = f"✅ {p}"
-            row.append(InlineKeyboardButton(label, callback_data=f"model_fprov_{p}"))
+            row.append(inline_button(label, callback_data=f"model_fprov_{p}"))
             if len(row) == 2:
                 keyboard.append(row)
                 row = []
         if row:
             keyboard.append(row)
-        keyboard.append([InlineKeyboardButton("↩️ Назад к фильтрам", callback_data="model_filter_menu")])
+        keyboard.append([inline_button("↩️ Назад к фильтрам", callback_data="model_filter_menu")])
         
     elif flow["menu_mode"] == "f_speed":
         text += "⚡ <b>Фильтр по скорости</b>\n\nВыберите оценку скорости:"
@@ -1113,13 +1138,13 @@ async def _show_model_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, e
             label = s
             if flow["speed"] == s:
                 label = f"✅ {s}"
-            row.append(InlineKeyboardButton(label, callback_data=f"model_fspeed_{s}"))
+            row.append(inline_button(label, callback_data=f"model_fspeed_{s}"))
             if len(row) == 2:
                 keyboard.append(row)
                 row = []
         if row:
             keyboard.append(row)
-        keyboard.append([InlineKeyboardButton("↩️ Назад к фильтрам", callback_data="model_filter_menu")])
+        keyboard.append([inline_button("↩️ Назад к фильтрам", callback_data="model_filter_menu")])
         
     elif flow["menu_mode"] == "f_intelligence":
         text += "🧠 <b>Фильтр по интеллекту</b>\n\nВыберите оценку интеллекта:"
@@ -1129,13 +1154,13 @@ async def _show_model_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, e
             label = i
             if flow["intelligence"] == i:
                 label = f"✅ {i}"
-            row.append(InlineKeyboardButton(label, callback_data=f"model_fintel_{i}"))
+            row.append(inline_button(label, callback_data=f"model_fintel_{i}"))
             if len(row) == 2:
                 keyboard.append(row)
                 row = []
         if row:
             keyboard.append(row)
-        keyboard.append([InlineKeyboardButton("↩️ Назад к фильтрам", callback_data="model_filter_menu")])
+        keyboard.append([inline_button("↩️ Назад к фильтрам", callback_data="model_filter_menu")])
         
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -1320,7 +1345,7 @@ async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         waiting_for_model_search[chat_id][user.id] = True
         
         cancel_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("↩️ Назад к списку", callback_data="model_back")]
+            [inline_button("↩️ Назад к списку", callback_data="model_back")]
         ])
         
         await query.message.edit_text(
@@ -1338,6 +1363,10 @@ async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not selected:
             await query.answer("❌ Неизвестная модель.", show_alert=True)
             return
+
+        if not selected.get('is_active') or not selected.get('is_configured'):
+            await query.answer("❌ Подключение модели не настроено или отключено.", show_alert=True)
+            return
             
         if selected.get("is_maintenance", False):
             display_name = get_model_display_name(selected)
@@ -1348,7 +1377,13 @@ async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
             
-        await set_chat_model(chat_id, selected["model"])
+        from ai.providers.connections import resolve_connection
+        try:
+            await resolve_connection(key)
+        except MaterialError:
+            await query.answer("❌ Проверьте настройки подключения модели в ai_models.", show_alert=True)
+            return
+        await set_chat_model(chat_id, key)
         display_name = get_model_display_name(selected)
         await query.answer(f"Модель переключена: {display_name}")
         logger.info(f"Модель в чате {chat_id} переключена на {selected['model']} ({key}) пользователем {user.id}")
@@ -1391,12 +1426,8 @@ def classify_dub_media(file_name: str | None, mime_type: str | None) -> str | No
     return None
 
 
-def _dub_subs_keyboard() -> telegram.ReplyKeyboardMarkup:
-    return telegram.ReplyKeyboardMarkup(
-        [[telegram.KeyboardButton(option)] for option in DUB_SUBS_OPTIONS],
-        one_time_keyboard=True,
-        resize_keyboard=True,
-    )
+def _dub_subs_keyboard() -> InlineKeyboardMarkup:
+    return choice_keyboard('dub', 'subs', DUB_SUBS_OPTIONS, columns=1)
 
 
 async def _enqueue_dub_task(
@@ -1442,6 +1473,9 @@ async def handle_dub_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     /dub [url] [subs] — озвучка видео/аудио.
     Без аргументов — пошаговый диалог: ссылка ИЛИ файл (mp4/mp3/...).
     """
+    if getattr(context.bot, '_menu_panel', None) is None:
+        from bot.menu import media_command
+        return await media_command(update, context, 'dub')
     chat_id = update.effective_chat.id
     user = update.message.from_user
     user_id = user.id
@@ -1509,6 +1543,8 @@ async def handle_dub_attachment(
     Обрабатывает прикреплённое медиа в режиме /dub flow.
     Скачивает файл во временную папку и продолжает flow.
     """
+    if getattr(context.bot, '_menu_panel', None) is None:
+        return False
     chat_id = update.effective_chat.id
     user_id = update.message.from_user.id
     state = dub_flow_state.get(chat_id, {}).get(user_id)
@@ -1600,6 +1636,8 @@ async def handle_dub_attachment(
 
 async def handle_dub_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Обрабатывает текстовый шаг /dub flow. Возвращает True, если поглотил сообщение."""
+    if getattr(context.bot, '_menu_panel', None) is None:
+        return False
     chat_id = update.effective_chat.id
     user_id = update.message.from_user.id
     state = dub_flow_state.get(chat_id, {}).get(user_id)
@@ -1639,21 +1677,15 @@ async def handle_dub_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return True
 
     if step == "subs":
-        text_lower = text.lower()
-        positive_markers = ("да", "yes", "✅", "субт", "сабы", "with subs", "нужны")
-        negative_markers = ("нет", "no", "❌", "без", "не нужно", "without")
-
-        if any(m in text_lower for m in positive_markers):
-            with_subs = True
-        elif any(m in text_lower for m in negative_markers):
-            with_subs = False
-        else:
+        selected = selected_choice(update, 'dub', 'subs', DUB_SUBS_OPTIONS)
+        if selected is None:
             await update.message.reply_text(
-                "<blockquote>«Кнопкой ниже, пожалуйста.»</blockquote>",
+                "<blockquote>«Выбери вариант кнопками в сообщении.»</blockquote>",
                 reply_markup=_dub_subs_keyboard(),
                 parse_mode='HTML'
             )
             return True
+        with_subs = selected == DUB_SUBS_OPTIONS[0]
 
         url = state.get("url", "") or ""
         input_file = state.get("input_file")
@@ -1663,13 +1695,11 @@ async def handle_dub_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if not url and not input_file:
             await update.message.reply_text(
                 "❌ Внутренняя ошибка: источник потерялся. Попробуй /dub ещё раз.",
-                reply_markup=telegram.ReplyKeyboardRemove(),
             )
             return True
 
         await update.message.reply_text(
             "<i>Запускает пайплайн</i>",
-            reply_markup=telegram.ReplyKeyboardRemove(),
             parse_mode='HTML'
         )
         await _enqueue_dub_task(
@@ -1785,8 +1815,8 @@ def _vclone_cleanup_keyboard() -> telegram.InlineKeyboardMarkup:
     """Inline-клавиатура для шага cleanup_choice."""
     return telegram.InlineKeyboardMarkup([
         [
-            telegram.InlineKeyboardButton("✨ Очистить звук", callback_data="vclone_clean:1"),
-            telegram.InlineKeyboardButton("⏩ Оставить как есть", callback_data="vclone_clean:0"),
+            inline_button("✨ Очистить звук", callback_data="vclone_clean:1"),
+            inline_button("⏩ Оставить как есть", callback_data="vclone_clean:0"),
         ]
     ])
 
@@ -1794,8 +1824,8 @@ def _vclone_cleanup_keyboard() -> telegram.InlineKeyboardMarkup:
 def _vclone_save_keyboard() -> telegram.InlineKeyboardMarkup:
     return telegram.InlineKeyboardMarkup([
         [
-            telegram.InlineKeyboardButton("💾 Сохранить голос", callback_data="vsave:yes"),
-            telegram.InlineKeyboardButton("⏭ Не сохранять", callback_data="vsave:no"),
+            inline_button("💾 Сохранить голос", callback_data="vsave:yes"),
+            inline_button("⏭ Не сохранять", callback_data="vsave:no"),
         ]
     ])
 
@@ -1806,8 +1836,8 @@ def _saved_voice_keyboard(voices: list[dict]) -> telegram.InlineKeyboardMarkup:
         voice_id = voice["id"]
         name = str(voice["name"])
         rows.append([
-            telegram.InlineKeyboardButton(f"🎙 {name}", callback_data=f"vsel:{voice_id}"),
-            telegram.InlineKeyboardButton("🗑", callback_data=f"vdel:{voice_id}"),
+            inline_button(f"🎙 {name}", callback_data=f"vsel:{voice_id}"),
+            inline_button("🗑", callback_data=f"vdel:{voice_id}"),
         ])
     return telegram.InlineKeyboardMarkup(rows)
 
@@ -3467,7 +3497,7 @@ async def handle_forget_command(update: Update, context: ContextTypes.DEFAULT_TY
             service = await service_for_bot()
             assets = await service.repository.own_search(actor, topic)
             if assets:
-                keyboard = [[InlineKeyboardButton('Стереть материал ' + str(i),callback_data='forget_asset:' + row['id'])] for i,row in enumerate(assets,1)]
+                keyboard = [[inline_button('Стереть материал ' + str(i),callback_data='forget_asset:' + row['id'])] for i,row in enumerate(assets,1)]
                 lines = [str(i) + '. ' + _html.escape(row['filename']) for i,row in enumerate(assets,1)]
                 await update.message.reply_text('\n'.join(lines),reply_markup=InlineKeyboardMarkup(keyboard),parse_mode='HTML')
                 return
@@ -3492,14 +3522,14 @@ async def handle_forget_command(update: Update, context: ContextTypes.DEFAULT_TY
                 from cognition.serialization import object_value
                 text = object_value(row['payload'])['text']
                 lines.append(f'{i}. {_html.escape(text[:160])}')
-                keyboard.append([InlineKeyboardButton(f'Стереть {i}',callback_data=f"forget_source:{row['context_id']}:{row['id']}:{user_id}")])
+                keyboard.append([inline_button(f'Стереть {i}',callback_data=f"forget_source:{row['context_id']}:{row['id']}:{user_id}")])
             if len(rows)>1:
                 import secrets,time
                 nonce = secrets.token_hex(8)
                 selections = context.user_data.setdefault('forget_selections',{})
                 selections.clear()
                 selections[nonce] = dict(cid=rows[0]['context_id'],chat_id=chat_id,owner=user_id,ids=[r['id'] for r in rows],expires=time.time()+600)
-                keyboard.append([InlineKeyboardButton(f'Стереть все найденные источники ({len(rows)})',callback_data=f'forget_set:{nonce}:{user_id}')])
+                keyboard.append([inline_button(f'Стереть все найденные источники ({len(rows)})',callback_data=f'forget_set:{nonce}:{user_id}')])
                 lines.append(f'Найдено источников: {len(rows)}. Показаны первые {min(5,len(rows))}.')
             await update.message.reply_text('\n'.join(lines),reply_markup=InlineKeyboardMarkup(keyboard),parse_mode='HTML')
             return

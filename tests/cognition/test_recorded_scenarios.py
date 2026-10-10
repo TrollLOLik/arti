@@ -62,7 +62,7 @@ class RecordedScenarioTests(unittest.TestCase):
                 self.assertEqual(plan.mixed_affect,name=='final_loss')
                 self.assertTrue(set(plan.cause_ids)<={ev.event_id})
                 if name=='final_loss':
-                    self.assertIn('do not force one mood',plan.instruction())
+                    self.assertIn('не своди всё к одному настроению',plan.instruction())
                     self.assertIsNone(plan.sticker_mood)
         previous = json.loads((ROOT/'docs/evaluation/full_held_out_frozen_full_v3_live.json').read_text(encoding='utf-8'))
         self.assertEqual((previous['passed'],previous['total']),(14,16))

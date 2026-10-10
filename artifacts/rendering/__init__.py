@@ -8,12 +8,13 @@ from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 import math
-from PIL import ImageFont
+from PIL import ImageFont, features
 from artifacts.styles import StyleProfile, semantic_theme, contrast
 from artifacts.spec import number
 from materials.types import MaterialError, canonical
 
 FONT = Path(__file__).parent / 'fonts' / 'DejaVuSans.ttf'
+TEXT_FEATURES = ['-kern', '-liga'] if features.check('raqm') else None
 WIDTH, HEIGHT = 1080, 1440
 BOTTOM = HEIGHT - 118
 STATUS = {'observed': 'Наблюдение', 'confirmed': 'Подтверждено источником',
@@ -51,15 +52,15 @@ def wrap(text, width, size):
     for para in str(text).split('\n'):
         line = ''
         for word in para.split():
-            if line and font.getlength(line + ' ' + word, features=['-kern','-liga']) > width:
+            if line and font.getlength(line + ' ' + word, features=TEXT_FEATURES) > width:
                 lines.append(line)
                 line = ''
-            while font.getlength(word, features=['-kern','-liga']) > width:
+            while font.getlength(word, features=TEXT_FEATURES) > width:
                 # Binary search bounds long identifiers without quadratic work.
                 lo, hi = 1, len(word)
                 while lo < hi:
                     middle = (lo + hi + 1) // 2
-                    if font.getlength(word[:middle], features=['-kern','-liga']) <= width:
+                    if font.getlength(word[:middle], features=TEXT_FEATURES) <= width:
                         lo = middle
                     else:
                         hi = middle - 1
@@ -621,7 +622,7 @@ def check_layout(pages,spec):
                 raise MaterialError('artifact_text_too_small')
             font=font_for(size)
             x,y=item['x'],item['y']
-            left,top,right,bottom=font.getbbox(item['text'],anchor='lt',features=['-kern','-liga'])
+            left,top,right,bottom=font.getbbox(item['text'],anchor='lt',features=TEXT_FEATURES)
             bounds=(x+left,y+top,x+right,y+bottom)
             if not all(math.isfinite(v) for v in bounds) or bounds[0]<0 or bounds[1]<0 or bounds[2]>WIDTH-30 or bounds[3]>HEIGHT-20:
                 raise MaterialError('artifact_text_overflow')

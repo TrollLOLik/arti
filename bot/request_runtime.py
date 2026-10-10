@@ -368,7 +368,7 @@ async def worker(bot, kinds):
             await asyncio.sleep(MUSIC_COOLDOWN if job['kind'] == 'music' else 2)
 
 
-async def request_status(update, context):
+async def request_status(update, context, *, query=None):
     """Payload-free, scope-checked status; no database IDs from other chats leak."""
     scope_topic = getattr(update.effective_message, 'message_thread_id', None) or (-1 if update.effective_chat.type == 'private' else 0)
     if context.args:
@@ -380,25 +380,47 @@ async def request_status(update, context):
     if not row or row['chat_id'] != update.effective_chat.id or row['topic_id'] != scope_topic:
         await update.effective_message.reply_text('Запрос не найден в этом чате.')
         return
-    labels = {'queued':'в очереди', 'running':'обрабатывается', 'prepared':'готовится отправка',
-              'paused':'приостановлен после прерывания генерации; нужен явный повтор', 'completed':'завершён', 'expired':'истёк срок ожидания', 'succeeded':'завершён', 'failed':'остановлен', 'cancelled':'отменён',
-              'delivery_unknown':'отправка не подтверждена; автоматического повтора не будет'}
-    label = 'истёк срок ожидания' if row.get('error_code') == 'deadline_exceeded' else labels.get(row['state'], row['state'])
-    text=f"Запрос {row['id']}: {label}."
-    if row['state'] in ('queued','running','paused'):
-        text+=f"\nОтмена своего запроса: /cancel {row['id']}"
-    markup=None
+    from bot.cards import request_card, reply_card
+    from telegram import InlineKeyboardMarkup
+    from bot.buttons import inline_button
+    extra=[]
+    buttons=[[inline_button('Обновить состояние',callback_data='request_view:'+row['id'])]]
+    if row['state'] in ('queued','running','prepared','paused') and str(row.get('owner_id'))==str(update.effective_user.id):
+        buttons.append([inline_button('Остановить',callback_data='request_cancel:'+row['id'])])
     if row['kind'] in ('dubbing','vclone'):
         from bot.media_retention import Retention
         owner=update.effective_user.id
         retained=await Retention(store().pool).load(row['id'],'result',owner,row['chat_id'],row['topic_id'])
         if retained:
-            text+=f"\nЛокальный результат сохранён до {retained['expires_at'].isoformat()}. ID: {row['id']}. Экспорт на ПК: python -m tools.export_media_result --request {row['id']} --owner {owner} --output ИМЯ_ФАЙЛА"
-        if row['state']=='paused':
-            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-            text+=f"\nДанные доступны до {row['deadline_at'].isoformat()}. Прерванный вызов мог уже завершиться у провайдера. Повтор может заново использовать GPU или платный API."
-            markup=InlineKeyboardMarkup([[InlineKeyboardButton('Повторить генерацию (возможны расходы)',callback_data='media_retry:'+row['id'])]])
-    await update.effective_message.reply_text(text,reply_markup=markup)
+            extra.append(f"Локальный результат сохранён до {retained['expires_at'].isoformat()}. Экспорт на ПК: python -m tools.export_media_result --request {row['id']} --owner {owner} --output ИМЯ_ФАЙЛА")
+        if row['state']=='paused' and str(row.get('owner_id'))==str(update.effective_user.id):
+            buttons.insert(0,[inline_button('Повторить генерацию (возможны расходы)',callback_data='media_retry:'+row['id'])])
+    card=request_card(row,extra=extra)
+    markup=InlineKeyboardMarkup(buttons)
+    if query:
+        from telegram.error import BadRequest
+        from materials.runtime import guard_current
+        await guard_current(row['chat_id'])
+        try: await query.edit_message_text(card.html(),parse_mode='HTML',reply_markup=markup)
+        except BadRequest as exc:
+            if 'message is not modified' not in str(exc).lower(): raise
+    else:
+        await reply_card(update.effective_message,context,card,markup=markup,rich=False)
+
+
+async def request_card_callback(update,context):
+    """Refresh is scope-checked; cancellation reuses the owner's fenced control."""
+    query=update.callback_query
+    await query.answer()
+    action,id=query.data.split(':',1)
+    wrapped=SimpleNamespace(effective_message=query.message,effective_chat=update.effective_chat,effective_user=query.from_user)
+    original_args=context.args
+    try:
+        context.args=[id]
+        if action=='request_cancel': await cancel_own_request(wrapped,context)
+        await request_status(wrapped,context,query=query)
+    finally:
+        context.args=original_args
 
 
 async def cancel_own_request(update, context):
@@ -421,11 +443,13 @@ async def cancel_own_request(update, context):
     await message.reply_text(text)
 
 
-async def _notice(job, bot, ordinal, text):
+async def _notice(job, bot, ordinal, text, *, markup=None, parse_mode=None):
     from cognition.runtime import CURRENT_TURN
     turn_token = CURRENT_TURN.set(None)
     request_token = CURRENT_REQUEST.set(dict(job, _ordinal=ordinal-1))
     kwargs = {'chat_id': job['chat_id'], 'text': text}
+    if markup is not None: kwargs['reply_markup']=markup
+    if parse_mode is not None: kwargs['parse_mode']=parse_mode
     if job['topic_id'] > 0:
         kwargs['message_thread_id'] = job['topic_id']
     try:
@@ -439,8 +463,13 @@ async def _progress(job, bot):
     """One durable wait notice in a separate ordinal; never changes reply ordinals."""
     await asyncio.sleep(8)
     try:
-        await _notice(job, bot, 0,
-            f"Запрос {job['id']} ещё обрабатывается в фоне. Статус: /request {job['id']}. Отменить: /cancel.")
+        from bot.cards import request_card
+        from bot.buttons import inline_button
+        from telegram import InlineKeyboardMarkup
+        row=await store().status(job['id'])
+        if not row or row['state'] not in ('running','prepared'): return
+        await _notice(job, bot, 0,request_card(row).html(),parse_mode='HTML',
+            markup=InlineKeyboardMarkup([[inline_button('Состояние и действия',callback_data='request_view:'+job['id'])]]))
     except Exception:
         diagnostic(job, 'wait_notice_unconfirmed')
 
@@ -452,11 +481,14 @@ async def _failure_notice(job, bot, text=None):
         unknown = await conn.fetchval("SELECT EXISTS(SELECT 1 FROM arti_request_sends WHERE request_id=$1 AND ordinal>0 AND state IN ('sending','delivery_unknown'))",job['id'])
         row = await conn.fetchrow('SELECT state,receipt FROM arti_request_sends WHERE request_id=$1 AND ordinal=0',job['id'])
     if unknown: return
-    text = text or f"Запрос {job['id']} остановлен: не удалось подготовить медиа. Статус: /request {job['id']}. Можно повторить запрос."
+    from bot.cards import MessageCard, REQUEST_KINDS
+    text=MessageCard(REQUEST_KINDS.get(job['kind'],'Работа по запросу'),'⚠️ Работа остановлена',
+        (text or 'Не удалось подготовить результат. Открой состояние запроса, чтобы проверить причину и доступные действия.',),
+        ('/request '+job['id'],)).html()
     if row and row['state']=='delivered':
         receipt = json.loads(row['receipt']) if isinstance(row['receipt'],str) else row['receipt']
         if isinstance(receipt,dict) and receipt.get('message_id'):
             from telegram.ext import ExtBot
-            await ExtBot.edit_message_text(bot, chat_id=job['chat_id'],message_id=receipt['message_id'],text=text)
+            await ExtBot.edit_message_text(bot, chat_id=job['chat_id'],message_id=receipt['message_id'],text=text,parse_mode='HTML')
     elif row is None or row['state']=='prepared':
-        await _notice(job,bot,0,text)
+        await _notice(job,bot,0,text,parse_mode='HTML')

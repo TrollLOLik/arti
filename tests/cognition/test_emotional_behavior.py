@@ -101,7 +101,7 @@ class MixtureAndReserveTests(unittest.TestCase):
         state = state_with(episode('win'))
         _,plan = regulate(state,Situation(kind='success',modality='interaction'))
         self.assertGreaterEqual(plan.playfulness,LIGHT_HUMOUR_THRESHOLD)
-        self.assertIn('Light humour is optional',plan.instruction())
+        self.assertIn('Настроение лёгкое',plan.instruction())
         self.assertEqual(expression(initial_state(CONTEXT,AT)).playfulness,0.)
 
     def test_old_positive_affect_does_not_add_humour_to_a_new_request(self):

@@ -314,8 +314,11 @@ class RequestStore:
     async def status(self, id):
         async with self.pool.acquire() as conn:
             parent=await conn.fetchval('SELECT parent_id FROM arti_requests WHERE id=$1',id)
-            return _row(await conn.fetchrow('''SELECT id,seq,kind,chat_id,topic_id,state,attempts,
-                deadline_at,created_at,updated_at,error_code FROM arti_requests WHERE id=$1''',parent or id))
+            return _row(await conn.fetchrow('''SELECT r.id,seq,r.kind,chat_id,topic_id,
+                CASE WHEN r.state='running' AND EXISTS(SELECT 1 FROM arti_request_sends s
+                    WHERE s.request_id=r.id AND s.ordinal>0 AND s.state='prepared') THEN 'prepared' ELSE r.state END AS state,
+                attempts,deadline_at,r.created_at,r.updated_at,error_code,
+                payload->'value'->'items'->>'user_id' AS owner_id FROM arti_requests r WHERE r.id=$1''',parent or id))
 
     async def prepare_send(self, id, token, ordinal, payload):
         if type(ordinal) is not int or ordinal<0 or not isinstance(payload,dict): raise ValueError('invalid_send')

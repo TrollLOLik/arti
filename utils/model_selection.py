@@ -1,7 +1,7 @@
 """
 Управление выбором модели ИИ для чата (с использованием PostgreSQL)
 """
-from database.models import ChatModel
+from database.models import AIModel, ChatModel
 from config import DEFAULT_MODEL
 
 # In-memory кеш для быстрого доступа
@@ -18,5 +18,8 @@ async def get_chat_model(chat_id: int) -> str:
 
 async def set_chat_model(chat_id: int, model_id: str):
     """Установить модель для чата"""
-    await ChatModel.set(chat_id, model_id)
-    _model_cache[chat_id] = model_id
+    row = await AIModel.get_by_model_id(model_id)
+    if row is None:
+        raise ValueError('unknown_model_selection')
+    await ChatModel.set(chat_id, row['key'])
+    _model_cache[chat_id] = row['key']

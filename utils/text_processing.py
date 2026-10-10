@@ -7,7 +7,8 @@ import logging
 from difflib import get_close_matches
 from urllib.parse import urlparse
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardMarkup
+from bot.buttons import inline_button
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,27 @@ def contains_arti(text, threshold=0.85):
         if 'арт' in word and get_close_matches(word, ["арти"], n=1, cutoff=threshold):
             return True
     return False
+
+
+# Voice/intonation markers are short English phrases in square brackets, e.g.
+# [warm aristocratic tone] or [Question-ah]. Only those are hidden from chat text;
+# numbered references, Cyrillic brackets and code inside <pre>/<code> stay intact.
+_VOICE_TAG = re.compile(r"(?P<pre>[ \t]*)\[[A-Za-z][A-Za-z ,.'\-]{0,80}\](?P<post>[ \t]*)")
+_CODE_SPAN = re.compile(r'(<pre\b.*?</pre>|<code\b.*?</code>)', re.IGNORECASE | re.DOTALL)
+
+
+def strip_voice_tags(text: str) -> str:
+    """Remove voice markers from text shown in chat, keeping one space between words."""
+    if not text:
+        return text
+
+    def tag(match):
+        return ' ' if match.group('pre') and match.group('post') else ''
+
+    parts = _CODE_SPAN.split(text)
+    for index in range(0, len(parts), 2):
+        parts[index] = _VOICE_TAG.sub(tag, parts[index])
+    return ''.join(parts).strip()
 
 
 def fix_html_tags(text: str) -> str:
@@ -130,7 +152,7 @@ def extract_urls_and_make_keyboard(text: str, extra_links=None):
         if len(title) > 30:
             title = title[:27] + "..."
             
-        row.append(InlineKeyboardButton(f"🔗 {title}", url=uri))
+        row.append(inline_button(f"🔗 {title}", url=uri))
         if len(row) == 2:
             keyboard.append(row)
             row = []

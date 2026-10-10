@@ -27,6 +27,13 @@ from google.genai import types
 from pyannote.audio import Pipeline
 from pydub import AudioSegment
 
+try:
+    from .stt_pipeline import (WordTiming, STTConfig, atomic_json, file_hash, parse_assembly_words,
+                               assign_speakers, detect_speech, read_window, run_qwen_tasks, process_stt)
+except ImportError:
+    from stt_pipeline import (WordTiming, STTConfig, atomic_json, file_hash, parse_assembly_words,
+                              assign_speakers, detect_speech, read_window, run_qwen_tasks, process_stt)
+
 
 AUDIO_REFERENCE_EXTENSIONS = {".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".webm"}
 
@@ -43,27 +50,6 @@ class SpeakerTurn:
             "end": round(self.end, 3),
             "speaker": self.speaker,
         }
-
-
-@dataclass(frozen=True)
-class WordTiming:
-    text: str
-    start: float
-    end: float
-    speaker: str = "UNKNOWN"
-    confidence: float | None = None
-
-    def to_json(self) -> dict[str, Any]:
-        payload = {
-            "text": self.text,
-            "start": round(self.start, 3),
-            "end": round(self.end, 3),
-            "speaker": self.speaker,
-        }
-        if self.confidence is not None:
-            payload["confidence"] = round(self.confidence, 3)
-        return payload
-
 
 
 @dataclass(frozen=True)
@@ -176,12 +162,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--asr-critical-confidence-threshold", type=float, default=0.3)
     parser.add_argument("--asr-request-timeout", type=float, default=120.0)
     parser.add_argument("--asr-poll-timeout", type=float, default=3600.0)
+    parser.add_argument("--asr-models", default=os.getenv("ASR_SPEECH_MODELS", "universal-3-5-pro,universal-2"))
+    parser.add_argument("--asr-language", default=os.getenv("ASR_LANGUAGE") or None)
+    parser.add_argument("--asr-context", default=os.getenv("ASR_CONTEXT", ""))
+    parser.add_argument("--asr-keyterms-file", default=os.getenv("ASR_KEYTERMS_FILE") or None, help="JSON array of character names and terms")
+    parser.add_argument("--asr-speaker-confidence-threshold", type=float, default=0.6)
+    parser.add_argument("--asr-speaker-margin", type=float, default=0.2)
+    parser.add_argument("--asr-vad", choices=["silero", "off"], default="silero")
+    parser.add_argument("--asr-aligner", choices=["qwen", "off"], default=os.getenv("ASR_ALIGNER", "qwen"))
+    parser.add_argument("--asr-recheck", choices=["hybrid", "off"], default=os.getenv("ASR_RECHECK", "hybrid"))
+    parser.add_argument("--asr-max-rechecks", type=int, default=8)
+    parser.add_argument("--asr-local-timeout", type=float, default=600.0)
+    parser.add_argument("--asr-local-model", default="Qwen/Qwen3-ASR-1.7B")
+    parser.add_argument("--asr-aligner-model", default="Qwen/Qwen3-ForcedAligner-0.6B")
     parser.add_argument("--min-tts-duration", type=float, default=0.6)
     parser.add_argument("--diarization-model", default="models/pyannote-speaker-diarization-3.1")
     parser.add_argument("--disable-diarization", action="store_true")
     parser.add_argument("--max-pause", type=float, default=1.5, help="Max pause between words to merge into one phrase (seconds)")
     parser.add_argument("--max-phrase-length", type=float, default=15.0, help="Max merged phrase duration before forcing a split (seconds)")
-    parser.add_argument("--min-phrase-duration", type=float, default=0.4, help="Drop single-word phrases shorter than this (seconds) as likely hallucinations")
+    parser.add_argument("--min-phrase-duration", type=float, default=0.4, help="Flag short single-word phrases for verification; keep their text")
     parser.add_argument("--word-min-overlap", type=float, default=0.5, help="Minimum fraction of word duration that must overlap with a pyannote turn to assign a speaker")
     parser.add_argument("--max-speedup", type=float, default=1.8)
     parser.add_argument("--max-overflow", type=float, default=1.0, help="Max seconds a sped-up phrase may overlap the next slot before being hard-clipped")
@@ -189,8 +188,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--translation-chars-per-sec", type=float, default=15.0, help="Russian speech rate used to compute per-phrase character budget for translation")
     parser.add_argument("--tts-shorten-retries", type=int, default=2, help="LLM shorten-and-regenerate attempts when TTS output overshoots its slot")
     parser.add_argument("--tts-shorten-trigger", type=float, default=1.25, help="Shorten the line when raw TTS duration exceeds the slot by this factor")
-    parser.add_argument("--snap-window", type=float, default=0.4, help="Max seconds each phrase boundary may shift towards real silence on the vocals track")
-    parser.add_argument("--no-snap-boundaries", action="store_true", help="Disable snapping phrase boundaries to silence on the vocals track")
+    parser.add_argument("--snap-window", type=float, default=0.4, help="VAD padding window used when forced alignment is off")
+    parser.add_argument("--no-snap-boundaries", action="store_true", help="Disable optional VAD phrase padding")
     parser.add_argument("--cookies", default=None, help="Path to cookies file for yt-dlp (e.g. exported from browser)")
     parser.add_argument("--cookies-from-browser", default=None, help="Browser to extract cookies from (e.g. chrome, firefox, edge)")
     parser.add_argument("--dub-plan", default="outputs/dub_plan.json")
@@ -422,16 +421,49 @@ def _upload_audio_assemblyai(audio_path: Path, headers: dict[str, str], timeout:
     return response.json()["upload_url"]
 
 
-def _submit_transcript_assemblyai(upload_url: str, headers: dict[str, str], timeout: float) -> str:
-    url = "https://api.assemblyai.com/v2/transcript"
+def assemblyai_payload(upload_url: str, args: argparse.Namespace) -> dict[str, Any]:
+    models = [model.strip() for model in args.asr_models.split(",") if model.strip()]
+    if not models or len(models) > 4:
+        raise ValueError("Invalid ASR model list")
     payload = {
         "audio_url": upload_url,
-        "language_detection": True,
-        "speech_models": ["universal-3-pro", "universal-2"],
+        "speech_models": models,
         "speaker_labels": True,
-        "temperature": 0
+        "speaker_options": {"include_speaker_confidence": True},
     }
-    response = _request_with_retries("POST", url, json=payload, headers=headers, timeout=timeout)
+    language = (args.asr_language or "auto").lower().replace("_", "-").split("-")[0]
+    if language != "auto":
+        payload["language_code"] = language
+    else:
+        payload["language_detection"] = True
+    # Prompting is unavailable when a known language routes to Universal-2.
+    pro_languages = {"en", "es", "fr", "de", "it", "pt", "ar", "da", "nl", "fi", "he", "hi", "ja", "zh", "no", "sv", "tr", "vi"}
+    pro_available = "universal-3-5-pro" in models and (language == "auto" or language in pro_languages)
+    if args.asr_context and pro_available:
+        if len(args.asr_context) > 4000:
+            raise ValueError("ASR context is too long")
+        payload["prompt"] = args.asr_context
+    elif args.asr_context:
+        logging.info("ASR context omitted: selected model/language does not support contextual prompting")
+    if args.asr_keyterms_file:
+        terms = json.loads(Path(args.asr_keyterms_file).read_text(encoding="utf-8"))
+        term_limit = 1000 if pro_available and language != "auto" else 200
+        if (not isinstance(terms, list) or len(terms) > term_limit
+                or any(not isinstance(term, str) or not term.strip() or len(term.split()) > 6 or len(term) > 200 for term in terms)):
+            raise ValueError(f"ASR keyterms must be a JSON array of at most {term_limit} short terms")
+        if sum(len(term.split()) for term in terms) > term_limit:
+            raise ValueError(f"ASR keyterms exceed the {term_limit}-word budget")
+        payload["keyterms_prompt"] = terms
+    return payload
+
+
+def _submit_transcript_assemblyai(upload_url: str, headers: dict[str, str], timeout: float,
+                                args: argparse.Namespace) -> str:
+    url = "https://api.assemblyai.com/v2/transcript"
+    payload = assemblyai_payload(upload_url, args)
+    # A connection failure after POST has an unknown outcome. Do not blindly
+    # repeat a paid submission; completed submissions are checkpointed below.
+    response = _request_with_retries("POST", url, json=payload, headers=headers, timeout=timeout, attempts=1)
     response.raise_for_status()
     return response.json()["id"]
 
@@ -455,19 +487,9 @@ def _poll_transcript_assemblyai(transcript_id: str, headers: dict[str, str], req
 
 
 def _parse_assemblyai_words(result: dict[str, Any]) -> list[WordTiming]:
-    words: list[WordTiming] = []
-    for w in result.get("words", []):
-        text = normalize_text(str(w.get("text", "")))
-        start_ms = w.get("start")
-        end_ms = w.get("end")
-        speaker = w.get("speaker", "UNKNOWN")
-        raw_confidence = w.get("confidence")
-        confidence = float(raw_confidence) if raw_confidence is not None else None
-        if text and start_ms is not None and end_ms is not None:
-            start_sec = float(start_ms) / 1000.0
-            end_sec = float(end_ms) / 1000.0
-            if end_sec > start_sec:
-                words.append(WordTiming(text=text, start=start_sec, end=end_sec, speaker=speaker, confidence=confidence))
+    words, rejected = parse_assembly_words(result)
+    if rejected:
+        logging.warning("STT has %d unusable word records; the native response is retained", len(rejected))
     return words
 
 
@@ -496,12 +518,23 @@ def _parse_assemblyai_utterances(result: dict[str, Any]) -> list[Phrase]:
 
 def transcribe_audio(audio_path: Path, raw_result_path: Path, args: argparse.Namespace) -> tuple[list[WordTiming], list[Phrase]]:
     headers = _assemblyai_headers(args.assemblyai_api_key)
-    logging.info("Uploading audio to AssemblyAI: %s", audio_path.name)
-    upload_url = _upload_audio_assemblyai(audio_path, headers, args.asr_request_timeout)
-    transcript_id = _submit_transcript_assemblyai(upload_url, headers, args.asr_request_timeout)
-    logging.info("AssemblyAI transcript submitted: %s", transcript_id)
-    result = _poll_transcript_assemblyai(transcript_id, headers, args.asr_request_timeout, args.asr_poll_timeout)
-    save_json(raw_result_path, result)
+    job_path = raw_result_path.with_suffix(".job.json")
+    signature = {"audio_sha256": file_hash(audio_path), "options": assemblyai_payload("", args)}
+    job = json.loads(job_path.read_text(encoding="utf-8")) if job_path.exists() else {}
+    if job.get("signature") == signature and job.get("completed") and raw_result_path.exists():
+        result = json.loads(raw_result_path.read_text(encoding="utf-8"))
+        logging.info("Reusing completed STT result: %s", raw_result_path)
+    else:
+        transcript_id = job.get("transcript_id") if job.get("signature") == signature else None
+        if not transcript_id:
+            logging.info("Uploading audio to AssemblyAI: %s", audio_path.name)
+            upload_url = _upload_audio_assemblyai(audio_path, headers, args.asr_request_timeout)
+            transcript_id = _submit_transcript_assemblyai(upload_url, headers, args.asr_request_timeout, args)
+            atomic_json(job_path, {"signature": signature, "transcript_id": transcript_id, "completed": False})
+        logging.info("AssemblyAI transcript: %s", transcript_id)
+        result = _poll_transcript_assemblyai(transcript_id, headers, args.asr_request_timeout, args.asr_poll_timeout)
+        atomic_json(raw_result_path, result)
+        atomic_json(job_path, {"signature": signature, "transcript_id": transcript_id, "completed": True})
     logging.info("AssemblyAI raw result saved: %s", raw_result_path)
     words = _parse_assemblyai_words(result)
     utterances = _parse_assemblyai_utterances(result)
@@ -509,6 +542,39 @@ def transcribe_audio(audio_path: Path, raw_result_path: Path, args: argparse.Nam
     if not words:
         raise RuntimeError("AssemblyAI transcription produced no words")
     return words, utterances
+
+
+def prepare_stt(original: Path, vocals: Path, raw_path: Path, turns: list[SpeakerTurn],
+                report_path: Path, work_dir: Path, args: argparse.Namespace) -> list[WordTiming]:
+    config = STTConfig(text_threshold=args.asr_low_confidence_threshold,
+                       speaker_threshold=args.asr_speaker_confidence_threshold,
+                       min_overlap=args.word_min_overlap, speaker_margin=args.asr_speaker_margin,
+                       max_rechecks=args.asr_max_rechecks,
+                       language=args.asr_language if args.asr_language != "auto" else None)
+    raw = json.loads(raw_path.read_text(encoding="utf-8"))
+    recheck_args = argparse.Namespace(**vars(args))
+    recheck_args.asr_language = config.language or raw.get("language_code")
+    # A crop is at most 25 seconds; do not give each repair a whole-video deadline.
+    recheck_args.asr_poll_timeout = min(args.asr_poll_timeout, 180.0)
+
+    def local(tasks):
+        return run_qwen_tasks(tasks, work_dir / "local_stt", timeout=args.asr_local_timeout,
+                              asr_model=args.asr_local_model, aligner_model=args.asr_aligner_model)
+
+    def recheck(path, start, end, index):
+        directory = work_dir / "stt_rechecks"
+        directory.mkdir(parents=True, exist_ok=True)
+        audio = directory / f"retry_{index:03d}.wav"
+        sf.write(audio, read_window(path, start, end), 16000, subtype="PCM_16")
+        result_path = report_path.parent / "stt_rechecks" / f"retry_{index:03d}.json"
+        transcribe_audio(audio, result_path, recheck_args)
+        return json.loads(result_path.read_text(encoding="utf-8"))
+
+    return process_stt(raw, original, vocals, turns, report_path, config,
+                       vad=detect_speech if args.asr_vad == "silero" else None,
+                       recheck=recheck if args.asr_recheck == "hybrid" else None,
+                       local=local if args.asr_aligner == "qwen" or args.asr_recheck == "hybrid" else None,
+                       align=args.asr_aligner == "qwen")
 
 
 def diarize_speakers(audio_path: Path, args: argparse.Namespace) -> list[SpeakerTurn]:
@@ -553,122 +619,6 @@ def extract_speaker_turns(diarization: Any) -> list[SpeakerTurn]:
     return turns
 
 
-def span_turn_overlap(start: float, end: float, turn: SpeakerTurn) -> float:
-    return max(0.0, min(end, turn.end) - max(start, turn.start))
-
-
-def speaker_for_word(word: WordTiming, turns: list[SpeakerTurn], min_overlap_ratio: float = 0.5) -> str:
-    # Assigns a word to a pyannote turn only if their temporal overlap covers a sufficient
-    # fraction of the word. This filters out Whisper hallucinations on music/silence.
-    if not turns:
-        return "UNKNOWN"
-    word_duration = max(0.001, word.end - word.start)
-    best_speaker = "UNKNOWN"
-    best_overlap = 0.0
-    for turn in turns:
-        overlap = span_turn_overlap(word.start, word.end, turn)
-        if overlap > best_overlap:
-            best_speaker = turn.speaker
-            best_overlap = overlap
-    if best_overlap / word_duration < min_overlap_ratio:
-        return "UNKNOWN"
-    return best_speaker
-
-
-def nearest_turn_speaker(word: WordTiming, turns: list[SpeakerTurn], max_gap: float = 1.5) -> str:
-    # Fallback when no pyannote turn meaningfully overlaps the word: pick the closest turn
-    # within max_gap seconds. This keeps speaker IDs consistent (avoids mixing pyannote's
-    # SPEAKER_00 with AssemblyAI's "A" for the same person).
-    if not turns:
-        return "UNKNOWN"
-    word_mid = (word.start + word.end) / 2.0
-    best_speaker = "UNKNOWN"
-    best_distance = float("inf")
-    for turn in turns:
-        if turn.start <= word_mid <= turn.end:
-            distance = 0.0
-        else:
-            distance = min(abs(word_mid - turn.start), abs(word_mid - turn.end))
-        if distance < best_distance:
-            best_distance = distance
-            best_speaker = turn.speaker
-    if best_distance > max_gap:
-        return "UNKNOWN"
-    return best_speaker
-
-
-def speaker_for_phrase(phrase: Phrase, turns: list[SpeakerTurn], max_gap: float = 1.5) -> str:
-    if not turns:
-        return phrase.speaker
-    best_speaker = "UNKNOWN"
-    best_overlap = 0.0
-    for turn in turns:
-        overlap = span_turn_overlap(phrase.start, phrase.end, turn)
-        if overlap > best_overlap:
-            best_overlap = overlap
-            best_speaker = turn.speaker
-    if best_speaker != "UNKNOWN":
-        return best_speaker
-    phrase_mid = (phrase.start + phrase.end) / 2.0
-    best_distance = float("inf")
-    for turn in turns:
-        if turn.start <= phrase_mid <= turn.end:
-            distance = 0.0
-        else:
-            distance = min(abs(phrase_mid - turn.start), abs(phrase_mid - turn.end))
-        if distance < best_distance:
-            best_distance = distance
-            best_speaker = turn.speaker
-    if best_distance > max_gap:
-        return phrase.speaker
-    return best_speaker
-
-
-def map_phrase_speakers_to_turns(phrases: list[Phrase], turns: list[SpeakerTurn]) -> list[Phrase]:
-    if not turns:
-        return phrases
-    unique_turn_speakers = {turn.speaker for turn in turns}
-    if len(unique_turn_speakers) == 1:
-        single_speaker = next(iter(unique_turn_speakers))
-        return [
-            Phrase(
-                id=phrase.id,
-                start=phrase.start,
-                end=phrase.end,
-                text=phrase.text,
-                speaker=single_speaker,
-                word_confidence_min=phrase.word_confidence_min,
-                word_confidence_avg=phrase.word_confidence_avg,
-                needs_review=phrase.needs_review,
-                review_reason=phrase.review_reason,
-                words=phrase.words,
-            )
-            for phrase in phrases
-        ]
-    mapped: list[Phrase] = []
-    changed = 0
-    for phrase in phrases:
-        speaker = speaker_for_phrase(phrase, turns)
-        if speaker != phrase.speaker:
-            changed += 1
-        mapped.append(
-            Phrase(
-                id=phrase.id,
-                start=phrase.start,
-                end=phrase.end,
-                text=phrase.text,
-                speaker=speaker,
-                word_confidence_min=phrase.word_confidence_min,
-                word_confidence_avg=phrase.word_confidence_avg,
-                needs_review=phrase.needs_review,
-                review_reason=phrase.review_reason,
-                words=phrase.words,
-            )
-        )
-    logging.info("Mapped AssemblyAI utterance speakers to pyannote turns: %d/%d changed", changed, len(phrases))
-    return mapped
-
-
 def merge_words_into_phrases(
     words: list[WordTiming],
     turns: list[SpeakerTurn],
@@ -680,36 +630,37 @@ def merge_words_into_phrases(
     critical_confidence_threshold: float = 0.3,
     min_tts_duration: float = 0.0,
 ) -> list[Phrase]:
-    # Merges flat word list into phrases by time, speaker, pause, punctuation, and hard duration cap.
-    # Drops single-word phrases shorter than min_phrase_duration (likely Whisper hallucinations).
+    # Preserve every usable STT word, including uncertain and short speech.
     if not words:
         raise RuntimeError("Word-level alignment produced no phrases (empty word list)")
-    words.sort(key=lambda w: w.start)
+    words = sorted(words, key=lambda w: (w.start, w.end))
+    if any(word.speaker_method == "unchecked" for word in words):
+        words = assign_speakers(words, turns, min_overlap=word_min_overlap)
     phrases: list[Phrase] = []
     current_words: list[WordTiming] = []
     current_speaker: str = "UNKNOWN"
-    dropped_phantom = 0
 
     def flush() -> None:
-        nonlocal current_words, dropped_phantom
+        nonlocal current_words
         if not current_words:
             return
         text = normalize_text(" ".join(w.text for w in current_words))
         start = current_words[0].start
-        end = current_words[-1].end
+        end = max(word.end for word in current_words)
         duration = end - start
         confidences = [w.confidence for w in current_words if w.confidence is not None]
         confidence_min = min(confidences) if confidences else None
         confidence_avg = sum(confidences) / len(confidences) if confidences else None
-        review_reasons: list[str] = []
+        review_reasons = sorted({issue for word in current_words for issue in word.issues})
         if duration < min_tts_duration:
             review_reasons.append(f"short_duration<{min_tts_duration:.2f}s")
         if confidence_min is not None and confidence_min < critical_confidence_threshold:
             review_reasons.append(f"critical_asr_confidence<{critical_confidence_threshold:.2f}")
         elif confidence_min is not None and confidence_min < low_confidence_threshold:
             review_reasons.append(f"low_asr_confidence<{low_confidence_threshold:.2f}")
-        is_phantom = len(current_words) == 1 and (end - start) < min_phrase_duration
-        if text and not is_phantom:
+        if len(current_words) == 1 and duration < min_phrase_duration:
+            review_reasons.append("short_single_word")
+        if text:
             phrases.append(
                 Phrase(
                     id=len(phrases),
@@ -724,24 +675,10 @@ def merge_words_into_phrases(
                     words=list(current_words),
                 )
             )
-        elif is_phantom:
-            dropped_phantom += 1
         current_words = []
 
-    dropped_unknown = 0
     for word in words:
-        if turns:
-            speaker = speaker_for_word(word, turns, min_overlap_ratio=word_min_overlap)
-            if speaker == "UNKNOWN":
-                # Fallback: pick nearest pyannote turn so we don't drop edge words and
-                # keep speaker IDs consistent (avoid mixing pyannote SPEAKER_xx with
-                # AssemblyAI's "A"/"B" for the same person).
-                speaker = nearest_turn_speaker(word, turns)
-        else:
-            speaker = word.speaker
-        if speaker == "UNKNOWN":
-            dropped_unknown += 1
-            continue
+        speaker = word.speaker
         if current_words:
             pause = word.start - current_words[-1].end
             would_exceed_length = (word.end - current_words[0].start) > max_phrase_length
@@ -754,13 +691,12 @@ def merge_words_into_phrases(
     flush()
 
     logging.info(
-        "Smart-merged phrases: %d (max_pause=%.2fs, max_phrase_length=%.2fs, needs_review=%d, dropped_phantom=%d, dropped_unknown=%d)",
+        "Merged phrases: %d (max_pause=%.2fs, max_phrase_length=%.2fs, needs_review=%d, unknown_speakers=%d)",
         len(phrases),
         max_pause,
         max_phrase_length,
         sum(1 for phrase in phrases if phrase.needs_review),
-        dropped_phantom,
-        dropped_unknown,
+        sum(phrase.speaker == "UNKNOWN" for phrase in phrases),
     )
     if not phrases:
         raise RuntimeError("Word-level merge produced no phrases")
@@ -804,68 +740,30 @@ def _clone_phrase_with_bounds(phrase: Phrase, start: float, end: float) -> Phras
 
 
 def snap_phrases_to_silence(
-    phrases: list[Phrase],
-    vocals_path: Path,
-    window: float = 0.4,
-    pad: float = 0.05,
-    sample_rate: int = 16000,
+    phrases: list[Phrase], vocals_path: Path, window: float = 0.4,
+    pad: float = 0.05, sample_rate: int = 16000,
+    speech_intervals: list[tuple[float, float]] | None = None,
 ) -> list[Phrase]:
-    # ASR word timings drift by 100-300ms; this snaps each phrase boundary to the
-    # actual speech onset/offset found on the separated vocals track (RMS energy),
-    # so dub slots line up with real speech instead of the ASR estimate.
+    """Expand slots to VAD boundaries without cutting recognized words.
+
+    Forced alignment supplies word times in the default pipeline. This optional
+    fallback only pads their envelope; loudness is never treated as speech.
+    """
     if not phrases or window <= 0:
         return phrases
-    audio = read_audio_mono(vocals_path, sample_rate)
-    if audio.size == 0:
-        return phrases
-    hop = max(1, int(sample_rate * 0.010))
-    frame = max(hop, int(sample_rate * 0.025))
-    rms = librosa.feature.rms(y=audio, frame_length=frame, hop_length=hop)[0]
-    if rms.size == 0:
-        return phrases
-    noise_floor = float(np.percentile(rms, 10))
-    threshold = max(noise_floor * 4.0, float(rms.max()) * 0.04)
-    times = np.arange(rms.size) * (hop / sample_rate)
-    is_speech = rms >= threshold
-
-    def speech_onset(lo: float, hi: float) -> float | None:
-        mask = (times >= lo) & (times <= hi)
-        idx = np.flatnonzero(mask & is_speech)
-        if idx.size == 0:
-            return None
-        return float(times[idx[0]])
-
-    def speech_offset(lo: float, hi: float) -> float | None:
-        mask = (times >= lo) & (times <= hi)
-        idx = np.flatnonzero(mask & is_speech)
-        if idx.size == 0:
-            return None
-        return float(times[idx[-1]]) + hop / sample_rate
-
-    snapped: list[Phrase] = []
-    moved = 0
-    total_shift = 0.0
-    for i, phrase in enumerate(phrases):
-        prev_end = snapped[-1].end if snapped else 0.0
-        next_start = phrases[i + 1].start if i + 1 < len(phrases) else float("inf")
-        onset = speech_onset(phrase.start - window, phrase.start + window)
-        offset = speech_offset(phrase.end - window, phrase.end + window)
-        new_start = phrase.start if onset is None else max(0.0, onset - pad)
-        new_end = phrase.end if offset is None else offset + pad
-        new_start = max(new_start, prev_end + 0.01)
-        new_end = min(new_end, next_start - 0.01) if next_start != float("inf") else new_end
-        if new_end - new_start < 0.1:
-            snapped.append(phrase)
-            continue
-        shift = abs(new_start - phrase.start) + abs(new_end - phrase.end)
-        if shift > 0.005:
-            moved += 1
-            total_shift += shift
-        snapped.append(_clone_phrase_with_bounds(phrase, new_start, new_end))
-    logging.info(
-        "Snapped phrase boundaries to silence: %d/%d adjusted (avg shift %.0fms, window %.2fs)",
-        moved, len(phrases), (total_shift / moved * 1000.0) if moved else 0.0, window,
-    )
+    speech = speech_intervals if speech_intervals is not None else detect_speech(vocals_path)
+    snapped = []
+    for index, phrase in enumerate(phrases):
+        starts = [lo for lo, hi in speech if lo <= phrase.start + window and hi >= phrase.start - window]
+        ends = [hi for lo, hi in speech if lo <= phrase.end + window and hi >= phrase.end - window]
+        start = min(phrase.start, max(0.0, max(starts) - pad)) if starts else phrase.start
+        end = max(phrase.end, min(ends) + pad) if ends else phrase.end
+        previous = phrases[index - 1].end if index else 0.0
+        following = phrases[index + 1].start if index + 1 < len(phrases) else float("inf")
+        # Preserve real overlaps rather than serializing them by cutting words.
+        start = min(phrase.start, max(start, previous))
+        end = max(phrase.end, min(end, following))
+        snapped.append(_clone_phrase_with_bounds(phrase, start, end))
     return snapped
 
 
@@ -962,7 +860,8 @@ def build_translation_prompt(phrases: list[Phrase], chars_per_sec: float = 15.0)
         "that fits the original duration at natural Russian speech rate. translated_text MUST NOT exceed char_budget; "
         "if a literal translation is longer, compress it: drop filler words, use shorter synonyms, restructure the sentence. "
         "A line slightly under budget is always better than one over budget. "
-        "Fix obvious ASR hallucinations, wrong words, broken names, malformed catchphrases, and language switches using nearby context in the batch. "
+        "Translate the supplied transcript faithfully. Do not invent missing speech or reconstruct unclear names. "
+        "needs_review marks uncertainty that has not been resolved by audio verification. "
         "Remove profanity censorship based on context, e.g. F*** -> Блядь/Чёрт/нахрен. "
         "Make the line sound like real spoken anime/dialogue performance.\n\n"
         "Do NOT change id, start, end, duration, or speaker values. "
@@ -1104,13 +1003,7 @@ def load_dub_plan(path: Path) -> list[TranslatedPhrase]:
             tts_voice = "default_voice.pt"
         reference_audio_path = Path(reference_audio_raw) if reference_audio_raw else None
         phrase_words = [
-            WordTiming(
-                text=normalize_text(str(word.get("text", ""))),
-                start=float(word["start"]),
-                end=float(word["end"]),
-                speaker=str(word.get("speaker", item.get("api_speaker", "UNKNOWN"))),
-                confidence=float(word["confidence"]) if word.get("confidence") is not None else None,
-            )
+            WordTiming.from_json(word)
             for word in item.get("words", [])
             if isinstance(word, dict) and word.get("text") and word.get("start") is not None and word.get("end") is not None
         ]
@@ -2040,6 +1933,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     translation_path = output_path.parent / "transcript_ru.json"
     assemblyai_raw_path = output_path.parent / "assemblyai_raw.json"
     diarization_path = output_path.parent / "diarization_turns.json"
+    stt_result_path = output_path.parent / "stt_result.json"
     dub_plan_path = Path(args.dub_plan)
     dub_track_path = work_dir / "russian_dub_only.wav"
     final_audio_path = work_dir / "final_video_audio.wav"
@@ -2054,27 +1948,30 @@ def run_pipeline(args: argparse.Namespace) -> None:
         extract_audio(video_path, source_audio_path, sample_rate=args.dub_sample_rate, channels=2)
         vocals_path, no_vocals_path = separate_audio_roformer(source_audio_path, audio_dir / "clean_vocals", args)
 
-        words, utterances = transcribe_audio(vocals_path, assemblyai_raw_path, args)
+        transcribe_audio(source_audio_path, assemblyai_raw_path, args)
         speaker_turns = []
         if not args.disable_diarization:
             try:
                 speaker_turns = diarize_speakers(vocals_path, args)
             except Exception as exc:
                 logging.warning("Diarization failed; falling back to AssemblyAI speaker labels: %s", exc)
+        words = prepare_stt(source_audio_path, vocals_path, assemblyai_raw_path,
+                            speaker_turns, stt_result_path, work_dir, args)
         phrases = merge_words_into_phrases(
             words,
             turns=speaker_turns,
             max_pause=args.max_pause,
             max_phrase_length=args.max_phrase_length,
-            min_phrase_duration=0.0,
+            min_phrase_duration=args.min_phrase_duration,
             word_min_overlap=args.word_min_overlap,
             low_confidence_threshold=args.asr_low_confidence_threshold,
             critical_confidence_threshold=args.asr_critical_confidence_threshold,
             min_tts_duration=args.min_tts_duration,
         )
-        if not args.no_snap_boundaries:
+        if not args.no_snap_boundaries and args.asr_aligner == "off" and args.asr_vad == "silero":
             try:
-                phrases = snap_phrases_to_silence(phrases, vocals_path, window=args.snap_window)
+                speech = json.loads(stt_result_path.read_text(encoding="utf-8")).get("speech_intervals")
+                phrases = snap_phrases_to_silence(phrases, source_audio_path, window=args.snap_window, speech_intervals=speech)
             except Exception as exc:
                 logging.warning("Boundary snapping failed; keeping ASR timings: %s", exc)
         save_json(transcript_path, [phrase.to_json() for phrase in phrases])
@@ -2103,7 +2000,15 @@ def run_pipeline(args: argparse.Namespace) -> None:
         source_audio_path = audio_dir / "source_separator.wav"
         vocals_path = find_separator_vocals(audio_dir / "clean_vocals")
         no_vocals_path = find_separator_background(audio_dir / "clean_vocals") if args.mix_mode == "dub" else None
-        words = load_words_from_assemblyai(assemblyai_raw_path)
+        if stt_result_path.exists():
+            result = json.loads(stt_result_path.read_text(encoding="utf-8"))
+            if result.get("error"):
+                raise RuntimeError(f"STT preparation did not complete; see {stt_result_path}")
+            if result.get("audio_sha256") and result["audio_sha256"] != file_hash(source_audio_path):
+                raise RuntimeError("Saved STT belongs to different audio; rerun --stage prepare")
+            words = [WordTiming.from_json(word) for word in result["words"]]
+        else:
+            words = load_words_from_assemblyai(assemblyai_raw_path)
         speaker_turns = load_speaker_turns(diarization_path)
 
     translated = attach_word_timings(load_dub_plan(dub_plan_path), words)

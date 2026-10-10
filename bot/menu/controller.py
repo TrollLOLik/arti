@@ -18,11 +18,12 @@ ROLES = dict(owner='Владелец', manager='Управляющий', editor=
 
 
 class Controller:
-    def __init__(self, panel, update, context, actor):
+    def __init__(self, panel, update, context, actor, *, allow_create=False):
         self.panel, self.update, self.context, self.actor = panel, update, context, actor
         self.bot = bridge.BotSurface(self)
         self.last_text = ''
         self.service = None
+        self.allow_create = allow_create
 
     async def material_service(self):
         from materials.runtime import enabled, service_for_bot
@@ -45,23 +46,30 @@ class Controller:
             self.actor = current
             await self.panel.store.save(self.panel.row,scope_key=current.scope.key)
         self.last_text = text
-        return await self.panel.render(text, buttons, screen=screen, state=state, allow_create=allow_create)
+        return await self.panel.render(text, buttons, screen=screen, state=state,
+                                       allow_create=allow_create or self.allow_create)
 
     async def capture(self, text, markup=None, parse_mode=None):
         # Existing media/model flows become inline choices in the same panel.
         if parse_mode != 'HTML':
             text = escape(text)
-        text = text.replace('prompt','описание').replace('промпт','описание').replace('/cancel','кнопку «Отменить ввод»')
+        text = text.replace('prompt','описание').replace('промпт','описание')
+        text = text.replace('введи /cancel','нажми «Отменить ввод»').replace('/cancel','«Отменить ввод»')
         buttons = bridge.buttons_from_markup(markup)
         state = dict(self.panel.row['state'])
         if state.get('pending') == 'legacy':
-            state['legacy_snapshot'] = self.snapshot_legacy()
-            state['expects_text'] = self.legacy_waiting()
+            if state.get('legacy_command') in ('image','video','music','dub') and not self.legacy_waiting():
+                state = dict(return_to=state.get('return_to','home'))
+            else:
+                state['legacy_snapshot'] = self.snapshot_legacy()
+                state['expects_text'] = self.legacy_expects_text()
         # A technical handler's help is an error explanation, not a user manual.
         if '/artifact create' in text or '/decision propose' in text:
             text = 'Не получилось применить изменение. Возможно, версия или права уже изменились. Открой объект заново.'
         if state.get('pending'):
             buttons += [[('Отменить ввод',dict(nav=state.get('return_to','home'))), ('⌂ Меню',dict(nav='home'))]]
+            if self.actor.scope.chat_type != 'private' and state.get('expects_text'):
+                text += '\n\n<i>В группе отправь ответ на это сообщение.</i>'
         elif state.get('view'):
             buttons += [[('‹ К результату',state['view']),('⌂ Меню',dict(nav='home'))]]
         else:
@@ -140,6 +148,17 @@ class Controller:
             if getattr(config,key).get(self.actor.scope.chat_id,{}).get(self.actor.user_id):
                 return True
         return False
+
+    def legacy_expects_text(self):
+        import config
+        key = self.panel.row['state'].get('legacy_command')
+        if key in ('image', 'video'):
+            return (self.context.user_data.get(key + '_flow') or {}).get('step') == 'prompt'
+        if key in ('music', 'dub'):
+            states = config.music_flow_state if key == 'music' else config.dub_flow_state
+            step = (states.get(self.actor.scope.chat_id, {}).get(self.actor.user_id) or {}).get('step')
+            return step in ('style', 'lyrics') if key == 'music' else step == 'source'
+        return self.legacy_waiting()
 
     async def show(self, screen='home', page=0, *, allow_create=False):
         self.clear_legacy(force=screen in views.CONVERSATION_SCREENS)
@@ -443,15 +462,18 @@ class Controller:
         p = await repo.projects.get(row['project_id'], self.actor)
         from projects.types import ROLE_RIGHTS
         rights=ROLE_RIGHTS[p.role]
-        text = '⏳ <b>'+escape(plan['goal'][:300])+'</b>\n\n'+LABELS[row['status']]+f"\nВызовов инструментов: {row['used_calls']}."
-        if row['diagnostics']:
-            text += '\nНужна проверка: '+escape(row['diagnostics'][:200])
+        from bot.work_cards import WorkCards
+        text = await WorkCards(service).task_text(row, self.actor)
         buttons = []
         if row['status'] in ('succeeded', 'partial', 'waiting', 'unknown', 'paused', 'failed'):
             buttons += [[views.command('Получить результат' if row['status']=='succeeded' else 'Сохранённая часть результата', '/task result '+id)]]
         if 'edit' in rights and (row['owner_id']==self.actor.user_id or p.role in ('owner', 'manager')):
             if row['status'] not in ('succeeded', 'cancelled'):
                 for action, label in [('pause','Пауза'), ('resume','Продолжить'), ('cancel','Остановить')]:
+                    if action == 'pause' and row['status'] not in ('queued','running','waiting'):
+                        continue
+                    if action == 'cancel' and row['status']=='unknown':
+                        continue
                     if action == 'resume' and row['status'] not in ('paused', 'waiting', 'partial'):
                         continue
                     buttons += [[(label, dict(confirm=dict(task_control=action, id=id, revision=row['revision']), title=label+' задачу?'))]]
@@ -902,8 +924,6 @@ class Controller:
             if not self.panel.output:
                 return await self.render('Готово. Результат отправлен отдельно.',self.panel.navigation(),state={})
             return
-        if 'legacy_text' in action:
-            return await self.legacy_input(action['legacy_text'])
         service = await self.material_service() if not action.get('special') else None
         if 'project_use' in action or 'project_control' in action:
             from projects.repository import ProjectRepository

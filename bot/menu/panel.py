@@ -2,7 +2,8 @@
 import uuid
 from hashlib import sha256
 from types import SimpleNamespace
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardMarkup
+from bot.buttons import button_style, inline_button
 from telegram.error import BadRequest, NetworkError, RetryAfter
 from bot.retry_bot import RetryBot, _maybe_record_sent
 from materials.types import canonical, MaterialError
@@ -37,7 +38,11 @@ class Panel:
     async def render(self, text, buttons=(), *, screen=None, state=None, allow_create=False):
         # Digest includes semantic actions, not random callback tokens.
         text = bounded_html(text)
-        digest = sha256(canonical([text, buttons]).encode()).hexdigest()
+        current_state = state if state is not None else self.row['state']
+        form_kind = (current_state.get('draft') or {}).get('kind')
+        styles = [[button_style(label, action, form_kind=form_kind) for label, action in line]
+                  for line in buttons]
+        digest = sha256(canonical([text, buttons, styles]).encode()).hexdigest()
         updates = {}
         if screen is not None:
             updates['screen'] = screen
@@ -49,15 +54,15 @@ class Panel:
             self.output = True
             return self.receipt(text)
         actions, keyboard = {}, []
-        for line in buttons:
+        for line, colors in zip(buttons, styles):
             rendered = []
-            for label, action in line:
+            for (label, action), style in zip(line, colors):
                 if 'url' in action:
-                    rendered.append(InlineKeyboardButton(label[:64], url=action['url']))
+                    rendered.append(inline_button(label[:64], url=action['url'], style=style))
                     continue
                 token = uuid.uuid4().hex[:24]
                 actions[token] = action
-                rendered.append(InlineKeyboardButton(label[:64], callback_data='menu:'+self.row['id']+':'+token))
+                rendered.append(inline_button(label[:64], callback_data='menu:'+self.row['id']+':'+token, style=style))
             keyboard.append(rendered)
         markup = InlineKeyboardMarkup(keyboard)
         await self.store.save(self.row, **updates, actions=actions, content_hash=None,

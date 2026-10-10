@@ -34,32 +34,14 @@ Direct media URL ограничен 10 МиБ/30 секундами/redirect bud
 
 Генератор использует `GenerationRequest`, `ImageInput` и `CapabilityRegistry`. PNG не отправляется как JPEG; запрос с изображением может включать поиск. В RP поиск отключён. Fallback должен поддерживать все модальности и функции запроса; несовместимый fallback не получает неполный запрос.
 
-Консервативные существующие Gemini-профили обозначены как `configured`, а не как результаты live-проверки. Неизвестная модель прокси считается текстовой до явного подтверждения. Имя Qwen не определяет отсутствие зрения. Произвольная запись о capability не разрешает отправлять данные на произвольный URL: учитывается точный настроенный proxy endpoint либо встроенный Google adapter.
+Незаполненная запись не разрешает запросы к провайдеру. Новые подключения считаются текстовыми до явной настройки capabilities. Название семейства не определяет наличие зрения. Адрес и credentials берутся только из выбранной записи или настроенного в БД совместимого fallback.
 
-`ARTI_CAPABILITY_MANIFEST` может указать JSON-файл вида:
-
-```json
-{
-  "version": 1,
-  "endpoints": [
-    {
-      "model": "confirmed-model-id",
-      "provider": "openai",
-      "endpoint": "https://configured-proxy.example/v1",
-      "inputs": ["text", "image"],
-      "features": [],
-      "evidence": "probe",
-      "observed_at": "2026-09-30T00:00:00+00:00",
-      "max_input_chars": 500000,
-      "available": true
-    }
-  ]
-}
-```
-
-В примере endpoint нужно заменить точным `OMNIROUTE_BASE_URL`. Результат теста напрямую на OpenRouter не доказывает такую же возможность модели через другой прокси. Записи `metadata`/`probe` требуют времени наблюдения и перестают подходить после семи дней. Metadata сообщает о заявленной возможности; реальный запрос проверяет конкретную комбинацию параметров.
-
-JSON manifest не содержит ключи API. Внешняя функция обновления capabilities и circuit-breaker по live health ещё требуют расширения; ошибочные/недоступные capabilities сейчас приводят к допустимому альтернативному маршруту либо служебному отказу.
+Возможности endpoint задаются в `ai_models.capabilities`, вместе с адресом и
+подключением модели. См. [настройку моделей](ARTI_AI_MODELS.md).
+По умолчанию доступны только текстовые запросы; `image` и native grounding
+добавляются явно для проверенного подключения. `metadata`/`probe` требуют
+`observed_at` и устаревают через семь дней. Файл capability manifest больше не
+используется. Ключи API не попадают в каталог, provenance или логи.
 
 ## Проверки
 
@@ -98,7 +80,7 @@ python -m tools.probe_material_provider --model stealth/space-bunny-alpha
 
 Для отключения долговечного Telegram intake установить `ARTI_MATERIALS_ENABLED=0` и перезапустить процесс обычным способом. Старые файлы остаются в хранилище; перед включением после паузы выполнить maintenance, чтобы истёкшие источники не участвовали в работе. Чтение дополнительно проверяет срок хранения даже до физической очистки.
 
-При ошибке manifest убрать `ARTI_CAPABILITY_MANIFEST` либо исправить соответствующую запись; встроенные консервативные профили продолжают работу. Откат к прежнему генератору производится откатом кода, без удаления SQL-таблиц. На время обслуживания можно выключить ответы штатной командой бота. Полноценные отдельные feature flags поздних возможностей вводятся по мере их реализации.
+При ошибке capabilities исправить соответствующую запись `ai_models` или отключить её; параметры читаются при следующем запросе. Откат к прежнему генератору производится откатом кода, без удаления SQL-таблиц. На время обслуживания можно выключить ответы штатной командой бота. Полноценные отдельные feature flags поздних возможностей вводятся по мере их реализации.
 
 ## Установка и управление A05
 
@@ -142,4 +124,4 @@ Engine поддерживает закрытое подмножество Excel;
 
 Региональные API: `evidence_region(ref,actor,ImageExtractor(),reread=True)` для OCR и `observe_image_region(ref,actor,extractor,analyzer)` для отдельного visual pass. Нужен существующий authorized region ref; исходник не переписывается. Нормализованные координаты относятся к [EXIF-displayed image](https://pillow.readthedocs.io/en/stable/reference/ImageOps.html). До 512 OCR lines, 16M исходных pixels, crop ≤8M, zoom ≤4×, provider preview ≤1536px/5MiB. Превышения явные. Хранятся OCR preprocessing/rotation, uncertainty, source hashes и версия метода.
 
-Проверки: `python -m tools.evaluate_images` offline; `python -m tools.evaluate_images --live --model stealth/space-bunny-alpha` вызывает OpenRouter на synthetic diagrams/axes. `--case log_axis` ограничивает повтор одним случаем и сохраняет отдельный отчёт. Live rejection/timeouts учитываются как failures модели, не как пройденная способность. Structured vision использует [async Gemini API](https://github.com/googleapis/python-genai) либо OpenAI-compatible messages, не предоставляет tools и строго проверяет JSON до сохранения.
+Проверки: `python -m tools.evaluate_images` offline; `python -m tools.evaluate_images --live --model stealth/space-bunny-alpha` вызывает OpenRouter на synthetic diagrams/axes. `--case log_axis` ограничивает повтор одним случаем и сохраняет отдельный отчёт. Live rejection/timeouts учитываются как failures модели, не как пройденная способность. Рабочий structured vision выбирает нативный `google-genai` или OpenAI-compatible messages по `api_type` подключения БД, не предоставляет tools и строго проверяет JSON до сохранения.

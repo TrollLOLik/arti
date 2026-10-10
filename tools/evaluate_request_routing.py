@@ -8,6 +8,7 @@ import asyncpg
 from dotenv import load_dotenv
 from ai.intents import resolve_intent
 from ai.providers.structured import SelectedModelClient
+from ai.providers.connections import resolve_connection
 
 CASES = [
     ('Хочу это в наглядном виде','artifact',True),
@@ -28,12 +29,14 @@ async def main():
     try:
         async with conn.transaction(readonly=True):
             model=await conn.fetchval("SELECT model_id FROM chat_models WHERE chat_id>0 ORDER BY updated_at DESC LIMIT 1")
-        if not model:
-            from config import DEFAULT_MODEL
-            model=DEFAULT_MODEL
+            if not model:
+                from config import DEFAULT_MODEL
+                model=DEFAULT_MODEL
+            connection=await resolve_connection(model,conn=conn)
     finally:
         await conn.close()
     async def resolver(_): return model
+    async def connection_resolver(_): return connection
     class MeasuredClient(SelectedModelClient):
         state='not_called'
         async def complete(self,*args,**kwargs):
@@ -41,7 +44,7 @@ async def main():
             response=await super().complete(*args,**kwargs)
             self.state='http_'+str(response.status_code)
             return response
-    client=MeasuredClient(resolver=resolver,timeout=4,fast=True)
+    client=MeasuredClient(resolver=resolver,connection_resolver=connection_resolver,timeout=4,fast=True)
     from cognition.semantic import LocalEncoder
     from ai.intent_semantics import EXAMPLES
     encoder=LocalEncoder()

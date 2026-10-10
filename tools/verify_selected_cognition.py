@@ -8,6 +8,8 @@ import asyncpg
 from dotenv import load_dotenv
 
 from ai.providers.structured import SelectedModelClient
+from ai.providers.connections import ModelConnection
+from database.models import AIModel
 from cognition.interpreter import SelectedModelInterpreter, InterpreterFailure
 from cognition.types import CognitiveEvent, ContextKey, EvidenceRef, Origin
 from tools.cognition_admin import parameters
@@ -25,6 +27,7 @@ async def run():
     try:
         async with conn.transaction(readonly=True):
             models = await conn.fetch('SELECT DISTINCT model_id FROM chat_models ORDER BY model_id')
+            configurations = {row['model_id']: await AIModel.get_connection(row['model_id'],conn=conn) for row in models}
     finally:
         await conn.close()
     results = []
@@ -32,7 +35,9 @@ async def run():
         model = row['model_id']
         async def resolve(_chat_id):
             return model
-        interpreter = SelectedModelInterpreter(SelectedModelClient(resolver=resolve))
+        async def resolve_configuration(_model):
+            return ModelConnection.from_row(configurations[_model])
+        interpreter = SelectedModelInterpreter(SelectedModelClient(resolver=resolve,connection_resolver=resolve_configuration))
         try:
             for name, text in CASES:
                 at = datetime.now(timezone.utc)

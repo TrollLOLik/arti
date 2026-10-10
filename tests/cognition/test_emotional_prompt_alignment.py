@@ -1,10 +1,11 @@
 """Synthetic prompt contracts, without importing config or contacting providers."""
 import ast
+import re
 import unittest
 from dataclasses import asdict, replace
 from pathlib import Path
 
-from cognition.prompting import assemble_prompt
+from cognition.prompting import assemble_prompt, prompt_budget_for
 from cognition.types import ExpressionPlan, LIGHT_HUMOUR_THRESHOLD, RESPONSE_BEHAVIORS
 
 
@@ -89,54 +90,82 @@ class EmotionalInstructionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             plan(behaviors=('fabricate_user_feelings',))
 
+    def test_instruction_is_rendered_in_russian_without_service_english(self):
+        # English service phrasing leaked into replies (H1, P2); codes stay internal.
+        for behaviors in ((), ('answer_task', 'notice_detail'), ('acknowledge_loss', 'offer_choice'),
+                          ('revise_understanding', 'repair')):
+            for tone in ('calm', 'warm and attentive', 'warm but measured', 'gentle and concrete',
+                         'quiet and measured', 'concise and attentive', 'calm and concrete', 'calm and attentive'):
+                instruction = plan(behaviors=behaviors, tone=tone, mixed_affect=True, uncertain_intent=True,
+                                   regulation='clarify', tts_style='measured').instruction()
+                with self.subTest(behaviors=behaviors, tone=tone):
+                    self.assertIsNone(re.search(r'[A-Za-z]{4,}', instruction), instruction)
+
     def test_answer_and_detail_are_grounded_in_current_request(self):
         instruction = plan(behaviors=('answer_task', 'notice_detail')).instruction()
-        self.assertIn('give the answer or useful result first', instruction)
-        self.assertIn('one relevant, verified detail', instruction)
-        self.assertIn('do not fabricate a memory', instruction)
-        self.assertIn('repeat a private detail to a new audience', instruction)
-        self.assertIn('earlier feelings do not establish current facts or intentions', instruction)
+        self.assertIn('дай ответ или полезный результат', instruction)
+        self.assertIn('одну релевантную проверенную деталь', instruction)
+        self.assertIn('не выдумывай воспоминаний', instruction)
+        self.assertIn('не пересказывай личное новой аудитории', instruction)
+        self.assertIn('прошлые эмоции не доказывают нынешних фактов или намерений', instruction)
 
     def test_loss_offers_space_and_choice_without_forced_optimism(self):
         instruction = plan(behaviors=('acknowledge_loss', 'offer_choice')).instruction()
-        self.assertIn('without forced optimism or rushing to fix it', instruction)
-        self.assertIn('person has not already chosen', instruction)
-        self.assertIn('listening and a practical next step', instruction)
-        self.assertIn('respect their answer or silence', instruction)
+        self.assertIn('без натянутого оптимизма и без спешки всё исправить', instruction)
+        self.assertIn('человек ещё не выбрал', instruction)
+        self.assertIn('просто выслушать или подумать о практическом шаге', instruction)
+        self.assertIn('уважай его ответ или молчание', instruction)
 
     def test_repair_requires_evidence_and_proportional_apology(self):
         instruction = plan(behaviors=('revise_understanding', 'repair')).instruction()
-        self.assertIn('delivered reply and available evidence first', instruction)
-        self.assertIn('specific verified mistake of your own', instruction)
-        self.assertIn('preserve uncertainty rather than accepting blame as fact', instruction)
-        self.assertIn('Keep the apology proportional, then return to the task', instruction)
-        self.assertIn('claim an unverified fix or promise an outcome', instruction)
+        self.assertIn('сверься со своим доставленным ответом и доступными данными', instruction)
+        self.assertIn('твоя конкретная ошибка подтвердилась', instruction)
+        self.assertIn('сохрани неопределённость, а не принимай вину как факт', instruction)
+        self.assertIn('Извинение соразмерное, затем вернись к делу', instruction)
+        self.assertIn('не заявляй о непроверенном исправлении и не обещай результат', instruction)
 
     def test_ambiguity_does_not_force_a_question_about_old_state(self):
         instruction = plan(regulation='clarify', uncertain_intent=True,
                            behaviors=('ask_one_question',)).instruction()
-        self.assertIn('Do not attribute a hostile intention from ambiguity', instruction)
-        self.assertIn('otherwise leave it open', instruction)
-        self.assertIn('old uncertainty alone is not a reason to ask', instruction)
-        self.assertIn('otherwise proceed with the supported answer', instruction)
+        self.assertIn('Не приписывай враждебного намерения по неоднозначным словам', instruction)
+        self.assertIn('иначе оставь вопрос открытым', instruction)
+        self.assertIn('старая неопределённость сама по себе — не повод спрашивать', instruction)
+        self.assertIn('иначе отвечай по тому, что известно', instruction)
         self.assertNotIn('Ask briefly before attributing a hostile intention', instruction)
 
-    def test_humour_threshold_is_shared_and_humour_remains_optional(self):
+    def test_light_irony_is_the_default_and_withheld_in_serious_situations(self):
+        # E2: irony is the character's default; numerical playfulness only marks a
+        # clearly light mood. Grounded sensitive situations withhold any humour.
         for value in (0., LIGHT_HUMOUR_THRESHOLD - .001):
-            self.assertIn('Avoid jokes in this reply', plan(playfulness=value).instruction())
+            instruction = plan(playfulness=value, behaviors=('listen',)).instruction()
+            self.assertIn('Лёгкая ирония уместна, если само сообщение к ней располагает', instruction)
+            self.assertIn('если человеку больно, тревожно или он раздражён — без шуток', instruction)
+            self.assertNotIn('Без шуток и иронии', instruction)
         for value in (LIGHT_HUMOUR_THRESHOLD, .25, 1.):
             instruction = plan(playfulness=value).instruction()
-            self.assertNotIn('Avoid jokes in this reply', instruction)
-            self.assertIn('Light humour is optional', instruction)
-            self.assertIn('never force a joke or use one at their expense', instruction)
+            self.assertIn('Настроение лёгкое', instruction)
+            self.assertIn('Шутка никогда не за счёт собеседника', instruction)
+        task = plan(behaviors=('answer_task', 'practical_step')).instruction()
+        self.assertIn('Суть важнее остроумия', task)
+        serious = (dict(behaviors=('acknowledge_loss', 'offer_choice')), dict(behaviors=('revise_understanding', 'repair')),
+                   dict(behaviors=('boundary', 'practical_step')), dict(regulation='clarify', behaviors=('ask_one_question',)),
+                   dict(uncertain_intent=True), dict(tone='gentle and concrete'), dict(tone='calm and concrete'),
+                   dict(regulation='withhold_expression', playfulness=1.))
+        for changes in serious:
+            with self.subTest(**{k: str(v) for k, v in changes.items()}):
+                instruction = plan(**changes).instruction()
+                self.assertIn('Без шуток и иронии в этом ответе', instruction)
+                self.assertNotIn('Лёгкая ирония уместна', instruction)
+                self.assertNotIn('Настроение лёгкое', instruction)
 
     def test_mixed_affect_rendering_is_pure_and_does_not_expose_state(self):
         expression = plan(mixed_affect=True, behaviors=('listen',))
         before = asdict(expression)
         instruction = expression.instruction()
-        self.assertIn("do not force one mood or invent the user's feelings", instruction)
-        self.assertIn('do not manufacture a question or an action', instruction)
-        self.assertIn('Gestures and emotional self-description are optional', instruction)
+        self.assertIn('не своди всё к одному настроению', instruction)
+        self.assertIn('не придумывай чувства собеседника', instruction)
+        self.assertIn('не выдумывай вопрос или действие', instruction)
+        self.assertIn('Жесты и рассказ о своих эмоциях необязательны', instruction)
         self.assertNotIn('synthetic-cause', instruction)
         self.assertNotIn('0.65', instruction)
         self.assertEqual(asdict(expression), before)
@@ -144,11 +173,15 @@ class EmotionalInstructionTests(unittest.TestCase):
     def test_task_and_combined_instructions_fit_the_real_prompt_budget(self):
         expression = plan(behaviors=('answer_task', 'notice_detail', 'practical_step'),
                           mixed_affect=True)
-        system = config_literal('ARTI_SYSTEM_PROMPT') + '\n' + expression.instruction()
+        system = '\n\n'.join((config_literal('ARTI_SYSTEM_PROMPT'), expression.instruction(),
+                              config_literal('ARTI_VOICE_ANCHOR')))
         task = 'Synthetic current task: explain the corrected result.'
-        prompt, report = assemble_prompt(system, task, model='offline-unknown-tokenizer')
+        budget = prompt_budget_for(None)
+        prompt, report = assemble_prompt(system, task, model='offline-unknown-tokenizer', budget=budget)
         self.assertIn(task, prompt)
         self.assertLessEqual(report['input_tokens'], report['input_limit'])
+        # The persona must leave most of the input for dialogue and memory.
+        self.assertLess(report['input_tokens'], report['input_limit'] / 2)
 
 
 if __name__ == '__main__':
