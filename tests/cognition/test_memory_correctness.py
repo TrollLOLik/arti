@@ -87,7 +87,11 @@ class MemoryCorrectnessTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(record['belief_history'][0]['superseded_by'],new.evidence.source_id)
         final,budget=assemble_prompt('Answer using source-grounded data.','Where do I live?',memory=turn.memory)
         self.assertIn('Tomsk',final)
-        self.assertLessEqual(TokenCounter('').count(turn.memory),4000)
+        # H2: the budget bounds the prose view the reply model reads, not the JSON records.
+        from cognition.memory_render import render_record
+        from cognition.prompting import MEMORY_PROMPT_LIMIT
+        shown='\n'.join(render_record(json.loads(line)) for line in turn.memory.splitlines())
+        self.assertLessEqual(TokenCounter('').count(shown),MEMORY_PROMPT_LIMIT)
         self.assertLessEqual(budget['input_tokens'],budget['input_limit'])
 
     async def test_history_retains_original_truth_and_existing_schema_links(self):

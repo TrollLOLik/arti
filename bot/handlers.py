@@ -494,7 +494,10 @@ async def _process_images_impl(
         image_details = "изображение" if len(base64_images) == 1 else f"{len(base64_images)} изображений"
         await _save_message(chat_id, user_name, f"Пользователь прислал {image_details}. Подпись: {user_caption}", user_id=user_id,message_id=message_id)
 
-        dialog_history_str = await _get_dialog_history(chat_id)
+        from utils.chat_history import get_dialogue_turns
+        dialog_history_str = await get_dialogue_turns(chat_id, mode)
+        if dialog_history_str is None:
+            dialog_history_str = await _get_dialog_history(chat_id)
         from utils.model_selection import get_chat_model
         memory_context = cognitive_turn.memory
         await bot.send_chat_action(chat_id=chat_id, action="typing")

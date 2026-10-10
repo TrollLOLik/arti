@@ -1072,11 +1072,15 @@ async def process_user_reply(request, bot):
                     _recent_map_sessions[map_scope_key] = time.time()
                 logger.info("Maps search enabled for scoped location")
 
-        # RP-режим: используем отдельную историю
-        if rp_mode_state.get(chat_id):
-            chat_context = await get_chat_context_rp(chat_id)
-        else:
-            chat_context = await get_chat_context(chat_id)
+        # Личный чат: недавний диалог нативными ролями (H2, P3); группы — стенограммой.
+        from utils.chat_history import get_dialogue_turns
+        chat_context = await get_dialogue_turns(chat_id, 'rp' if rp_mode_state.get(chat_id) else 'default')
+        if chat_context is None:
+            # RP-режим: используем отдельную историю
+            if rp_mode_state.get(chat_id):
+                chat_context = await get_chat_context_rp(chat_id)
+            else:
+                chat_context = await get_chat_context(chat_id)
 
         memory_context = cognitive_turn.memory
 

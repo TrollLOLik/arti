@@ -75,8 +75,13 @@ def _zone(name):
         return None
 
 
-def temporal_block(now, *, user_timezone=None, private=True, previous_contact=None):
-    """Render the [Сейчас] block. ``now`` and ``previous_contact`` must be aware."""
+def temporal_block(now, *, user_timezone=None, private=True, previous_contact=None,
+                   transcript=True, person_name=None):
+    """Render the [Сейчас] block. ``now`` and ``previous_contact`` must be aware.
+
+    ``transcript`` marks a timestamped text history; native-role history has no
+    timestamps. ``person_name`` is the Telegram display name of a private chat.
+    """
     if now.tzinfo is None:
         raise ValueError('Temporal grounding requires an aware timestamp')
     now = now.astimezone(timezone.utc)
@@ -95,7 +100,12 @@ def temporal_block(now, *, user_timezone=None, private=True, previous_contact=No
                 lines.append(f'Перерыв с прошлой переписки в этом чате: {humanize_gap(gap)}.')
             else:
                 lines.append('Разговор идёт сейчас, без долгого перерыва.')
-    lines.append(f'Метки времени в истории диалога указаны по UTC (сейчас {now:%H:%M} UTC).')
+    if private and person_name:
+        name = ' '.join(str(person_name).split())[:64]
+        if name:
+            lines.append(f'Собеседник подписан в Telegram как «{name}».')
+    if transcript:
+        lines.append(f'Метки времени в истории диалога указаны по UTC (сейчас {now:%H:%M} UTC).')
     return '[Сейчас]\n' + '\n'.join(lines)
 
 
@@ -108,10 +118,12 @@ def _private(event):
     return event.context.chat_id > 0 and event.context.topic_id < 0
 
 
-async def temporal_context(turn, *, budget=.3):
+async def temporal_context(turn, *, budget=.3, transcript=True, person_name=None):
     """Optional reads for the current turn; any failure omits only that detail."""
     if turn is None or getattr(turn, 'runtime', None) is None:
-        return temporal_block(datetime.now(timezone.utc), private=False)
+        # Without a turn only the caller's private-chat hint (a display name) is known.
+        return temporal_block(datetime.now(timezone.utc), private=bool(person_name), transcript=transcript,
+                              person_name=person_name)
     now = turn.runtime.clock()
     event = turn.event
     private = _private(event)
@@ -130,4 +142,5 @@ async def temporal_context(turn, *, budget=.3):
                         turn.context_id, turn.event_id, event.occurred_at - timedelta(seconds=BURST_SECONDS))
         except Exception as exc:  # optional grounding never blocks a reply
             logger.debug('Temporal grounding degraded: %s', type(exc).__name__)
-    return temporal_block(now, user_timezone=user_timezone, private=private, previous_contact=previous)
+    return temporal_block(now, user_timezone=user_timezone, private=private, previous_contact=previous,
+                          transcript=transcript, person_name=person_name)

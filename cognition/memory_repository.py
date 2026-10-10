@@ -24,6 +24,13 @@ from asyncpg import QueryCanceledError
 EMBEDDING_VERSION = 'arti-subword-192-v1'
 
 
+# Person-card bounds (H2, M1): a compact always-on view, not a second retrieval.
+CARD_BELIEFS = 8
+CARD_INTENTIONS = 5
+CARD_CONCERNS = 3
+CARD_EPISODES = 2
+
+
 def key(kind,*parts):
     return kind + ':' + hashlib.sha256(dump(list(parts)).encode()).hexdigest()[:40]
 
@@ -417,6 +424,102 @@ class MemoryRepository:
             _,value = await self._get(conn,cid,key('relationship',owner))
         return value or initial_relationship()
 
+    async def dialogue_floor(self,cid,history_after=0,limit=None):
+        """Oldest event id inside the recent dialogue window shown to the reply model."""
+        from cognition.prompting import DIALOGUE_TURN_LIMIT
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval('''SELECT min(id) FROM (SELECT id FROM cognitive_events
+                WHERE context_id=$1 AND suppressed_at IS NULL AND origin IN ('user','delivered_action') AND id>$2
+                ORDER BY occurred_at DESC,id DESC LIMIT $3) recent''',cid,history_after or 0,limit or DIALOGUE_TURN_LIMIT)
+
+    async def person_card(self,cid,owner,at,*,exclude_ids=(),dialogue_floor=None,budget=1.):
+        """Always-on view of this owner in this private context (H2, M1).
+
+        Built at read time from the same permitted projections as retrieval, so
+        suppression, rebuilds and epochs apply unchanged. Read-only: it neither
+        rehearses traces nor creates artifacts. Empty on timeout; never cross-owner.
+        """
+        try:
+            async with asyncio.timeout(budget):
+                return await self._person_card(cid,owner,utc(at),set(exclude_ids),dialogue_floor)
+        except (TimeoutError,QueryCanceledError):
+            return []
+
+    async def _person_card(self,cid,owner,at,exclude_ids,dialogue_floor):
+        from cognition.relationships import relationship_view
+        card = []
+        relationship = next(iter(await self.artifacts(cid,owner,'relationship',limit=1)),None)
+        if relationship and relationship['owner_id']==owner:
+            async with self.pool.acquire() as conn:
+                stats = await conn.fetchrow('''SELECT count(*) AS messages,min(occurred_at) AS first_contact,
+                    count(DISTINCT (occurred_at AT TIME ZONE 'UTC')::date) AS days FROM cognitive_events
+                    WHERE context_id=$1 AND owner_id=$2 AND origin='user' AND suppressed_at IS NULL''',cid,owner)
+            view = relationship_view(relationship['payload'],at)
+            messages,days,first = int(stats['messages'] or 0),int(stats['days'] or 0),stats['first_contact']
+            span = (at-first).days if first else 0
+            stage = 'new' if messages<30 or span<3 else 'familiar' if messages<300 and span<45 else 'close'
+            card.append(dict(card='acquaintance',artifact_id=relationship['id'],source_id=None,
+                first_contact=first.isoformat() if first else None,messages=messages,days=days,stage=stage,
+                warm=view['dimensions']['warmth']['value']>=.65,
+                preferences={k:v for k,v in view['preferences'].items() if isinstance(v,bool)}))
+        rank = {'explicit':0,'correction':0,'exception':1,'inferred':2}
+        beliefs = [r for r in await self.artifacts(cid,owner,'belief',limit=200)
+                   if r['payload'].get('status')=='current' and r['id'] not in exclude_ids]
+        beliefs.sort(key=lambda r:(rank.get(r['payload'].get('assertion'),3),-float(r['payload'].get('confidence') or 0),-r['id']))
+        for row in beliefs[:CARD_BELIEFS]:
+            p = row['payload']
+            card.append(dict(card='belief',artifact_id=row['id'],source_id=p.get('source_id'),
+                about='arti' if p.get('subject')=='arti' else 'person' if p.get('subject')==owner else 'other',
+                **{k:p[k] for k in ('subject','predicate','value','condition','assertion','confidence','status',
+                                    'valid_from','valid_until','observed_at','occurred_at') if k in p}))
+        def recent(value,days):
+            try:
+                moment = datetime.fromisoformat(value) if value else None
+            except ValueError:
+                return False
+            return moment is not None and moment.tzinfo is not None and at-moment<=timedelta(days=days)
+        def upcoming(value):
+            try:
+                moment = datetime.fromisoformat(value) if value else None
+            except ValueError:
+                return False
+            return moment is not None and moment.tzinfo is not None and moment>=at-timedelta(days=1)
+        intentions = [r for r in await self.artifacts(cid,owner,'intention',limit=64)
+                      if r['payload'].get('status') in ('open','reminder')
+                      and (upcoming(r['payload'].get('deadline')) or recent(r['payload'].get('updated_at'),30))]
+        intentions.sort(key=lambda r:(r['payload'].get('deadline') is None,r['payload'].get('deadline') or '',-r['id']))
+        for row in intentions[:CARD_INTENTIONS]:
+            p = row['payload']
+            card.append(dict(card='intention',artifact_id=row['id'],source_id=p.get('source_id'),
+                actor='arti' if p.get('actor_id')=='arti' else 'person',description=p.get('description',''),
+                status=p.get('status'),deadline=p.get('deadline'),created_at=p.get('created_at')))
+        concerns = [r for r in await self.artifacts(cid,owner,'concern',limit=32)
+                    if r['payload'].get('status')=='open' and recent(r['payload'].get('since'),14)]
+        for row in concerns[:CARD_CONCERNS]:
+            p = row['payload']
+            card.append(dict(card='concern',artifact_id=row['id'],source_id=p.get('source_id'),
+                topic=p.get('topic',''),kind=p.get('kind'),since=p.get('since')))
+        if dialogue_floor is not None:
+            episodes = [r for r in await self.artifacts(cid,owner,'episode',limit=8)
+                        if r['payload'].get('events') and max(r['payload']['events'])<dialogue_floor][:CARD_EPISODES]
+            wanted = {r['id'] for r in episodes}
+            traces = [t['payload'] for t in await self.artifacts(cid,owner,'trace',limit=400)
+                      if t['payload'].get('episode_id') in wanted] if wanted else []
+            def visible(payload):
+                # Respect forgetting: faded details stay masked, nothing is rehearsed.
+                return ' '.join(d['text'] for d in reconstruct(payload,at)['details'])
+            for episode in episodes:
+                own = sorted((p for p in traces if p.get('episode_id')==episode['id']),key=lambda p:p['observed_at'])
+                users = [p for p in own if p.get('author_id')!='arti']
+                answers = [p for p in own if p.get('author_id')=='arti']
+                card.append(dict(card='episode',artifact_id=episode['id'],source_id=None,
+                    started_at=episode['payload'].get('started_at'),last_at=episode['payload'].get('last_at'),
+                    messages=len(episode['payload']['events']),
+                    first=visible(users[0]) if users else '',
+                    last_user=visible(users[-1]) if len(users)>1 else '',
+                    last_arti=visible(answers[-1]) if answers else ''))
+        return card
+
     async def retrieve(self,cid,owner,query,at,cycle_key,*,mood=0.,archive=False,limit=8):
         try:
             async with asyncio.timeout(4.):
@@ -560,7 +663,8 @@ class MemoryRepository:
                     SELECT a.* FROM cognitive_artifacts a WHERE a.context_id=$1 AND a.id=ANY($2::bigint[])
                       AND a.owner_id IS NOT DISTINCT FROM $3 AND a.model_version=$4
                       AND a.projection_epoch=$5 AND a.suppressed_at IS NULL AND a.payload IS NOT NULL
-                      AND a.kind IN ('trace','belief','belief_version','archive_record')
+                      AND a.kind IN ('trace','belief','belief_version','archive_record',
+                                     'relationship','intention','concern','episode')
                 ), dependencies(artifact_id,event_id) AS (
                     SELECT a.id,p.source_event_id FROM selected a JOIN cognitive_provenance p
                       ON p.context_id=a.context_id AND p.artifact_id=a.id

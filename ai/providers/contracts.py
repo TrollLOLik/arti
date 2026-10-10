@@ -50,10 +50,15 @@ class GenerationRequest:
     maps: bool = False
     native_tools: bool = False
     structured_output: bool = False
+    # Recent private dialogue as native roles ((role, text), ...), oldest first.
+    history: tuple = ()
 
     def __post_init__(self):
         if len(self.images) > 8 or sum(len(i.data) for i in self.images) > 20 * 1024 * 1024:
             raise MaterialError('media_budget')
+        if any(not isinstance(turn, tuple) or len(turn) != 2 or turn[0] not in ('user', 'assistant')
+               or not isinstance(turn[1], str) for turn in self.history):
+            raise MaterialError('invalid_dialogue_history')
 
     @property
     def inputs(self):
@@ -68,7 +73,8 @@ class GenerationRequest:
             raise MaterialError('provider_video_adapter_unavailable')
         content = self.prompt if not self.images else [{'type': 'text', 'text': self.prompt}] + [
             {'type': 'image_url', 'image_url': {'url': i.url()}} for i in self.images]
-        return [{'role': 'system', 'content': self.system}, {'role': 'user', 'content': content}]
+        history = [{'role': role, 'content': text} for role, text in self.history]
+        return [{'role': 'system', 'content': self.system}, *history, {'role': 'user', 'content': content}]
 
     def gemini_parts(self):
         from google.genai import types
@@ -77,3 +83,23 @@ class GenerationRequest:
             parts.append(self.uploaded_video)
         parts.append(types.Part.from_text(text=self.prompt))
         return parts
+
+    def gemini_contents(self):
+        """Native-role contents for Gemini; without history the single-part form is unchanged."""
+        parts = self.gemini_parts()
+        if not self.history:
+            return parts
+        from google.genai import types
+        contents = []
+        for role, text in self.history:
+            role = 'model' if role == 'assistant' else 'user'
+            part = types.Part.from_text(text=text)
+            if contents and contents[-1].role == role:
+                contents[-1].parts.append(part)
+            else:
+                contents.append(types.Content(role=role, parts=[part]))
+        if contents and contents[-1].role == 'user':
+            contents[-1].parts.extend(parts)
+        else:
+            contents.append(types.Content(role='user', parts=parts))
+        return contents

@@ -52,6 +52,20 @@ async def _group_history(chat_id,mode):
     return None
 
 async def _source_messages(chat_id,mode,limit):
+    rows=await _source_rows(chat_id,mode,limit)
+    return [(r['occurred_at'],('Арти' if r['origin']=='delivered_action' else r['name'] or 'Участник '+str(r['owner_id']))+': '+r['text']) for r in rows]
+
+async def get_dialogue_turns(chat_id,mode='default',limit=None):
+    """Private dialogue as native roles (H2, P3); None for groups, which keep a transcript."""
+    from cognition.prompting import DialogueTurns,DIALOGUE_TURN_LIMIT
+    from cognition.scope import CURRENT_SCOPE
+    scope=CURRENT_SCOPE.get()
+    if chat_id is None or chat_id<0 or (scope and scope.group and scope.chat_id==chat_id):
+        return None
+    rows=await _source_rows(chat_id,mode,limit or DIALOGUE_TURN_LIMIT)
+    return DialogueTurns(tuple(('assistant' if r['origin']=='delivered_action' else 'user',r['text'] or '') for r in rows))
+
+async def _source_rows(chat_id,mode,limit):
     from cognition.runtime import get_runtime
     runtime=get_runtime()
     if runtime is None or runtime.mode=='legacy': return []
@@ -67,7 +81,7 @@ async def _source_messages(chat_id,mode,limit):
             AND NOT c.rebuilding AND e.id>c.history_after_event_id
             AND e.suppressed_at IS NULL AND e.origin IN ('user','delivered_action')
             ORDER BY e.occurred_at DESC,e.id DESC LIMIT $6""",*context.identity(),min(100,max(1,limit)))
-    return [(r['occurred_at'],('Арти' if r['origin']=='delivered_action' else r['name'] or 'Участник '+str(r['owner_id']))+': '+r['text']) for r in reversed(rows)]
+    return list(reversed(rows))
 
 async def _context(chat_id,mode,limit,dates):
     group=await _group_history(chat_id,mode)

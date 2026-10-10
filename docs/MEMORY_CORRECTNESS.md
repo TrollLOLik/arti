@@ -17,6 +17,8 @@ carry `belief_history` status/validity rather than being rewritten as current.
 
 Prompt assembly prioritizes relevant current beliefs, then whole recollection
 objects. The conservative unknown-tokenizer budget remains 4,000 UTF-8 bytes.
+(Superseded in H2: the prompt now shows memory as prose with a 9,000-byte budget
+counted on that prose; see ARTI_H2_PERSON_MEMORY.md.)
 Tests check the assembled final prompt, not only persistence or candidate recall.
 Retrieval does not create a belief or increment its evidential confidence.
 

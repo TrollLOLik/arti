@@ -454,7 +454,13 @@ class CognitiveRuntime:
         else:
             memories = await self.memory.retrieve(cid,owner,text,self.clock(),event.event_id,mood=affect(state)['mood_valence'])
             beliefs = await self.memory.beliefs_for_query(cid,owner,text,memories,limit=16)
-        memory,ids = memory_for_prompt(memories,beliefs)
+        card = []
+        if not public and event.context.mode=='default' and event.evidence.origin==Origin.USER:
+            # The person card is private, owner-scoped and absent in groups and scenes.
+            floor = await self.memory.dialogue_floor(cid,ctx['history_after_event_id'])
+            card = await self.memory.person_card(cid,owner,self.clock(),exclude_ids=[b['id'] for b in beliefs],
+                                                 dialogue_floor=floor)
+        memory,ids = memory_for_prompt(memories,beliefs,card=card,owner_id=None if public else owner,now=self.clock())
         # Inclusion is recorded later by the final prompt assembler.
         turn.memory = memory
         turn.retrieval_diagnostics = dict(getattr(memories,'diagnostics',{}))

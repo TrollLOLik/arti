@@ -20,7 +20,7 @@ class ModelEndpoint:
     def supports(self, request):
         age = datetime.now(timezone.utc) - self.observed_at if self.observed_at is not None else None
         fresh = age is None or -timedelta(minutes=5) <= age < timedelta(days=7)
-        return self.available and fresh and request.inputs <= self.inputs and request.features <= self.features and len(request.prompt) + len(request.system) <= self.max_input_chars
+        return self.available and fresh and request.inputs <= self.inputs and request.features <= self.features and len(request.prompt) + len(request.system) + sum(len(text) for _, text in getattr(request, 'history', ())) <= self.max_input_chars
 
 
 @dataclass(frozen=True)

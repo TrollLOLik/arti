@@ -124,8 +124,10 @@ class PromptBudgetTests(unittest.TestCase):
                              f'Реплика номер {i} — обычная фраза о делах, планах и выходных.' for i in range(20))
         final, report = assemble_prompt(system, 'Саша: Помнишь, как зовут мою собаку?', dialogue, memory,
                                         model='gemini', budget=prompt_budget_for(None))
-        for artifact_id in ids:
-            self.assertIn(f'"artifact_id": {artifact_id}', final)
+        # H2: memory reaches the model as prose; inclusion is reported by artifact id.
+        self.assertEqual(report['memory_artifact_ids'], ids)
+        self.assertEqual(final.count('собаку зовут Бублик'), len(ids))
+        self.assertNotIn('"artifact_id"', final)
         for i in range(20):
             self.assertIn(f'Реплика номер {i} —', final)
         self.assertLessEqual(report['input_tokens'], report['input_limit'])

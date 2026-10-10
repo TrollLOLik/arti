@@ -1,0 +1,30 @@
+{
+  "batch": "H2-person-memory",
+  "date": "2026-10-11",
+  "base_commit": "5ff5eab",
+  "model_version": "cognition-2026-09-30.4 (unchanged)",
+  "schema_changes": false,
+  "environment": {
+    "python": "3.12.14",
+    "postgresql": "16.4 disposable, localhost only, without pgvector",
+    "network": "test process proxied to a closed port; no provider or Telegram calls",
+    "working_database_mutated": false,
+    "credentials_used": false
+  },
+  "new_tests": {"module": "tests.cognition.test_person_card", "tests": 18, "passed": 18, "database_tests": 6},
+  "database_cognition_suite": {
+    "tests": 1052,
+    "failures": ["tests.cognition.test_native_agent_safety.NativeOrganizerSafetyTests.test_legacy_erasure_during_transport_fences_late_confirmation"],
+    "errors": 2,
+    "error_cause": "relation memory_chunks does not exist (created only with pgvector); same as before H1"
+  },
+  "non_database_full_discovery": {"tests": 1502, "failure_set_identical_to_h1": true},
+  "measurements": {
+    "card_example": "10 records: 2976 bytes as JSON, 2428 bytes as prose",
+    "memory_prompt_limit_bytes": 9000,
+    "card_limit_bytes": 3600,
+    "dialogue_turns": 30
+  },
+  "fixed_defect": "photo replies passed document_text to generate_response_stream, which rejected it (TypeError), present since before H1",
+  "limits": "Contract and data-path checks only; live reply quality was not measured."
+}

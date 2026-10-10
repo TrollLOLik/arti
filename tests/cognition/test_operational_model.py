@@ -257,14 +257,18 @@ class OperationalDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_literal_expression_is_separate_from_prompt_inclusion(self):
         turn = await self.runtime.prepare(10,1,'A memorable project title.',1)
-        artifact_ids = {json.loads(line)['artifact_id'] for line in turn.memory.splitlines()}
+        records = [json.loads(line) for line in turn.memory.splitlines()]
+        artifact_ids = {r['artifact_id'] for r in records}
+        # Person-card records (H2) are included context without literal wording.
+        literal_ids = {r['artifact_id'] for r in records if not r.get('card')}
+        self.assertTrue(artifact_ids-literal_ids)
         await self.runtime.mark_included(turn,artifact_ids)
         async def send(**kwargs):
             return SimpleNamespace(message_id=200,text=kwargs['text'])
         await send_with_receipt(send,(),dict(chat_id=10,text='A memorable project title.'),'message')
         async with self.pool.acquire() as conn:
             expressed = await conn.fetchval("SELECT artifact_ids FROM cognitive_retrievals WHERE stage='expressed'")
-        self.assertEqual(set(expressed),artifact_ids)
+        self.assertEqual(set(expressed),literal_ids)
 
     async def test_same_turn_cannot_send_fallback_after_ambiguous_transport(self):
         await self.runtime.prepare(10,1,'Input',1)
