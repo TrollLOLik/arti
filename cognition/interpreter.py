@@ -142,8 +142,13 @@ class OpenRouterInterpreter:
             content['eligible_intentions'] = list(intentions)[:16]
         if event.evidence.origin.value=='delivered_action':
             content['action_contract'] = ('This is Arti\'s confirmed delivered message. Extract only actual commitments, cancellations and fulfilled actions anchored in this text. '
-                'Set appraisals=[], beliefs=[], preferences={}, social_signal=contact, revisions=[]. Do not turn narration or a quoted promise into a commitment. '
-                'The commitment actor is arti; the target participant is the evidence owner.')
+                'Set appraisals=[], preferences={}, social_signal=contact, revisions=[]. Do not turn narration or a quoted promise into a commitment. '
+                'The commitment actor is arti; the target participant is the evidence owner. '
+                'beliefs may record only what Arti explicitly says about herself in this text: subject "arti", assertion explicit '
+                '(or correction when she says she changed her mind), value an exact substring of the cited span, predicate one of '
+                'likes, dislikes, prefers, opinion_<topic>, story_<topic>, running_joke_<topic> with a short English topic. '
+                'Never a belief about the person or anyone else, never from roleplay narration, quotes, hypotheticals, '
+                'a polite formula or a description of her capabilities; otherwise beliefs=[].')
         messages = [{'role':'system', 'content':SYSTEM_PROMPT + (SITUATION_PROMPT if rich else '')}, {'role':'user', 'content':json.dumps(content, ensure_ascii=False)}]
         expected = {'appraisals','situation'} if rich else {'appraisals'}
         model = await self.model_for(event)

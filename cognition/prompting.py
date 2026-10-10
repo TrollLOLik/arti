@@ -87,6 +87,7 @@ def prompt_budget_for(connection=None, *, cap=PROMPT_INPUT_CAP):
 # query-relevant recall of the current message.
 MEMORY_PROMPT_LIMIT = 9000
 CARD_PROMPT_LIMIT = 3600
+SELF_PROMPT_LIMIT = 900
 MEMORY_SECTION_LIMIT = 12000
 # Recent turns offered to the reply model; private chats get native roles.
 DIALOGUE_TURN_LIMIT = 30
@@ -230,8 +231,13 @@ def memory_for_prompt(recollections,beliefs,limit=MEMORY_PROMPT_LIMIT,model='',*
         blocks.append(json.dumps(block,ensure_ascii=False))
         ids.append(artifact_id)
 
+    # Card first; what Arti said about herself (H4b) follows under its own small share.
     for item in card:
-        append(dict(item,section='card'),item['artifact_id'],min(limit,CARD_PROMPT_LIMIT))
+        if item.get('section','card')=='card':
+            append(dict(item,section='card'),item['artifact_id'],min(limit,CARD_PROMPT_LIMIT))
+    for item in card:
+        if item.get('section')=='self':
+            append(item,item['artifact_id'],min(limit,CARD_PROMPT_LIMIT+SELF_PROMPT_LIMIT))
     recall = {'section':'recall'} if blocks else {}
     # Current query-relevant claims take precedence over their older utterances
     # under a tight budget. History is retained as history, not silently rewritten.

@@ -29,6 +29,21 @@ CARD_BELIEFS = 8
 CARD_INTENTIONS = 5
 CARD_CONCERNS = 3
 CARD_EPISODES = 2
+# H4b: what Arti said about herself (P5) and her tentative reflections (M3).
+CARD_SELF = 5
+CARD_REFLECTIONS = 3
+REFLECTION_MAX_AGE_DAYS = 60
+
+
+def self_kind(predicate):
+    """Coarse type of a self-statement, from the predicate the interpreter chose."""
+    name = str(predicate or '').casefold()
+    if name in ('likes','dislikes','prefers') or name.startswith('favorite'):
+        return 'preference'
+    for prefix in ('opinion','story','running_joke'):
+        if name.startswith(prefix):
+            return prefix
+    return 'statement'
 
 
 def key(kind,*parts):
@@ -155,6 +170,7 @@ class MemoryRepository:
                 await self._intentions(conn,cid,eid,event,s)
             elif event.evidence.origin==Origin.DELIVERED_ACTION:
                 await self._intentions(conn,cid,eid,event,s)
+                await self._learn_self(conn,cid,eid,event,s)
             period_key = key('autobiography',owner,event.observed_at.strftime('%Y-%m'))
             ar,period = await self._get(conn,cid,period_key)
             period = period or dict(period=event.observed_at.strftime('%Y-%m'),projects={},episode_ids=[],delivered_actions=[],rituals={})
@@ -201,6 +217,37 @@ class MemoryRepository:
                 value['confidence'] = max(old['confidence'],confidence)
                 value['valid_from'] = old['valid_from']
             await self._put(conn,cid,'belief',identity,value,event.evidence.owner_id,[eid],([oldrow['id']] if oldrow and not changed else []))
+
+    async def _learn_self(self,conn,cid,eid,event,s):
+        """H4b (P5): what Arti explicitly said about herself in a delivered reply.
+
+        Kept per person and per private context, separately from what the
+        person claims about her. A changed statement keeps the earlier one as a
+        version with its own source, so she can own the change of mind.
+        """
+        if (s.modality in ('quoted','hypothetical') or event.context.mode!='default'
+                or event.audience.kind in ('group','topic') or event.context.chat_id<0):
+            return
+        for proposal in s.beliefs:
+            if proposal['subject']!='arti' or proposal['assertion'] not in ('explicit','correction'):
+                continue
+            identity = key('self_belief',event.evidence.owner_id,proposal['predicate'],proposal['condition'])
+            oldrow,old = await self._get(conn,cid,identity)
+            changed = old is not None and old['value']!=proposal['value']
+            if changed:
+                await self._put(conn,cid,'self_belief_version',key('self_belief_version',oldrow['id'],oldrow['revision']),
+                                {**old,'status':'superseded','superseded_at':event.observed_at.isoformat(),
+                                 'superseded_by':event.evidence.source_id},event.evidence.owner_id,[],[oldrow['id']])
+            repeated = old is not None and not changed
+            value = dict(subject='arti',predicate=proposal['predicate'],value=proposal['value'],
+                         condition=proposal['condition'],kind=self_kind(proposal['predicate']),
+                         assertion=proposal['assertion'],source_id=event.evidence.source_id,
+                         source_span=asdict(s.spans[proposal['span']]),status='current',
+                         said_at=event.observed_at.isoformat(),
+                         first_said_at=old['first_said_at'] if repeated else event.observed_at.isoformat(),
+                         times=old.get('times',1)+1 if repeated else 1,
+                         version=(old.get('version',1)+int(changed)) if old else 1)
+            await self._put(conn,cid,'self_belief',identity,value,event.evidence.owner_id,[eid],([oldrow['id']] if repeated else []))
 
     async def _intentions(self,conn,cid,eid,event,s):
         if s.modality in ('quoted','hypothetical'):
@@ -432,7 +479,7 @@ class MemoryRepository:
                 WHERE context_id=$1 AND suppressed_at IS NULL AND origin IN ('user','delivered_action') AND id>$2
                 ORDER BY occurred_at DESC,id DESC LIMIT $3) recent''',cid,history_after or 0,limit or DIALOGUE_TURN_LIMIT)
 
-    async def person_card(self,cid,owner,at,*,exclude_ids=(),dialogue_floor=None,budget=1.):
+    async def person_card(self,cid,owner,at,*,exclude_ids=(),dialogue_floor=None,budget=1.,query=''):
         """Always-on view of this owner in this private context (H2, M1).
 
         Built at read time from the same permitted projections as retrieval, so
@@ -441,11 +488,11 @@ class MemoryRepository:
         """
         try:
             async with asyncio.timeout(budget):
-                return await self._person_card(cid,owner,utc(at),set(exclude_ids),dialogue_floor)
+                return await self._person_card(cid,owner,utc(at),set(exclude_ids),dialogue_floor,query)
         except (TimeoutError,QueryCanceledError):
             return []
 
-    async def _person_card(self,cid,owner,at,exclude_ids,dialogue_floor):
+    async def _person_card(self,cid,owner,at,exclude_ids,dialogue_floor,query=''):
         from cognition.relationships import relationship_view
         card = []
         relationship = next(iter(await self.artifacts(cid,owner,'relationship',limit=1)),None)
@@ -485,6 +532,13 @@ class MemoryRepository:
             except ValueError:
                 return False
             return moment is not None and moment.tzinfo is not None and moment>=at-timedelta(days=1)
+        # H4b (M3): tentative patterns from reflection, never presented as facts.
+        reflections = [r for r in await self.artifacts(cid,owner,'reflection',limit=16)
+                       if r['payload'].get('status')=='hypothesis' and recent(r['payload'].get('created_at'),REFLECTION_MAX_AGE_DAYS)]
+        for row in reflections[:CARD_REFLECTIONS]:
+            p = row['payload']
+            card.append(dict(card='reflection',artifact_id=row['id'],source_id=None,text=p.get('text',''),
+                about=p.get('about'),confidence=p.get('confidence'),created_at=p.get('created_at')))
         intentions = [r for r in await self.artifacts(cid,owner,'intention',limit=64)
                       if r['payload'].get('status') in ('open','reminder')
                       and (upcoming(r['payload'].get('deadline')) or recent(r['payload'].get('updated_at'),30))]
@@ -519,7 +573,38 @@ class MemoryRepository:
                     first=visible(users[0]) if users else '',
                     last_user=visible(users[-1]) if len(users)>1 else '',
                     last_arti=visible(answers[-1]) if answers else ''))
+        card.extend(await self._self_view(cid,owner,query))
         return card
+
+    async def _self_view(self,cid,owner,query):
+        """H4b (P5): what she already said about herself, relevant first, then recent."""
+        statements = [r for r in await self.artifacts(cid,owner,'self_belief',limit=200)
+                      if r['payload'].get('status')=='current']
+        if not statements:
+            return []
+        words = tokens(query or '')
+        def overlap(row):
+            p = row['payload']
+            return len(words & tokens(' '.join(str(p.get(k) or '') for k in ('predicate','value','condition')).replace('_',' ')))
+        relevant = sorted((r for r in statements if overlap(r)),key=lambda r:(-overlap(r),-r['id']))
+        rest = [r for r in statements if r not in relevant]
+        chosen = (relevant[:CARD_SELF] + rest[:max(0,3-len(relevant))])[:CARD_SELF]
+        versions = {}
+        for row in await self.artifacts(cid,owner,'self_belief_version',limit=200):
+            p = row['payload']
+            versions.setdefault((p.get('predicate'),p.get('condition')),row)
+        view = []
+        for row in chosen:
+            p = row['payload']
+            view.append(dict(card='self',section='self',artifact_id=row['id'],source_id=p.get('source_id'),
+                **{k:p.get(k) for k in ('predicate','value','condition','kind','said_at','first_said_at','times','assertion')}))
+            earlier = versions.get((p.get('predicate'),p.get('condition')))
+            if earlier:
+                e = earlier['payload']
+                view.append(dict(card='self_previous',section='self',artifact_id=earlier['id'],source_id=e.get('source_id'),
+                    predicate=e.get('predicate'),value=e.get('value'),said_at=e.get('said_at'),
+                    superseded_at=e.get('superseded_at')))
+        return view
 
     async def retrieve(self,cid,owner,query,at,cycle_key,*,mood=0.,archive=False,limit=8):
         try:
@@ -665,7 +750,8 @@ class MemoryRepository:
                       AND a.owner_id IS NOT DISTINCT FROM $3 AND a.model_version=$4
                       AND a.projection_epoch=$5 AND a.suppressed_at IS NULL AND a.payload IS NOT NULL
                       AND a.kind IN ('trace','belief','belief_version','archive_record',
-                                     'relationship','intention','concern','episode')
+                                     'relationship','intention','concern','episode',
+                                     'self_belief','self_belief_version','reflection')
                 ), dependencies(artifact_id,event_id) AS (
                     SELECT a.id,p.source_event_id FROM selected a JOIN cognitive_provenance p
                       ON p.context_id=a.context_id AND p.artifact_id=a.id

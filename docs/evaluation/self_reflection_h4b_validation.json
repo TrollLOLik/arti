@@ -1,0 +1,32 @@
+{
+  "batch": "H4b-self-and-reflection",
+  "date": "2026-10-11",
+  "base_commit": "df1b9fc",
+  "model_version": "cognition-2026-09-30.4 (unchanged)",
+  "temperament_version": "arti-temperament-2 (unchanged)",
+  "schema_changes": false,
+  "new_artifact_kinds": ["self_belief", "self_belief_version", "reflection", "reflection_run"],
+  "environment": {
+    "python": "3.12.14",
+    "postgresql": "16.4 disposable, localhost only, without pgvector",
+    "network": "test process proxied to a closed port; reflection model replaced by a fake transport",
+    "working_database_mutated": false,
+    "credentials_used": false
+  },
+  "new_tests": {"module": "tests.cognition.test_self_and_reflection", "tests": 13, "passed": 13, "database_tests": 6},
+  "database_cognition_suite": {
+    "tests": 1140,
+    "failures": ["tests.cognition.test_native_agent_safety.NativeOrganizerSafetyTests.test_legacy_erasure_during_transport_fences_late_confirmation"],
+    "errors": 2,
+    "error_cause": "relation memory_chunks does not exist (created only with pgvector); same as before H1"
+  },
+  "non_database_full_discovery": {"tests": 1590, "failure_set_identical_to_h4a": true},
+  "parameters": {
+    "self_view": {"max_records": 5, "min_records_when_available": 3, "extra_budget": 900, "scope": "per person, private default context"},
+    "reflection": {"min_new_messages": 8, "quiet_minutes": 30, "interval_hours": 12, "window_traces": 40, "max_hypotheses": 3,
+                   "min_cited_observations": 2, "confidence_cap": 0.65, "card_max": 3, "card_max_age_days": 60,
+                   "tick_seconds": 600, "owners_per_tick": 5, "provider_failure_backoff_hours": 1,
+                   "max_output_tokens": 2048, "disable": "ARTI_REFLECTION_ENABLED=0"}
+  },
+  "limits": "Contract and data-path checks with a fake model; live extraction quality of self-statements and of reflection hypotheses was not measured."
+}

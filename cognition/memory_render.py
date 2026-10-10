@@ -15,6 +15,8 @@ MONTHS_IN = ('январе', 'феврале', 'марте', 'апреле', 'м
 
 SECTION_TITLES = {
     'card': 'Кто это для тебя — постоянная карточка собеседника:',
+    'self': ('Что ты уже говорила о себе этому собеседнику — держись сказанного; если передумала, '
+             'скажи об этом прямо, а не делай вид, что всегда так считала:'),
     'recall': 'Всплыло в памяти по теме текущего сообщения:',
 }
 
@@ -259,8 +261,64 @@ def _episode_line(record, now):
     return ' · '.join(parts) + ' (дословные обрывки, не полный протокол)'
 
 
+SELF_LABEL = {'likes': 'тебе нравится', 'dislikes': 'тебе не нравится', 'prefers': 'ты предпочитаешь'}
+SELF_KIND = {'opinion': 'твоё мнение', 'story': 'ты рассказывала о себе', 'running_joke': 'ваша общая шутка'}
+
+
+def _self_subject(record):
+    predicate = str(record.get('predicate') or '')
+    if predicate in SELF_LABEL:
+        return SELF_LABEL[predicate]
+    for prefix, label in SELF_KIND.items():
+        if predicate.startswith(prefix):
+            # The topic key is a stable English identifier; the quoted value names it.
+            return label
+    return _label(predicate) or 'о себе'
+
+
+def _self_line(record, now):
+    text = f'{_self_subject(record).capitalize()}: {_quote(record.get("value"), 160)}'
+    if record.get('condition'):
+        text += f' (при условии: {_label(record["condition"])})'
+    said = _parse(record.get('said_at'))
+    first = _parse(record.get('first_said_at'))
+    if first and said and first.date() != said.date():
+        text += f' · говорила {_dated(first, now)} и снова {_dated(said, now)}'
+    elif said:
+        text += f' · говорила {_dated(said, now)}'
+    times = record.get('times')
+    if isinstance(times, int) and times > 2:
+        text += f' · уже {times} {plural(times, "раз", "раза", "раз")}'
+    return text
+
+
+def _self_previous_line(record, now):
+    text = f'Раньше ты говорила иначе: {_quote(record.get("value"), 160)}'
+    changed = _parse(record.get('superseded_at'))
+    if changed:
+        text += f' · передумала {_dated(changed, now)}'
+    return text
+
+
+def _reflection_line(record, now):
+    about = 'о ваших разговорах' if record.get('about') == 'relationship' else 'о собеседнике'
+    text = f'Твоя догадка {about} (не факт, прямо не сказано): {_quote(record.get("text"), 240)}'
+    if confidence(record.get('confidence')):
+        text += ' · ' + confidence(record.get('confidence'))
+    created = _parse(record.get('created_at'))
+    if created:
+        text += f' · вывод {_dated(created, now)}'
+    return text + ' · не выдавай за факт; можно осторожно учитывать'
+
+
 def render_card(record, now=None):
     kind = record.get('card')
+    if kind == 'self':
+        return _self_line(record, now)
+    if kind == 'self_previous':
+        return _self_previous_line(record, now)
+    if kind == 'reflection':
+        return _reflection_line(record, now)
     if kind == 'acquaintance':
         return _stage_line(record, now)
     if kind == 'belief':

@@ -316,7 +316,9 @@ class CognitiveRuntime:
                     p=replace(p,appraisals=())
                 if event.evidence.origin==Origin.DELIVERED_ACTION:
                     if p.situation:
-                        p = replace(p,appraisals=(),situation=replace(p.situation,beliefs=(),preferences={},social_signal='contact',revisions=()))
+                        # H4b (P5): only what Arti explicitly said about herself survives.
+                        own = tuple(b for b in p.situation.beliefs if b['subject']=='arti' and b['assertion'] in ('explicit','correction'))
+                        p = replace(p,appraisals=(),situation=replace(p.situation,beliefs=own,preferences={},social_signal='contact',revisions=()))
                     else:
                         p = replace(p,appraisals=())
                 # The dependency epoch is checked by the state commit. Store the
@@ -459,7 +461,7 @@ class CognitiveRuntime:
             # The person card is private, owner-scoped and absent in groups and scenes.
             floor = await self.memory.dialogue_floor(cid,ctx['history_after_event_id'])
             card = await self.memory.person_card(cid,owner,self.clock(),exclude_ids=[b['id'] for b in beliefs],
-                                                 dialogue_floor=floor)
+                                                 dialogue_floor=floor,query=text)
         memory,ids = memory_for_prompt(memories,beliefs,card=card,owner_id=None if public else owner,now=self.clock())
         # Inclusion is recorded later by the final prompt assembler.
         turn.memory = memory

@@ -172,6 +172,9 @@ def run_with_restart():
                 spawn_worker(run_supervised(intention_scheduler,'cognitive_intentions',get_runtime(),app.bot))
                 from cognition.proactivity import group_scheduler
                 spawn_worker(run_supervised(group_scheduler,'group_proactivity',get_runtime(),app.bot))
+                # H4b (M3): tentative patterns after a conversation pauses; ARTI_REFLECTION_ENABLED=0 turns it off.
+                from cognition.reflection import reflection_scheduler
+                spawn_worker(run_supervised(reflection_scheduler,'cognitive_reflection',get_runtime()))
                 from materials.runtime import maintenance_worker
                 spawn_worker(run_supervised(maintenance_worker,'materials_maintenance'))
                 from agents.runtime import agent_worker,processing_card_worker
