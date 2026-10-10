@@ -140,8 +140,8 @@ class DominantEmotionTests(unittest.TestCase):
 
 class EmotionVoiceTests(unittest.TestCase):
     def test_every_emotion_has_a_russian_manner_line(self):
-        self.assertIn('indignation', EMOTION_VOICE)
-        self.assertEqual(len(EMOTION_VOICE), 12)
+        from cognition.affect import EMOTIONS
+        self.assertEqual(set(EMOTION_VOICE), set(EMOTIONS) | {'indignation'})
         for line in EMOTION_VOICE.values():
             self.assertRegex(line, '[а-яА-Я]')
             self.assertNotRegex(line, '[A-Za-z]')

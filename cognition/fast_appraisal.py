@@ -37,7 +37,7 @@ RULES = (
                 r'у меня получилось|выиграл(а|и)?|победил(а|и)?|ура+)\b', 'success', 'contact', 'joy', False),
     ('care', r'\b(спасибо|благодарю|ты лучшая|ты чудо|обожаю тебя|люблю тебя|ты милая|ты умница|скучал(а)? по тебе)\b',
      'neutral', 'care', 'gratitude', False),
-    ('amusement', r'(ахах\w*|хаха\w*|\bлол\b|😂|🤣|😆|\bржу\b|\bсмешно\b)', 'neutral', 'contact', 'joy', False),
+    ('amusement', r'(ахах\w*|хаха\w*|\bлол\b|😂|🤣|😆|\bржу\b|\bсмешно\b)', 'neutral', 'contact', 'amusement', False),
 )
 _COMPILED = tuple((label, re.compile(pattern), kind, social, emotion, anchor)
                   for label, pattern, kind, social, emotion, anchor in RULES)

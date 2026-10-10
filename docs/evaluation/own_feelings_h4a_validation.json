@@ -1,0 +1,41 @@
+{
+  "batch": "H4a-own-feelings",
+  "date": "2026-10-11",
+  "base_commit": "4cc3bb8",
+  "model_version": "cognition-2026-09-30.4 (unchanged)",
+  "temperament_version": {"current": "arti-temperament-2", "previous": "arti-temperament-1", "upgrade": "explicit on load; causes, episodes, mood and goals kept"},
+  "perception_version": "appraisal-2026-09-30.1 (unchanged; optional humor field added)",
+  "schema_changes": false,
+  "environment": {
+    "python": "3.12.14",
+    "postgresql": "16.4 disposable, localhost only, without pgvector",
+    "network": "test process proxied to a closed port; no provider or Telegram calls",
+    "working_database_mutated": false,
+    "credentials_used": false
+  },
+  "new_tests": {"module": "tests.cognition.test_own_life", "tests": 26, "passed": 26, "database_tests": 3},
+  "updated_contracts": [
+    "tests.cognition.test_recorded_scenarios: historical live reports replay under TEMPERAMENT_V1 (exact to 12 places)",
+    "tests.cognition.test_humanlike_feelings: voice lines cover every emotion instead of exactly 12"
+  ],
+  "database_cognition_suite": {
+    "tests": 1127,
+    "failures": ["tests.cognition.test_native_agent_safety.NativeOrganizerSafetyTests.test_legacy_erasure_during_transport_fences_late_confirmation"],
+    "errors": 2,
+    "error_cause": "relation memory_chunks does not exist (created only with pgvector); same as before H1"
+  },
+  "non_database_full_discovery": {"tests": 1577, "failure_set_identical_to_h3": true},
+  "measurements_synthetic_appraisals": {
+    "interesting_idea_on_ordinary_message": {"interest": 0.153, "surprise": 0.086, "joy": 0.057, "dominant": "interest", "own_goal_budget": 0.3},
+    "friendly_joke": {"amusement": 0.059, "joy": 0.037, "dominant": "amusement"},
+    "mockery_with_humor_0_9": {"amusement": 0.0},
+    "user_success": {"v2": {"joy": 0.415, "admiration": 0.187}, "v1": {"joy": 0.415, "gratitude": 0.037}},
+    "mood_valence_after_bereavement_hours_0_1_3_6_12_24": {"v1": [0.08, 0.067, 0.054, 0.049, 0.048, 0.048], "v2": [0.08, 0.013, -0.031, -0.022, 0.018, 0.044]},
+    "mood_valence_after_insult_hours_0_1_3_6_12_24": {"v1": [0.08, 0.074, 0.074, 0.076, 0.079, 0.08], "v2": [0.08, 0.035, 0.035, 0.051, 0.069, 0.079]},
+    "rupture_after_insult_by_day_0_to_6": [0.6, 0.43, 0.308, 0.221, 0.158, 0.113, 0.081],
+    "rupture_visible_threshold": 0.1,
+    "rupture_warmth_penalty": "0.1 + 0.1 * severity"
+  },
+  "rollback": "python -m tools.cognition_admin temperament-rollback --apply (bot stopped) before running pre-H4a code",
+  "limits": "Synthetic appraisals and contract checks only; the changed interpreter prompt (own goals, humor) was not evaluated on a live model."
+}

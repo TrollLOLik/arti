@@ -157,7 +157,13 @@ def calibrated_appraisals(perception):
             # is evidence for empathy, not proof the character made that mistake.
             a = replace(a,agency_self=0.,social_exposure=0.)
         if s.kind in ('neutral','request','clarification') and s.outcome!='confirmed':
-            a = replace(a,relevance=min(a.relevance,.2),novelty=min(a.novelty,.15))
+            # An ordinary message rarely matters to the user's goals, but an idea
+            # may still interest the character herself (H4a, E3).
+            from cognition.types import OWN_GOALS
+            if a.goal_id in OWN_GOALS:
+                a = replace(a,relevance=min(a.relevance,.6))
+            else:
+                a = replace(a,relevance=min(a.relevance,.2),novelty=min(a.novelty,.15))
         if s.social_signal=='apology':
             # An admission refers to the earlier cause; it is not a fresh insult.
             a = replace(a,norm_violation=0.,intentionality=min(a.intentionality,.1),future_threat=0.)

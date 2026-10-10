@@ -4,6 +4,40 @@ from datetime import datetime
 
 DIMENSIONS = ('familiarity','warmth','reliability','benevolence','predictability','openness')
 
+# H4a (E6): a relational trace of an explicit insult or breach. An emotion
+# episode fades in minutes; a rupture stays until an apology or care repairs it,
+# or fades over days. It is bounded and never accumulates into a grudge.
+RUPTURE_SEVERITY = {'insult':.6,'breach':.35}
+RUPTURE_TAU_SECONDS = 3*86400
+RUPTURE_CLOSED = .1
+
+
+def _rupture_transition(result, event, situation):
+    signal = situation.social_signal
+    at = event.observed_at
+    current = result.get('rupture')
+    effective = rupture_severity(current,at) if current else 0.
+    if signal in RUPTURE_SEVERITY and situation.intention_evidence == 'explicit':
+        severity = min(1.,max(effective+.3,RUPTURE_SEVERITY[signal]) if effective >= RUPTURE_CLOSED else RUPTURE_SEVERITY[signal])
+        result['rupture'] = dict(status='open',severity=severity,at=at.isoformat(),
+                                 opened_at=(current['opened_at'] if effective >= RUPTURE_CLOSED else at.isoformat()),
+                                 cause=signal,group=event.evidence.independent_group)
+    elif current and current['status']=='open' and effective >= RUPTURE_CLOSED:
+        if signal == 'apology':
+            result['rupture'] = {**current,'status':'repaired','severity':0.,'at':at.isoformat(),'repaired_by':'apology'}
+        elif signal == 'care':
+            severity = effective / 2
+            result['rupture'] = ({**current,'severity':severity,'at':at.isoformat()} if severity >= RUPTURE_CLOSED
+                                 else {**current,'status':'repaired','severity':0.,'at':at.isoformat(),'repaired_by':'care'})
+
+
+def rupture_severity(rupture, at):
+    """Effective severity now: exponential fading from the last change."""
+    if not rupture or rupture.get('status')!='open':
+        return 0.
+    age = max(0.,(at-datetime.fromisoformat(rupture['at'])).total_seconds())
+    return rupture['severity']*math.exp(-age/RUPTURE_TAU_SECONDS)
+
 
 def initial_relationship():
     return dict(dimensions={k:dict(alpha=1.,beta=1.) for k in DIMENSIONS},
@@ -33,6 +67,7 @@ def relationship_transition(previous, event, situation):
         }.get(signal,{}))
         if situation.intention_evidence != 'explicit' and signal == 'insult':
             changes = {'familiarity':changes['familiarity']}
+        _rupture_transition(result,event,situation)
     for name,(positive,negative) in changes.items():
         d = result['dimensions'][name]
         # Preserve mean while limiting effective evidence strength per dimension.
@@ -70,4 +105,8 @@ def relationship_view(model, at):
         view[name] = dict(value=d['alpha']/mass,
                           confidence=(1 - 2 / mass) * math.exp(-age/(180*86400)))
     # Silence lowers currency, never adds a negative observation.
-    return dict(dimensions=view,preferences=model['preferences'],associations=model['associations'])
+    rupture = model.get('rupture')
+    severity = rupture_severity(rupture,at)
+    open_rupture = (dict(severity=severity,days=max(0.,(at-datetime.fromisoformat(rupture['opened_at'])).total_seconds())/86400,
+                         cause=rupture['cause']) if severity >= RUPTURE_CLOSED else None)
+    return dict(dimensions=view,preferences=model['preferences'],associations=model['associations'],rupture=open_rupture)

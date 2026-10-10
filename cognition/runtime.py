@@ -522,10 +522,23 @@ class CognitiveRuntime:
             view = relationship_view(relationship,self.clock())
             from cognition.types import relationship_stage,LIGHT_HUMOUR_THRESHOLD
             stage = relationship_stage(view['dimensions']['familiarity']['value'])
+            dims = view['dimensions']
+            # H4a (E6): the manner follows the whole relationship, not warmth alone.
+            # Goodwill counts only as far as its evidence is current and sufficient.
+            goodwill = (dims['benevolence']['value']-.5)*dims['benevolence']['confidence']
+            rupture = view.get('rupture')
             def personal(plan):
-                return replace(plan,warmth=min(1.,max(0.,plan.warmth+.2*(view['dimensions']['warmth']['value']-.5)+implicit)),
-                               disclosure=min(.35,plan.disclosure*view['dimensions']['openness']['value']*2),
-                               directness=min(1.,max(0.,plan.directness-implicit/2)),stage=stage)
+                warmth = plan.warmth+.2*(dims['warmth']['value']-.5)+.15*goodwill+implicit
+                playfulness = plan.playfulness
+                if rupture:
+                    # An open rupture cools the manner and removes play until repaired.
+                    warmth -= .1+.1*min(1.,rupture['severity'])
+                    playfulness = 0.
+                return replace(plan,warmth=min(1.,max(0.,warmth)),playfulness=playfulness,
+                               disclosure=min(.35,plan.disclosure*dims['openness']['value']*2),
+                               directness=min(1.,max(0.,plan.directness-implicit/2)),stage=stage,
+                               rupture=min(1.,rupture['severity']) if rupture else 0.,
+                               rupture_days=min(3650.,rupture['days']) if rupture else 0.)
             plan = personal(plan)
             situation = p.situation
             fast = None
@@ -537,11 +550,13 @@ class CognitiveRuntime:
                 if fast is not None:
                     situation = fast.situation()
                     decision,plan = regulate(state,situation,preferences,turn.task_serious)
-                    plan = replace(personal(plan),sticker_mood=None,disclosure=0.,cause_ids=(),uncertain_intent=False,
+                    first = personal(plan)
+                    plan = replace(first,sticker_mood=None,disclosure=0.,cause_ids=(),uncertain_intent=False,
                         mixed_affect=False,provisional=True,dominant=fast.emotion,
                         dominant_intensity=fast.intensity if fast.emotion else 0.,
-                        tone='dry and precise' if fast.emotion=='anger' else plan.tone,
-                        playfulness=max(plan.playfulness,LIGHT_HUMOUR_THRESHOLD+.05) if fast.label=='amusement' else plan.playfulness)
+                        tone='dry and precise' if fast.emotion=='anger' else first.tone,
+                        playfulness=max(first.playfulness,LIGHT_HUMOUR_THRESHOLD+.05)
+                            if fast.label=='amusement' and not first.rupture else first.playfulness)
                 else:
                     # An old uncertain episode must not leak a clarification demand
                     # into the neutral fallback for an unassessed current message.

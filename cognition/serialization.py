@@ -31,8 +31,17 @@ def load_event(value) -> CognitiveEvent:
                           AudienceScope(**data.get('audience',{})),data.get('addressed_to_arti',True),data.get('reply_to_id'))
 
 
+def upgrade_state(data):
+    """Explicit temperament upgrade (H4a): stored causes, mood and goals are kept;
+    the new dynamics apply to events from now on. Unknown versions still fail."""
+    from cognition.types import TEMPERAMENT_VERSION, UPGRADABLE_TEMPERAMENTS
+    if data.get('temperament_version') in UPGRADABLE_TEMPERAMENTS:
+        data = {**data, 'temperament_version': TEMPERAMENT_VERSION}
+    return data
+
+
 def load_state(value) -> CognitiveState:
-    data = object_value(value)
+    data = upgrade_state(dict(object_value(value)))
     data['context'] = ContextKey(**data['context'])
     data['last_at'] = datetime.fromisoformat(data['last_at'])
     data['episodes'] = tuple(EmotionEpisode(**{**ep, 'created_at': datetime.fromisoformat(ep['created_at'])}) for ep in data['episodes'])

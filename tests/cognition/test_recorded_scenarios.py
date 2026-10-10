@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from cognition.affect import affect, appraise, expression, initial_state
-from cognition.types import CognitiveEvent, ContextKey, EvidenceRef, Origin, Perception
+from cognition.types import CognitiveEvent, ContextKey, EvidenceRef, Origin, Perception, TEMPERAMENT_V1
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -22,11 +22,12 @@ class RecordedScenarioTests(unittest.TestCase):
                 with self.subTest(split=split,case=case['id']):
                     p = Perception.from_dict(json.loads((ROOT/'tests/fixtures/perceptions'/split/'uncertainty_v2'/f"{case['id']}.json").read_text(encoding='utf-8')))
                     ev = CognitiveEvent(case['id'],ContextKey('arti',10),EvidenceRef(case['id'],case['id'],Origin.USER,1),at,at,case['text'],1)
-                    state = appraise(initial_state(ev.context,at),ev,p)
+                    # Historical evidence replays under the dynamics that produced it (H4a).
+                    state = appraise(initial_state(ev.context,at,TEMPERAMENT_V1),ev,p,temperament=TEMPERAMENT_V1)
                     # Historical reports cover the four original affect axes.
                     # New resource/circadian observables have separate scenarios.
                     for key,value in results[case['id']]['affect'].items():
-                        self.assertAlmostEqual(value,affect(state)[key],places=12)
+                        self.assertAlmostEqual(value,affect(state,TEMPERAMENT_V1)[key],places=12)
                     # Expression policy intentionally evolved; old live reports
                     # remain evidence of the old version, never relabeled success.
                     plan=expression(state)
@@ -55,7 +56,7 @@ class RecordedScenarioTests(unittest.TestCase):
                 source = 'synthetic:'+name
                 ev = CognitiveEvent(source,ContextKey('arti',1),EvidenceRef(source,source,Origin.USER,1),at,at,text,1)
                 p = Perception.from_dict(json.loads((ROOT/'tests/fixtures/full_perceptions/frozen_final_v4/final_held_out'/f'{name}.json').read_text(encoding='utf-8')))
-                state = appraise(initial_state(ev.context,at),ev,p)
+                state = appraise(initial_state(ev.context,at,TEMPERAMENT_V1),ev,p,temperament=TEMPERAMENT_V1)
                 self.assertAlmostEqual(sum(e.intensity for e in state.episodes),rows[name]['impulse'],places=12)
                 plan=expression(state)
                 self.assertEqual(plan.behaviors,('listen',))

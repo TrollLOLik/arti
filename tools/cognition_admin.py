@@ -109,6 +109,9 @@ async def run(args):
             finally:
                 await runtime.close()
             return dict(context_id=cid,authority=args.value,transport_calls=0)
+        if args.command=='temperament-rollback':
+            from cognition.temperament_rollback import prepare_rollback
+            return await prepare_rollback(pool,apply=args.apply)
         if args.command=='cancel-unknown':
             async with pool.acquire() as conn:
                 count = await conn.execute("UPDATE cognitive_outbox SET status='cancelled',payload=NULL,updated_at=NOW() WHERE id=$1 AND status='delivery_unknown'",args.outbox_id)
@@ -134,6 +137,8 @@ if __name__=='__main__':
     authority.add_argument('--scene-id',default='')
     authority.add_argument('--topic-id',type=int,default=-1)
     authority.add_argument('--value',choices=('active',),required=True)
+    rollback = sub.add_parser('temperament-rollback',help='prepare stored cognition for pre-H4a code')
+    rollback.add_argument('--apply',action='store_true')
     reconcile = sub.add_parser('cancel-unknown')
     reconcile.add_argument('--outbox-id',type=int,required=True)
     print(json.dumps(asyncio.run(run(parser.parse_args())),ensure_ascii=True))

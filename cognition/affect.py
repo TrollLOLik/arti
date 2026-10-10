@@ -9,7 +9,7 @@ from datetime import datetime
 
 from cognition.types import (CognitiveEvent, CognitiveState, DEFAULT_GOALS, EmotionEpisode,
                              ExpressionPlan, Goal, Origin, Perception, Temperament, utc,AffectiveResidue,
-                             LIGHT_HUMOUR_THRESHOLD)
+                             LIGHT_HUMOUR_THRESHOLD, OWN_GOALS)
 
 # Valence, activation, pulse time constant. These are configurable model priors,
 # not measurements of human neurobiology.
@@ -20,7 +20,16 @@ EMOTIONS = {
     'anger': (-.7, .85, 1800.), 'fear': (-.8, .8, 2400.),
     'disappointment': (-.55, .25, 3600.), 'guilt': (-.6, .45, 3600.),
     'embarrassment': (-.45, .65, 900.),
+    # H4a (E4). Activation stays non-negative: slow arousal is a non-negative latent.
+    'amusement': (.8, .55, 900.), 'relief': (.6, .05, 1800.),
+    'admiration': (.7, .35, 2400.), 'tenderness': (.75, .1, 3600.),
+    'boredom': (-.3, .02, 1800.),
 }
+# The character's own goals get their own bounded budget per event (H4a, E3):
+# an interesting idea may move her even when it is an ordinary request for the user.
+OWN_GOAL_BUDGET = .3
+# Boredom is mild and changes the topic, not the warmth or seriousness of a reply.
+DETACHED_EMOTIONS = frozenset({'boredom'})
 
 # A bounded display prior, not a change to versioned appraisal dynamics.
 # Repeated praise or wins should not force escalating exuberance or hide grief.
@@ -58,8 +67,8 @@ def advance(state: CognitiveState, at: datetime, temperament=Temperament()) -> C
         ee = math.exp(-dt / ep.tau_seconds)
         rate = 1 / tau - 1 / ep.tau_seconds
         kernel = dt * em / tau if abs(rate) < 1e-12 else (ee - em) / (tau * rate)
-        mv += .2 * v * ep.intensity * kernel
-        ma += .2 * a * ep.intensity * kernel
+        mv += temperament.mood_transfer * v * ep.intensity * kernel
+        ma += temperament.mood_transfer * a * ep.intensity * kernel
         (residues if isinstance(ep,AffectiveResidue) else episodes).append(replace(ep, intensity=ep.intensity * ee))
     return replace(state, last_at=at, episodes=tuple(episodes),
                    residues=tuple(residues),
@@ -103,45 +112,64 @@ def appraise(state: CognitiveState, event: CognitiveEvent, perception: Perceptio
                        applied_groups=state.applied_groups | {event.evidence.independent_group})
     priorities = {g.id: g.priority for g in goals}
     expectations = {g.id:g.expectation for g in goals if g.expectation is not None}
+    s = perception.situation
+    # Relief needs an actual resolution of something threatening or disputed.
+    resolved = bool(s and s.outcome=='resolved' and (s.kind in ('threat','conflict') or s.revisions))
     pulses = {}
     confidence = {}
     for p in perception.appraisals:
         weight = p.probability * p.relevance * p.confidence * priorities[p.goal_id]
         weight *= temperament.reactivity
         pos, neg = max(p.congruence, 0), max(-p.congruence, 0)
+        # The other person's achievement for their own good is admired, not a favour to thank for.
+        extended = temperament.extended_palette
+        achievement = extended and p.goal_id == 'user_wellbeing'
+        curiosity = extended and p.goal_id == 'curiosity'
         values = {
-            'joy': pos * p.outcome_probability,
-            'gratitude': pos * p.agency_other * p.intentionality,
+            # Curiosity is satisfied as interest rather than as general joy.
+            'joy': pos * p.outcome_probability * (.5 if curiosity else 1.),
+            'gratitude': 0. if achievement else pos * p.agency_other * p.intentionality,
             'pride': pos * p.agency_self,
-            'interest': p.novelty * (1 - p.future_threat) * (1 - p.norm_violation) * .4,
+            'interest': p.novelty * (1 - p.future_threat) * (1 - p.norm_violation) * (.8 if curiosity else .4),
             'surprise': max(p.novelty,abs(p.outcome_probability-expectations[p.goal_id]) if p.goal_id in expectations else 0.) * .45,
             'sadness': neg * p.loss * (.4 + .6 * p.irreversibility),
             'anger': neg * p.agency_other * p.intentionality * p.norm_violation,
             'fear': neg * p.future_threat * (.4 + .6 * (1 - p.control)),
-            'disappointment': neg * (1 - p.future_threat) * (1 - p.loss) * .6,
+            'disappointment': 0. if curiosity else neg * (1 - p.future_threat) * (1 - p.loss) * .6,
             'guilt': neg * p.agency_self * p.norm_violation,
             'embarrassment': neg * p.agency_self * p.social_exposure,
+            # H4a (E4). Mockery is a norm violation, never something funny.
+            'amusement': (p.humor * max(0., 1 - 2 * p.norm_violation) * (1 - p.future_threat) * (.5 + .5 * pos)
+                          if extended else 0.),
+            'relief': pos * (1 - p.future_threat) * .6 if extended and resolved else 0.,
+            'admiration': pos * p.agency_other * p.outcome_probability * .5 if achievement else 0.,
+            'tenderness': (pos * p.agency_other * p.intentionality * (1 - p.novelty) * .5
+                           if extended and p.goal_id == 'connection' else 0.),
+            'boredom': neg * (1 - p.novelty) * (1 - p.loss) * (1 - p.future_threat) if curiosity else 0.,
         }
         for emotion, value in values.items():
             key = p.goal_id, p.target_id, emotion
             pulses[key] = pulses.get(key, 0) + weight * value
             confidence[key] = max(confidence.get(key, 0), p.confidence * p.probability)
     # Recall cues have a bounded emotional impact and never count as new learning.
-    total = sum(pulses.values())
-    budget = .08 if event.evidence.origin == Origin.RECALL else .85
-    if perception.situation:
-        s = perception.situation
-        budget = min(budget,{'preference':0.,'neutral':.12,'request':.05,'clarification':.2}.get(s.kind,.85))
+    # Safety caps bind every goal: recall, reported or unclear conflict, apology.
+    cap = .08 if event.evidence.origin == Origin.RECALL else .85
+    kind_budget = cap
+    if s:
+        kind_budget = {'preference':0.,'neutral':.12,'request':.05,'clarification':.2}.get(s.kind,.85)
         if s.modality=='reported' and s.kind=='conflict':
-            budget = min(budget,.45)
+            cap = min(cap,.45)
         if s.kind=='conflict' and s.outcome=='unknown' and s.intention_evidence!='explicit':
-            budget = min(budget,.12 if s.modality=='interaction' else .45)
+            cap = min(cap,.12 if s.modality=='interaction' else .45)
         if s.social_signal=='apology':
-            budget = min(budget,.25)
-    scale = min(1., budget / total) if total else 1.
+            cap = min(cap,.25)
+    own_budget = OWN_GOAL_BUDGET if temperament.extended_palette else kind_budget
+    budgets = {False: min(cap,kind_budget), True: min(cap,own_budget if not s or s.kind!='preference' else 0.)}
+    totals = {own: sum(v for (g,_,_),v in pulses.items() if (g in OWN_GOALS)==own) for own in (False,True)}
+    scales = {own: min(1., budgets[own] / totals[own]) if totals[own] else 1. for own in (False,True)}
     new = []
     for (goal_id, target, emotion), intensity in sorted(pulses.items(), key=lambda x: (x[0][0], str(x[0][1]), x[0][2])):
-        intensity *= scale
+        intensity *= scales[goal_id in OWN_GOALS]
         if intensity < .0001:
             continue
         new.append(EmotionEpisode(f'{event.event_id}:{goal_id}:{target}:{emotion}', event.event_id,
@@ -222,7 +250,8 @@ def expression(state: CognitiveState, *, task_serious: bool = False,
     # and compacted tails can collectively matter even when none is in the top six.
     working = state.episodes + state.residues
     positive = sum(e.intensity for e in working if EMOTIONS[e.emotion][0] > .1)
-    negative_weight = sum(e.intensity for e in working if EMOTIONS[e.emotion][0] < -.1)
+    negative_weight = sum(e.intensity for e in working if EMOTIONS[e.emotion][0] < -.1
+                          and e.emotion not in DETACHED_EMOTIONS)
     # Expression has finite reserve even if many equivalent positive causes have
     # accumulated. This deliberately leaves persisted pulses/mood unchanged: true
     # numerical habituation requires a new model version and a ledger migration.

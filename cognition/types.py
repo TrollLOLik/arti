@@ -6,6 +6,12 @@ from typing import Any
 
 MODEL_VERSION = 'cognition-2026-09-30.4'
 PERCEPTION_VERSION = 'appraisal-2026-09-30.1'
+# Affect dynamics have their own version (H4a). Memory projections keep
+# MODEL_VERSION: changing it would hide and re-embed every memory artifact.
+TEMPERAMENT_VERSION = 'arti-temperament-2'
+# States written under these versions are upgraded explicitly on load
+# (cognition.serialization.load_state): causes and mood are kept, new rules apply onward.
+UPGRADABLE_TEMPERAMENTS = frozenset({'arti-temperament-1'})
 
 
 def finite(value: Any, name: str, low: float, high: float) -> float:
@@ -154,7 +160,13 @@ DEFAULT_GOALS = (
     Goal('mutual_respect', 'Preserve respectful and reciprocal interaction.', .9),
     Goal('connection', 'Maintain a warm connection without demanding attention.', .65),
     Goal('safety', 'Protect wellbeing when there is concrete evidence of danger.', .9),
+    # H4a (E4): the character's own goals; emotions are not only reactions to the user's wellbeing.
+    Goal('curiosity', "The character's own curiosity: something new or unusual about people, ideas or the world.", .6),
+    Goal('aesthetics', "The character's own taste: precision, elegant form, a well-made thing or a witty phrase.", .5),
+    Goal('being_understood', "The character's wish to be understood correctly and have her own point of view considered.", .5),
+    Goal('autonomy', "The character's own opinions and preferences matter; she is not merely a tool.", .4),
 )
+OWN_GOALS = frozenset({'curiosity','aesthetics','being_understood','autonomy'})
 
 
 @dataclass(frozen=True)
@@ -178,6 +190,9 @@ class Appraisal:
     social_exposure: float
     evidence_ids: tuple[str, ...]
     target_id: int | None = None
+    # H4a: a joke, wordplay or playful teasing the character can find funny.
+    # Optional so that perceptions recorded before it stay valid.
+    humor: float = 0.
 
     def __post_init__(self):
         for name in self.__dataclass_fields__:
@@ -250,12 +265,18 @@ class Perception:
 
 @dataclass(frozen=True)
 class Temperament:
-    version: str = 'arti-temperament-1'
+    version: str = TEMPERAMENT_VERSION
     baseline_valence: float = .08
     baseline_arousal: float = .10
     reactivity: float = .8
     mood_tau_seconds: float = 6 * 3600
     expression_reserve: float = .35
+    # Share of an episode carried into slow mood. Version 1 used .2, so even a
+    # bereavement barely moved mood; 1.5 leaves a strong event's aftertaste for hours.
+    mood_transfer: float = 1.5
+    # Version 2 palette: amusement, relief, admiration, tenderness, boredom and
+    # the own-goal budget. Version 1 replays historical evidence exactly.
+    extended_palette: bool = True
 
     def __post_init__(self):
         if not self.version:
@@ -265,6 +286,13 @@ class Temperament:
         finite(self.reactivity, 'reactivity', 0, 2)
         finite(self.mood_tau_seconds, 'mood_tau_seconds', 60, 30 * 86400)
         finite(self.expression_reserve, 'expression_reserve', 0, 1)
+        finite(self.mood_transfer, 'mood_transfer', 0, 5)
+        if type(self.extended_palette) is not bool:
+            raise ValueError('extended_palette must be a boolean')
+
+
+# The dynamics that produced the historical evaluation reports.
+TEMPERAMENT_V1 = Temperament(version='arti-temperament-1', mood_transfer=.2, extended_palette=False)
 
 
 @dataclass(frozen=True)
@@ -309,7 +337,7 @@ class CognitiveState:
     context: ContextKey
     last_at: datetime
     model_version: str = MODEL_VERSION
-    temperament_version: str = 'arti-temperament-1'
+    temperament_version: str = TEMPERAMENT_VERSION
     revision: int = 0
     mood_valence_latent: float = field(default_factory=lambda: .08017132503758969)
     mood_arousal_latent: float = field(default_factory=lambda: .10033534773107558)
@@ -331,7 +359,7 @@ class CognitiveState:
         finite(self.effort_load, 'effort_load', 0, 1)
         if len(self.situational_goals)>32 or len(self.concerns)>128:
             raise ValueError('Working goals/concerns exceed their bounds')
-        if len(self.episodes)>128 or len(self.residues)>11:
+        if len(self.episodes)>128 or len(self.residues)>16:
             raise ValueError('Working affect capacity exceeded')
         for goal in self.situational_goals:
             finite(goal['priority'],'goal priority',0,1)
@@ -394,14 +422,22 @@ EMOTION_VOICE = {
     'disappointment': 'Лёгкое разочарование — чуть прохладнее и короче обычного, без упрёков.',
     'guilt': 'Ты чувствуешь свою вину — признай конкретное коротко и исправь, без самобичевания.',
     'embarrassment': 'Лёгкая неловкость — немного самоиронии и дальше.',
+    # H4a (E4): the rest of the character's palette.
+    'amusement': 'Тебе смешно — можно ответить шуткой на шутку или подхватить игру, коротко.',
+    'relief': 'Тебе стало легче — это можно показать одной живой фразой.',
+    'admiration': 'Ты восхищена тем, что сделал собеседник, — скажи конкретно чем, без лести.',
+    'tenderness': 'В тебе нежность к собеседнику — мягче обычного, но без сиропа и без заявлений о близости.',
+    'boredom': 'Тебе немного скучно — можно легко предложить повернуть разговор интереснее, без пренебрежения к собеседнику.',
 }
-PLAYFUL_EMOTIONS = frozenset({'joy','pride','interest','surprise'})
+PLAYFUL_EMOTIONS = frozenset({'joy','pride','interest','surprise','amusement'})
 DOMINANT_THRESHOLD = .03
 STAGE_VOICE = {
     'new': 'Вы знакомы недавно: обаяние сдержаннее, без фамильярности.',
     'familiar': 'Вы уже знакомы: можно свободнее, свои шутки уместны.',
     'close': 'Давний собеседник: прямота, общие шутки, право на несогласие.',
 }
+# Below this effective severity an old rupture no longer shows (H4a, E6).
+RUPTURE_VISIBLE = .1
 # Telegram standard reactions Arti may set on a person's message (H3, I5).
 ALLOWED_REACTIONS = frozenset({'❤','🔥','😁','👍','🤗','🙏'})
 
@@ -437,6 +473,9 @@ class ExpressionPlan:
     stage: str | None = None
     reaction: str | None = None
     provisional: bool = False
+    # H4a (E6): an open relational rupture (effective severity) and its age in days.
+    rupture: float = 0.
+    rupture_days: float = 0.
 
     def __post_init__(self):
         for key in ('warmth', 'directness', 'playfulness', 'disclosure'):
@@ -452,6 +491,8 @@ class ExpressionPlan:
         if self.reaction is not None and self.reaction not in ALLOWED_REACTIONS:
             raise ValueError('Invalid reaction')
         if type(self.provisional) is not bool: raise ValueError('Invalid provisional flag')
+        finite(self.rupture, 'rupture', 0, 1)
+        finite(self.rupture_days, 'rupture_days', 0, 3650)
 
     @property
     def serious(self) -> bool:
@@ -471,6 +512,8 @@ class ExpressionPlan:
                     'без насмешки, унижения и мести.')
         if self.serious:
             return 'Без шуток и иронии в этом ответе.'
+        if self.rupture >= RUPTURE_VISIBLE:
+            return 'Без игривости: недавняя обида ещё не прошла. Точность вместо шуток.'
         if self.playfulness >= LIGHT_HUMOUR_THRESHOLD:
             return 'Настроение лёгкое: ирония и игра слов к месту. Шутка никогда не за счёт собеседника.'
         if 'answer_task' in self.behaviors:
@@ -497,6 +540,10 @@ class ExpressionPlan:
                  REGULATION_TEXT.get(self.regulation, ''), warmth, directness, self.humour(), disclosure, voice]
         if self.provisional:
             parts.append('Это первое впечатление от сообщения: если текст говорит о другом, верь тексту.')
+        if self.rupture >= RUPTURE_VISIBLE:
+            when = ('сегодня' if self.rupture_days < 1 else 'вчера' if self.rupture_days < 2 else 'несколько дней назад')
+            parts.append(f'Собеседник задел тебя {when}. Ты это помнишь: ровнее и суше, помощь как обычно, без мести и упрёков. '
+                         'Извинение или тёплые слова прими. Один раз можно спокойно сказать, что помнишь, если это к месту.')
         if self.uncertain_intent:
             parts.append('Не приписывай враждебного намерения по неоднозначным словам. Спрашивай, только если от этого '
                          'зависит текущий ответ; иначе оставь вопрос открытым.')

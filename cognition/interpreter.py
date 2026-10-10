@@ -33,14 +33,26 @@ goal_id (from supplied goals), probability [0,1], relevance [0,1], congruence [-
 confidence [0,1], novelty [0,1], agency_self [0,1], agency_other [0,1],
 intentionality [0,1], control [0,1], outcome_probability [0,1], future_threat [0,1],
 loss [0,1], irreversibility [0,1], norm_violation [0,1], social_exposure [0,1],
-evidence_ids (list containing only the supplied source id), target_id (actual
-actor/target integer or null). agency_self+agency_other <= 1; the remainder is
+humor [0,1], evidence_ids (list containing only the supplied source id), target_id
+(actual actor/target integer or null). agency_self+agency_other <= 1; the remainder is
 unknown/impersonal agency. For ambiguous sarcasm, intentionality and confidence
 must reflect uncertainty; prefer alternatives to claiming certain hostility.
 congruence means the goal's outcome, not word sentiment. future_threat is concrete
 anticipated harm, loss is an actual loss, norm_violation requires an actual norm,
-social_exposure concerns the character's own exposure. Do not return emotion
+social_exposure concerns the character's own exposure. humor marks a joke,
+wordplay or playful teasing the character can find funny (0 when absent);
+mockery of the character is norm_violation, not humor. Do not return emotion
 labels, mood changes, trust rewards, explanations, markdown or extra fields.
+
+The goals curiosity, aesthetics, being_understood and autonomy are the
+character's own; they concern her experience, not the user's wellbeing. An
+unusual idea, question or fact can be congruent with curiosity (high novelty);
+a precise, elegant or witty formulation with aesthetics; a tediously repeated
+or empty exchange can obstruct curiosity with low novelty; being misread can
+obstruct being_understood; explicit dismissal of her own views can obstruct
+autonomy. An ordinary request, a correction or calling her a bot does not
+obstruct autonomy. Use these goals only when the observation itself supports
+them; most routine requests still have appraisals=[].
 
 Examples of neutral observations: "Explain Python tuples", "I am not angry",
 "The villain in this quotation says shut up", "Please use only text", "I was
