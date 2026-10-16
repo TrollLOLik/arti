@@ -535,6 +535,12 @@ class CognitiveRuntime:
             # Goodwill counts only as far as its evidence is current and sufficient.
             goodwill = (dims['benevolence']['value']-.5)*dims['benevolence']['confidence']
             rupture = view.get('rupture')
+            # H5 (E7): Arti's own clock (lore: Magnitogorsk), never in a fictional scene.
+            phase = None
+            if event.context.mode=='default':
+                from zoneinfo import ZoneInfo
+                from cognition.temporal import ARTI_TIMEZONE,day_phase
+                phase = day_phase(self.clock().astimezone(ZoneInfo(ARTI_TIMEZONE)).hour)
             def personal(plan):
                 warmth = plan.warmth+.2*(dims['warmth']['value']-.5)+.15*goodwill+implicit
                 playfulness = plan.playfulness
@@ -546,7 +552,7 @@ class CognitiveRuntime:
                                disclosure=min(.35,plan.disclosure*dims['openness']['value']*2),
                                directness=min(1.,max(0.,plan.directness-implicit/2)),stage=stage,
                                rupture=min(1.,rupture['severity']) if rupture else 0.,
-                               rupture_days=min(3650.,rupture['days']) if rupture else 0.)
+                               rupture_days=min(3650.,rupture['days']) if rupture else 0.,day_phase=phase)
             plan = personal(plan)
             situation = p.situation
             fast = None
@@ -570,7 +576,7 @@ class CognitiveRuntime:
                     # into the neutral fallback for an unassessed current message.
                     plan = replace(plan,regulation='acknowledge',uncertain_intent=False,sticker_mood=None,playfulness=0.,
                         disclosure=0.,tone='calm and attentive',tts_style='neutral',cause_ids=(),behaviors=(),mixed_affect=False,
-                        dominant=None,dominant_intensity=0.)
+                        dominant=None,dominant_intensity=0.,stand_ground=False)
             if event.audience.kind in ('group','topic'):
                 plan = replace(plan,disclosure=0.)
             # H3 (E5, I5): occasional, deterministic sticker class and reaction.

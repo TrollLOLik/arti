@@ -53,7 +53,11 @@ async def _group_history(chat_id,mode):
 
 async def _source_messages(chat_id,mode,limit):
     rows=await _source_rows(chat_id,mode,limit)
-    return [(r['occurred_at'],('Арти' if r['origin']=='delivered_action' else r['name'] or 'Участник '+str(r['owner_id']))+': '+r['text']) for r in rows]
+    # H5 (M8): never a raw user id in a transcript; an unnamed person gets an ordinal.
+    order={}
+    for r in rows:
+        if r['origin']!='delivered_action' and not r['name']: order.setdefault(r['owner_id'],len(order)+1)
+    return [(r['occurred_at'],('Арти' if r['origin']=='delivered_action' else r['name'] or f"Участник {order[r['owner_id']]}")+': '+r['text']) for r in rows]
 
 async def get_dialogue_turns(chat_id,mode='default',limit=None):
     """Private dialogue as native roles (H2, P3); None for groups, which keep a transcript."""

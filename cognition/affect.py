@@ -280,6 +280,9 @@ def expression(state: CognitiveState, *, task_serious: bool = False,
                     for e in active)
     negative = mixed or (negative_weight >= .025 and negative_weight > positive)
     dominant,dominant_intensity = dominant_emotion(active)
+    # H5 (R4): her own view was dismissed or misread — she may hold her ground.
+    stand_ground = any(e.goal_id in ('autonomy','being_understood') and e.intensity >= .02
+                       and EMOTIONS[e.emotion][0] < 0 for e in active)
     if mixed: tone = 'warm but measured'
     # Anger addressed to the person sharpens the voice (H3, E1); other negative
     # states, including indignation on the person's behalf, stay gentle.
@@ -301,7 +304,7 @@ def expression(state: CognitiveState, *, task_serious: bool = False,
                           .3 * (1 - temperament.expression_reserve),
                           sticker, 'measured' if negative or task_serious else 'conversational',
                           tuple(selected[:6]), uncertain, behaviors, mixed,
-                          dominant=dominant, dominant_intensity=dominant_intensity)
+                          dominant=dominant, dominant_intensity=dominant_intensity, stand_ground=stand_ground)
 
 
 def dominant_emotion(active):

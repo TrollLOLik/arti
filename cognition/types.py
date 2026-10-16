@@ -432,10 +432,21 @@ EMOTION_VOICE = {
 PLAYFUL_EMOTIONS = frozenset({'joy','pride','interest','surprise','amusement'})
 DOMINANT_THRESHOLD = .03
 STAGE_VOICE = {
-    'new': 'Вы знакомы недавно: обаяние сдержаннее, без фамильярности.',
-    'familiar': 'Вы уже знакомы: можно свободнее, свои шутки уместны.',
-    'close': 'Давний собеседник: прямота, общие шутки, право на несогласие.',
+    # H5 (R4): disagreement is dosed by the stage — gentle first, bolder with time.
+    'new': 'Вы знакомы недавно: обаяние сдержаннее, без фамильярности; не согласна — скажи мягко и с аргументом.',
+    'familiar': 'Вы уже знакомы: можно свободнее, свои шутки уместны; можно спорить по существу.',
+    'close': 'Давний собеседник: прямота, общие шутки, право на несогласие и спор всерьёз.',
 }
+# H5 (E7): Arti's own time of day colours the manner a little; any clear event wins.
+DAY_PHASE_VOICE = {
+    'утро': 'У тебя утро: чуть мягче и неторопливее обычного.',
+    'день': '',
+    'вечер': 'У тебя вечер: можно живее и разговорчивее.',
+    'ночь': 'У тебя ночь: теплее и живее, без суеты.',
+}
+DAY_PHASE_YIELDS_TO = .15
+STAND_GROUND = ('Задето твоё собственное мнение: можно спорить по существу и не уступать без аргумента — '
+                'вежливо, без упрямства ради упрямства. Если тебя переубедили — так и скажи.')
 # Below this effective severity an old rupture no longer shows (H4a, E6).
 RUPTURE_VISIBLE = .1
 # Telegram standard reactions Arti may set on a person's message (H3, I5).
@@ -476,6 +487,9 @@ class ExpressionPlan:
     # H4a (E6): an open relational rupture (effective severity) and its age in days.
     rupture: float = 0.
     rupture_days: float = 0.
+    # H5: Arti's own time of day (E7) and her own view at stake (R4).
+    day_phase: str | None = None
+    stand_ground: bool = False
 
     def __post_init__(self):
         for key in ('warmth', 'directness', 'playfulness', 'disclosure'):
@@ -493,6 +507,9 @@ class ExpressionPlan:
         if type(self.provisional) is not bool: raise ValueError('Invalid provisional flag')
         finite(self.rupture, 'rupture', 0, 1)
         finite(self.rupture_days, 'rupture_days', 0, 3650)
+        if self.day_phase is not None and self.day_phase not in DAY_PHASE_VOICE:
+            raise ValueError('Invalid day phase')
+        if type(self.stand_ground) is not bool: raise ValueError('Invalid stand_ground flag')
 
     @property
     def serious(self) -> bool:
@@ -540,6 +557,11 @@ class ExpressionPlan:
                  REGULATION_TEXT.get(self.regulation, ''), warmth, directness, self.humour(), disclosure, voice]
         if self.provisional:
             parts.append('Это первое впечатление от сообщения: если текст говорит о другом, верь тексту.')
+        if self.stand_ground and not self.provisional:
+            parts.append(STAND_GROUND)
+        if (self.day_phase and not self.serious and self.rupture < RUPTURE_VISIBLE
+                and self.dominant_intensity < DAY_PHASE_YIELDS_TO):
+            parts.append(DAY_PHASE_VOICE[self.day_phase])
         if self.rupture >= RUPTURE_VISIBLE:
             when = ('сегодня' if self.rupture_days < 1 else 'вчера' if self.rupture_days < 2 else 'несколько дней назад')
             parts.append(f'Собеседник задел тебя {when}. Ты это помнишь: ровнее и суше, помощь как обычно, без мести и упрёков. '

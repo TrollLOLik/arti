@@ -1,0 +1,58 @@
+{
+  "batch": "H5-fine-tuning (R4, M8, E7, I4)",
+  "date": "2026-10-11",
+  "base_commit": "ea5c96c",
+  "model_version": "cognition-2026-09-30.4 (unchanged)",
+  "temperament_version": "arti-temperament-2 (unchanged)",
+  "schema_changes": [],
+  "deferred_findings": ["M5", "M6", "E8", "M7"],
+  "environment": {
+    "python": "3.12.14",
+    "postgresql": "16.4 disposable, localhost only, without pgvector",
+    "network": "test process proxied to a closed port; model and Telegram replaced by fakes",
+    "working_database_mutated": false,
+    "credentials_used": false
+  },
+  "new_tests": {"module": "tests.cognition.test_fine_tuning", "tests": 16, "passed": 16, "database_tests": 8},
+  "database_cognition_suite": {
+    "tests": 1177,
+    "failures": ["tests.cognition.test_native_agent_safety.NativeOrganizerSafetyTests.test_legacy_erasure_during_transport_fences_late_confirmation"],
+    "errors": 2,
+    "error_cause": "relation memory_chunks does not exist (created only with pgvector); same as before H1"
+  },
+  "non_database_full_discovery": {"tests": 1627, "failure_set_identical_to_h4c": true},
+  "parameters": {
+    "own_opinion": {
+      "stand_ground_goals": ["autonomy", "being_understood"],
+      "stand_ground_min_intensity": 0.02,
+      "suppressed_when": ["provisional first impression", "neutral fallback plan"],
+      "new_prompt_examples": 3
+    },
+    "day_phase": {
+      "timezone": "Asia/Yekaterinburg",
+      "phases_local_hours": {"утро": [5, 11], "день": [11, 17], "вечер": [17, 23], "ночь": [23, 5]},
+      "day_has_no_directive": true,
+      "yields_to": {"serious": true, "rupture_at_least": 0.1, "dominant_intensity_at_least": 0.15},
+      "modes": ["default"]
+    },
+    "group_names": {
+      "source": "Telegram first_name and last-name initial at observation time",
+      "max_chars": 32,
+      "collision": "initial, else ordinal",
+      "nameless_or_unknown": "Участник N (order of appearance, never the id)",
+      "opted_out": "messages excluded from the public ledger, so no name",
+      "old_observations": "no name, shown as Участник N"
+    },
+    "group_memory": {
+      "max_records": 4,
+      "source": "PublicMemoryRepository (same group and topic only)",
+      "excludes": "messages already in the conversation frame",
+      "query": "text of the message Arti answers",
+      "revalidated_at_delivery": true,
+      "retrieval_failure": "memory omitted, contribution still composed"
+    },
+    "group_voice": "ARTI_VOICE_ANCHOR prefixed to the compose prompt"
+  },
+  "switches": [],
+  "limits": "Contract and delivery-path checks with fake model and transport; how natural disagreement, names and group recall feel to people was not measured."
+}

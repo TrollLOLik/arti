@@ -149,6 +149,8 @@ class ConversationFrame:
     understanding: dict = field(default_factory=dict)
     source_manifest: dict = field(default_factory=dict)
     source_event_ids: list = field(default_factory=list)
+    # H5 (M8): public display labels by participant id; ids stay in the manifest.
+    names: dict = field(default_factory=dict)
 
     def question(self, message_id):
         # Retain anchor-specific state within the same raw window even if many
@@ -256,6 +258,7 @@ class ConversationFrame:
             # Keep only fields observed in this public topic, never arbitrary
             # raw-event/private-memory fields or internal datetime objects.
             item = {k: m.get(k) for k in ('source_id', 'message_id', 'owner_id', 'sender_kind', 'sender_ref', 'reply_to_id', 'branch', 'at', 'directed', 'is_bot', 'addressed_elsewhere')}
+            item['name'] = 'Арти' if m.get('is_bot') else self.names.get(m.get('owner_id'))
             text = str(m.get('text', ''))
             item['text'] = text.encode('utf-8')[:160].decode('utf-8', errors='ignore')
             item['text_truncated'] = len(item['text']) < len(text)
@@ -290,6 +293,49 @@ def _record_evidence(question, message, kind):
         if decisive is not None and decisive not in retained:
             retained[0] = decisive
         evidence[:] = retained
+
+
+NAME_LIMIT = 32
+
+
+def clean_name(value):
+    """A short public display name: letters, digits, spaces, dots, hyphens, apostrophes."""
+    text = ' '.join(re.sub(r"[^\w\s.'\-]", '', str(value or '')).split())[:NAME_LIMIT].strip()
+    return text or None
+
+
+def participant_names(messages, opted_out=()):
+    """Labels for a group transcript (H5, M8): the public first name, an initial on a
+    collision, a neutral ordinal for opted-out or nameless participants. No raw ids."""
+    order, latest = [], {}
+    for m in messages:
+        owner = m.get('owner_id')
+        if m.get('is_bot') or owner is None:
+            continue
+        if owner not in order:
+            order.append(owner)
+        name = clean_name(m.get('sender_name'))
+        if name:
+            latest[owner] = (name, clean_name(m.get('sender_initial')))
+    visible = {o: v for o, v in latest.items() if o not in set(opted_out)}
+    counts = {}
+    for name, _ in visible.values():
+        counts[name] = counts.get(name, 0) + 1
+    labels = {}
+    for index, owner in enumerate(order, 1):
+        if owner not in visible:
+            labels[owner] = f'Участник {index}'
+            continue
+        name, initial = visible[owner]
+        labels[owner] = name if counts[name] == 1 else (f'{name} {initial[0]}.' if initial else f'{name} ({index})')
+    taken = {}
+    for owner, label in labels.items():
+        taken.setdefault(label, []).append(owner)
+    for label, owners in taken.items():
+        if len(owners) > 1:
+            for owner in owners:
+                labels[owner] = f'{label} ({order.index(owner) + 1})'
+    return labels
 
 
 def build_frame(cid, chat_id, topic_id, messages, revision=0, closed=False, feedback=(), outcomes=(), suppression_epoch=0, understanding=None, source_manifest=None, source_event_ids=()):

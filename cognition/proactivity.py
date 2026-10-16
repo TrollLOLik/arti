@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from asyncpg import QueryCanceledError
 
 from cognition.group_policy import PolicyRepository
-from cognition.group_context import build_frame,candidate_kind,contextual_candidate,explicit_refusal,public_understanding,GroupHistory
+from cognition.group_context import build_frame,candidate_kind,contextual_candidate,explicit_refusal,public_understanding,GroupHistory,participant_names
 from cognition.scope import CURRENT_SCOPE,TransportScope
 from cognition.serialization import dump,object_value,load_event
 from cognition.types import AudienceScope,Origin
@@ -102,6 +102,8 @@ class GroupService:
             support_ids={r['id'] for r in closure}
             understanding=await self.understanding.read_snapshot(conn,cid,context,now) if ctx['authority']=='active' else {}
             state=await conn.fetchrow('SELECT * FROM group_topic_runtime WHERE context_id=$1',cid)
+            # H5 (M8): an opted-out participant is shown without a name.
+            opted={r['user_id'] for r in await conn.fetch('SELECT user_id FROM group_participant_settings WHERE chat_id=$1 AND opt_out',ctx['chat_id'])}
             feedback=await conn.fetch('''SELECT f.*,g.kind FROM group_feedback f
                 JOIN cognitive_outbox o ON o.context_id=f.context_id AND o.receipt_id=f.message_id AND o.status='delivered'
                 JOIN group_candidates g ON g.outbox_id=o.id WHERE f.context_id=$1 AND f.created_at>$2
@@ -165,8 +167,10 @@ class GroupService:
                 manifest.update({r['source_id']:r['source_hash'] for r in permitted_outcomes})
                 support_ids.update(r['id'] for r in permitted_outcomes)
         messages=[dict(**object_value(r['observation_payload']),source_id=r['source_id'],event_id=r['id'],at=r['observed_at'].isoformat()) for r in reversed(rows)]
-        return build_frame(cid,ctx['chat_id'],ctx['topic_id'],messages,state['revision'] if state else 0,state['closed'] if state else False,
+        frame=build_frame(cid,ctx['chat_id'],ctx['topic_id'],messages,state['revision'] if state else 0,state['closed'] if state else False,
                            feedback if readable else (),outcomes=outcomes if readable else (),suppression_epoch=ctx['suppression_epoch'],understanding=understanding,source_manifest=manifest,source_event_ids=support_ids)
+        frame.names=participant_names(frame.messages,opted)
+        return frame
 
     async def observe(self,scope,text,mode='default',at=None,message=None,edited=False,is_bot=False):
         if not scope.group or scope.topic_id<0 or scope.sender_kind=='bot' and not is_bot: return None
@@ -180,6 +184,14 @@ class GroupService:
         elsewhere=bool(scope.reply_to_id and not scope.addressed) or bool(entities and not scope.addressed and any(getattr(e,'type','') in ('mention','text_mention') for e in entities))
         payload=dict(message_id=scope.message_id,owner_id=scope.user_id,text=str(text)[:2500],reply_to_id=scope.reply_to_id,
                      sender_kind='bot' if is_bot else scope.sender_kind,sender_ref=scope.sender_ref,directed=scope.addressed,is_bot=is_bot,addressed_elsewhere=elsewhere)
+        # H5 (M8): the participant's public display name, as everyone in the group sees it.
+        user=getattr(message,'from_user',None) if message is not None and not is_bot and not getattr(message,'sender_chat',None) else None
+        if user is not None:
+            from cognition.group_context import clean_name
+            name=clean_name(getattr(user,'first_name',None))
+            if name:
+                last=clean_name(getattr(user,'last_name',None))
+                payload.update(sender_name=name,sender_initial=last[0] if last else None)
         async with self.pool.acquire() as conn,conn.transaction():
             await conn.fetchval('SELECT revision FROM cognitive_contexts WHERE id=$1 FOR UPDATE',cid)
             old=await conn.fetchrow('SELECT event_id,payload FROM group_observations WHERE context_id=$1 AND message_id=$2',cid,scope.message_id)
@@ -266,6 +278,70 @@ class GroupService:
         turn.group_context_event_ids=sorted(set(getattr(turn,'group_context_event_ids',())) | set(frame.understanding.get('source_event_ids',())))
         turn.supporting_event_ids=sorted(set(getattr(turn,'supporting_event_ids',())) | set(turn.group_context_event_ids))
 
+    async def group_memory(self,frame,event,candidate_key,limit=4):
+        """H5 (I4): a few earlier public messages of this group relevant to the message Arti answers.
+
+        Retrieved from the permitted public ledger only (never private memory),
+        excluding messages already in the frame. Failure omits memory, never the reply.
+        """
+        try:
+            records=await self.runtime.public_memory.retrieve(frame.context_id,event.context,event.text or '',
+                self.runtime.clock(),'group:'+candidate_key,requester=event.evidence.owner_id,
+                expected_epoch=frame.suppression_epoch,limit=limit,exclude_event_ids=list(frame.source_event_ids))
+        except Exception:
+            return [],[]
+        from cognition.memory_render import ago
+        now=self.runtime.clock()
+        older=await self._older_names(frame,[r for r in records if r.get('author_id')!='arti' and r.get('owner_id') not in frame.names])
+        ids,lines=[],[]
+        for record in records:
+            text=' '.join(d.get('text','') for d in record.get('details',[]))[:300].strip()
+            if not text:
+                continue
+            who='Арти' if record.get('author_id')=='arti' else frame.names.get(record.get('owner_id')) or older.get(record.get('owner_id')) or 'участник'
+            try:
+                when=ago(datetime.fromisoformat(record['observed_at']),now) or 'раньше'
+            except (KeyError,TypeError,ValueError):
+                when='раньше'
+            ids.append(record['artifact_id'])
+            lines.append(f'{when}, {who}: «{text}»')
+        return ids,lines
+
+    async def _older_names(self,frame,records):
+        """Public names of recalled authors who are not in the current frame.
+
+        Taken from the recalled message's own observation (the name it was sent
+        under). A label already used in the frame for someone else gets the
+        initial, then falls back to a neutral word: one name, one person.
+        """
+        from cognition.group_context import clean_name
+        event_ids=sorted({r['event_id'] for r in records if r.get('event_id') is not None and r.get('owner_id') is not None})
+        if not event_ids:
+            return {}
+        try:
+            async with self.pool.acquire() as conn:
+                rows=await conn.fetch('''SELECT event_id,owner_id,payload FROM group_observations
+                    WHERE context_id=$1 AND event_id=ANY($2::bigint[]) AND suppressed_at IS NULL AND payload IS NOT NULL''',
+                    frame.context_id,event_ids)
+        except Exception:
+            return {}
+        taken={label:owner for owner,label in frame.names.items()}
+        names={}
+        for row in sorted(rows,key=lambda r:-r['event_id']):
+            owner=row['owner_id']
+            if owner in names or owner in frame.names:
+                continue
+            payload=object_value(row['payload'])
+            name=clean_name(payload.get('sender_name'))
+            if not name:
+                continue
+            initial=clean_name(payload.get('sender_initial'))
+            for label in (name,f'{name} {initial[0]}.' if initial else None):
+                if label and taken.get(label,owner)==owner:
+                    names[owner]=label;taken[label]=owner
+                    break
+        return names
+
     async def history(self,scope,mode='default'):
         cid=await self.context_id(scope,mode)
         if cid is None: return ''
@@ -273,7 +349,7 @@ class GroupService:
         except (TimeoutError,QueryCanceledError): return ''
         if await self.policies.opted_out(frame.chat_id,scope.user_id): return ''
         recent=frame.messages[-24:]
-        text='\n'.join(f"[{m['at']}] {'Арти' if m['is_bot'] else 'Участник '+str(m['owner_id'])}: {m['text']}" for m in recent)
+        text='\n'.join(f"[{m['at']}] {'Арти' if m['is_bot'] else frame.names.get(m['owner_id'],'Участник')}: {m['text']}" for m in recent)
         from cognition.runtime import CURRENT_TURN
         turn=CURRENT_TURN.get()
         # Derived text must never enter an untracked legacy/direct caller.
@@ -668,6 +744,7 @@ class GroupService:
         # Both assessment and composition belong to one immutable conversation
         # revision. Changed meaning gets one new assessment, never a fresh stamp
         # on old prose. Continuous chatter safely exhausts this bounded retry.
+        memory_ids=[]
         for attempt in range(SEMANTIC_RETRIES+1):
             frame=await self.frame(frame.context_id)
             policy,revision=await self.policies.get(frame.chat_id,frame.topic_id)
@@ -738,7 +815,10 @@ class GroupService:
                         if not admitted:
                             await self.cancel(row,'provider_budget'); return
                         if not await self.revalidate(row,frame,policy,revision,token): return
-                        text=await self.judge.compose(frame,p,judgement,replace(style,disclosure=0.).instruction())
+                        # H5 (I4): earlier public messages of this same group, revalidated at send.
+                        memory_ids,group_memory=await self.group_memory(frame,event,row['candidate_key'])
+                        candidate={**p,'group_memory':group_memory} if group_memory else p
+                        text=await self.judge.compose(frame,candidate,judgement,replace(style,disclosure=0.).instruction())
             fresh=await self.frame(frame.context_id); latest,rev=await self.policies.get(frame.chat_id,frame.topic_id)
             if fresh.suppression_epoch!=frame.suppression_epoch:
                 await self.cancel(row,'evidence_changed'); return
@@ -754,6 +834,8 @@ class GroupService:
             if member.status not in ('member','administrator','creator'): await self.cancel(row,'workflow_member_left'); return
         turn=PreparedTurn(self.runtime,frame.context_id,source['id'],replace(event,event_id='group:'+row['candidate_key']),style,'',frame.suppression_epoch,'active')
         turn.group_candidate_id=row['id']; turn.group_lease_token=token; turn.group_policy_revision=revision; turn.group_frame_revision=frame.revision
+        if memory_ids:
+            turn.public_memory_ids=list(memory_ids)
         if row['kind']!='reminder':
             turn.group_context_source_ids=list(frame.source_manifest)
             turn.group_context_event_ids=list(frame.source_event_ids)
