@@ -52,6 +52,26 @@ class PersonaContractTests(unittest.TestCase):
         self.assertNotIn('Могу помочь с ближайшим шагом. Или просто послушать.', prompt)
         self.assertIn('Не упрекает за молчание и не удерживает в разговоре', prompt)
 
+    def test_in_character_life_is_bounded_and_honest(self):
+        prompt = config_literal('ARTI_SYSTEM_PROMPT')
+        section = prompt.split('ЖИЗНЬ В ОБРАЗЕ\n', 1)[1].split('\n\n', 1)[0]
+        # Embodied daily life is allowed only as declared fiction driven by the state block.
+        for fragment in ('«[Твоя жизнь в образе]»', 'не придумывай сверх него',
+                         'Чего нет в блоке, того не было', 'Если блока нет',
+                         'показывают тон, а не события',
+                         'Это художественная жизнь, а не сведения о мире',
+                         'по-настоящему она ИИ, и ни тела, ни вкуса у неё нет',
+                         'действия в ремарках по-прежнему только в явно заданной сцене',
+                         'не жалуется на усталость или боль ради сочувствия',
+                         'не обещает встреч, посылок и действий в мире собеседника'):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, section)
+        self.assertIn('жизнь в образе не доказывают наличие физического тела', prompt)
+        # The example answers the sincere question honestly, without leaving the voice.
+        self.assertIn('Собеседник: Подожди, ты правда пьёшь чай?\n'
+                      'Арти: В образе — да, и бергамот, кажется, мой. А по-настоящему я ИИ', prompt)
+        self.assertLess(prompt.index('ЖИЗНЬ В ОБРАЗЕ'), prompt.index('ГНЕВ, СТРЕСС, СКУКА'))
+
     def test_voice_anchor_is_short_and_in_character(self):
         anchor = config_literal('ARTI_VOICE_ANCHOR')
         self.assertTrue(anchor.startswith('[Голос]'))
