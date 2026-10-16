@@ -224,6 +224,22 @@ async def generate_response_stream(
                         tail.append(block)
                 except Exception as exc:
                     logger.debug('Reading notes skipped: %s', type(exc).__name__)
+                # H6 (P1): her in-character life, declared fiction kept consistent; optional too.
+                # P2: never for a person who chose «Не упоминать»; an unreadable choice skips the block.
+                try:
+                    from cognition import pursuits
+                    if pursuits.enabled():
+                        from cognition import life_settings
+                        life = None
+                        async with asyncio.timeout(.3):
+                            if await life_settings.mentions_enabled(current.runtime.pool,
+                                                                    life_settings.person_of(current.event)):
+                                life = await pursuits.recent_life(current.runtime.pool, current.runtime.clock())
+                        block = pursuits.pursuits_block(life, current.runtime.clock())
+                        if block:
+                            tail.append(block)
+                except Exception as exc:
+                    logger.debug('Pursuits skipped: %s', type(exc).__name__)
     if not is_rp_mode and (not custom_system_prompt or custom_system_prompt.startswith(ARTI_SYSTEM_PROMPT)):
         tail.append(ARTI_VOICE_ANCHOR)
     actual_role = '\n\n'.join(service+[actual_role]+tail)

@@ -183,6 +183,9 @@ def run_with_restart():
                 spawn_worker(run_supervised(initiative_scheduler,'cognitive_initiatives',get_runtime(),app.bot))
                 from cognition.reading import reading_scheduler
                 spawn_worker(run_supervised(reading_scheduler,'arti_reading',get_runtime()))
+                # H6 (P1): her in-character life (embroidery, tea, restoration); ARTI_PURSUITS_ENABLED=0 turns it off.
+                from cognition.pursuits import pursuits_scheduler
+                spawn_worker(run_supervised(pursuits_scheduler,'arti_pursuits',get_runtime()))
                 from materials.runtime import maintenance_worker
                 spawn_worker(run_supervised(maintenance_worker,'materials_maintenance'))
                 from agents.runtime import agent_worker,processing_card_worker

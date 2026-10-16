@@ -116,6 +116,19 @@ async def run(args):
             async with pool.acquire() as conn:
                 count = await conn.execute("UPDATE cognitive_outbox SET status='cancelled',payload=NULL,updated_at=NOW() WHERE id=$1 AND status='delivery_unknown'",args.outbox_id)
             return dict(result=count,automatic_resend=False)
+        if args.command in ('pursuits-status','pursuit-step','pursuit-pause','pursuit-resume'):
+            # H6 (P1): Arti's in-character life; global to the persona, no person data.
+            from datetime import datetime,timezone
+            from types import SimpleNamespace
+            from cognition import pursuits
+            now = datetime.now(timezone.utc)
+            if args.command=='pursuits-status':
+                return await pursuits.status(pool,now)
+            if args.command=='pursuit-step':
+                runtime = SimpleNamespace(pool=pool,clock=lambda: datetime.now(timezone.utc),mode='active')
+                return await pursuits.Pursuits(runtime).tick(kind=args.kind,manual=True,
+                                                             dry_run=args.dry_run or args.no_model,use_model=not args.no_model)
+            return await pursuits.set_paused(pool,args.command=='pursuit-pause',args.kind,now)
     finally:
         await pool.close()
 
@@ -141,4 +154,11 @@ if __name__=='__main__':
     rollback.add_argument('--apply',action='store_true')
     reconcile = sub.add_parser('cancel-unknown')
     reconcile.add_argument('--outbox-id',type=int,required=True)
+    sub.add_parser('pursuits-status',help="Arti's in-character life: pursuits, events, tastes, today's budget")
+    step = sub.add_parser('pursuit-step',help='one step now, ignoring the schedule but not the model budget')
+    step.add_argument('--kind',choices=('embroidery','restoration','tea'))
+    step.add_argument('--dry-run',action='store_true',help='write nothing; only the model call is counted')
+    step.add_argument('--no-model',action='store_true',help='dry run without the model call: only the planned facts')
+    for name in ('pursuit-pause','pursuit-resume'):
+        sub.add_parser(name).add_argument('--kind',choices=('embroidery','restoration','tea'))
     print(json.dumps(asyncio.run(run(parser.parse_args())),ensure_ascii=True))
