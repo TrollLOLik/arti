@@ -23,6 +23,7 @@ class CodecError(ValueError):
 
 REQUEST_FIELDS = frozenset('type chat_id user_id user_name user_message message_id is_voice base64_image base64_images document_text video_file_id is_video_note prompt image_urls image_aspect_ratio image_resolution image_num_images video_model video_duration video_aspect_ratio style instrumental _cognitive_context _cognitive_source_ids _material_uses _derivative_uses _computation_uses _cognitive_turn _telegram_scope _request_mode _request_no_coalesce url input_media reference_media synthesis_text cleaned source_kind with_subs audio_only'.split())
 REQUEST_FIELDS = REQUEST_FIELDS | {'saved_voice_id','saved_voice_version','_native_user_message','_result_card'}
+REQUEST_FIELDS = REQUEST_FIELDS | {'_channel','_source_key','_app_conversation_id','_app_message_id'}
 # These are process-local bookkeeping, never input to the resumed operation.
 TRANSIENT_FIELDS = frozenset(('bot', 'context', 'enqueued_at', 'started_at'))
 TELEGRAM_TYPES = frozenset(('Message', 'ReplyParameters', 'MessageEntity', 'InputMediaPhoto',
@@ -95,7 +96,11 @@ async def _encode(value, depth):
             raise CodecError('durable_key_not_string')
         return _tag('dict', items={k: await _encode(v, depth+1) for k,v in value.items()})
     from cognition.scope import TransportScope
-    from cognition.types import ContextKey, ExpressionPlan
+    from cognition.types import ContextKey, ExpressionPlan,NativeContextKey,NativeAudienceScope
+    if type(value) in (NativeContextKey,NativeAudienceScope):
+        data=asdict(value)
+        data['native_id']=str(value.native_id)
+        return _tag(type(value).__name__,value=await _encode(data,depth+1))
     for cls in (TransportScope, ContextKey, ExpressionPlan):
         if type(value) is cls:
             return _tag(cls.__name__, value=await _encode(asdict(value), depth+1))
@@ -188,7 +193,11 @@ async def _decode(value, depth):
     data=await _decode(value['value'],depth+1)
     if not isinstance(data,dict): raise CodecError()
     from cognition.scope import TransportScope
-    from cognition.types import ContextKey, ExpressionPlan
+    from cognition.types import ContextKey, ExpressionPlan,NativeContextKey,NativeAudienceScope
+    if kind in ('NativeContextKey','NativeAudienceScope'):
+        import uuid
+        data['native_id']=uuid.UUID(data['native_id'])
+        return (NativeContextKey if kind=='NativeContextKey' else NativeAudienceScope)(**data)
     classes={c.__name__:c for c in (TransportScope,ContextKey,ExpressionPlan)}
     if kind in classes:
         if kind=='ExpressionPlan': data['cause_ids']=tuple(data['cause_ids'])
@@ -274,7 +283,7 @@ async def _restore_use(kind,data):
     return use
 
 
-async def encode_request(request):
+async def encode_request(request, conn=None):
     if not isinstance(request,dict) or set(request)-REQUEST_FIELDS-TRANSIENT_FIELDS:
         raise CodecError('unsupported_durable_request_field')
     if request.get('type') not in ('text','image','video','music','dubbing','vclone'):
@@ -282,15 +291,20 @@ async def encode_request(request):
     fence=None
     context=request.get('_cognitive_context')
     if context:
+        from cognition.types import ContextKey
+        if not isinstance(context,ContextKey):
+            raise CodecError('native_room_not_enabled')
         from cognition.runtime import get_runtime
         from cognition.repositories import SuppressedEvidence
         runtime=get_runtime()
         if runtime is None: raise CodecError('durable_runtime_unavailable')
-        async with runtime.pool.acquire() as conn:
-            row=await conn.fetchrow('SELECT id,suppression_epoch,rebuilding FROM cognitive_contexts WHERE persona_id=$1 AND chat_id=$2 AND mode=$3 AND scene_id=$4 AND topic_id=$5',*context.identity())
-            if not row or row['rebuilding']: raise SuppressedEvidence()
-            await runtime._validate_current_scene(conn,row['id'])
-            fence={'context_id':row['id'],'epoch':row['suppression_epoch']}
+        if conn is None:
+            async with runtime.pool.acquire() as connection:
+                return await encode_request(request, connection)
+        row=await conn.fetchrow('SELECT id,suppression_epoch,rebuilding FROM cognitive_contexts WHERE persona_id=$1 AND chat_id=$2 AND mode=$3 AND scene_id=$4 AND topic_id=$5',*context.identity())
+        if not row or row['rebuilding']: raise SuppressedEvidence()
+        await runtime._validate_current_scene(conn,row['id'])
+        fence={'context_id':row['id'],'epoch':row['suppression_epoch']}
     return _bounded(_tag('request',fence=fence,value=await encode_value({k:v for k,v in request.items() if k in REQUEST_FIELDS})))
 
 
@@ -299,6 +313,20 @@ async def decode_request(payload,bot):
     request=await decode_value(payload['value'])
     if not isinstance(request,dict) or set(request)-REQUEST_FIELDS or request.get('type') not in ('text','image','video','music','dubbing','vclone'): raise CodecError()
     scope=request.get('_telegram_scope'); context=request.get('_cognitive_context')
+    from cognition.types import ContextKey
+    if context is not None and not isinstance(context,ContextKey):
+        raise CodecError('native_room_not_enabled')
+    if request.get('_channel') == 'miniapp':
+        import uuid
+        try:
+            cid=str(uuid.UUID(request['_app_conversation_id']))
+            mid=str(uuid.UUID(request['_app_message_id']))
+        except (KeyError,ValueError,TypeError,AttributeError):
+            raise CodecError('durable_native_scope_mismatch') from None
+        if request.get('type')!='text' or request.get('message_id') is not None or request.get('user_id')!=request.get('chat_id') or not scope or scope.channel!='miniapp' or scope.chat_type!='private' or scope.user_id!=request.get('user_id') or scope.topic_id!=-1 or scope.message_id is not None or not context or context.mode!='default' or request.get('_source_key')!=f'miniapp:{cid}:{mid}:user' or scope.source_key!=request.get('_source_key'):
+            raise CodecError('durable_native_scope_mismatch')
+    elif request.get('_channel') not in (None,'telegram') or scope and scope.channel!='telegram':
+        raise CodecError('durable_native_scope_mismatch')
     if request.get('_request_mode',context.mode if context else 'default') not in ('default','rp'): raise CodecError('durable_mode_mismatch')
     if context and request.get('_request_mode',context.mode)!=context.mode: raise CodecError('durable_mode_mismatch')
     if scope and scope.chat_id!=request.get('chat_id'): raise CodecError('durable_scope_mismatch')

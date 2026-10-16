@@ -114,8 +114,11 @@ def _zone_name(text):
     return name
 
 
-async def _pending(repo,owner,chat):
-    async with repo.connection() as conn:
+async def _pending(repo,owner,chat,conn=None):
+    if conn is None:
+        async with repo.connection() as connection:
+            return await _pending(repo,owner,chat,connection)
+    async with conn.transaction():
         await conn.execute("UPDATE arti_organizer_turns SET state='cancelled',outcome=NULL WHERE owner_id=$1 AND state='pending' AND root_source_key IN (SELECT source_key FROM arti_organizer_pending WHERE owner_id=$1 AND expires_at<=NOW())",owner)
         await conn.execute('DELETE FROM arti_organizer_pending WHERE owner_id=$1 AND expires_at<=NOW()',owner)
         row=await conn.fetchrow('SELECT * FROM arti_organizer_pending WHERE owner_id=$1 AND chat_id=$2',owner,chat)
@@ -246,26 +249,27 @@ async def converse(repo,owner,chat,text,source_key,*,reply_to_id=None):
     return command,args,source_key,display_zone
 
 
-async def claim_input(pool,owner,chat,message_id,text,*,mode='default'):
+async def claim_input(pool,owner,chat,message_id,text,*,mode='default',source_key=None,conn=None):
     """Select scheduling authority before cognitive ingestion, never send here."""
-    if mode!='default' or type(owner) is not int or type(chat) is not int or owner!=chat or owner<=0 or type(message_id) is not int:
+    if mode!='default' or type(owner) is not int or type(chat) is not int or owner!=chat or owner<=0 or (type(message_id) is not int and source_key is None):
         return False
     from organizer.repository import Repository
-    from organizer.ownership import claim_source
+    from organizer.ownership import claim_key,source_key as telegram_source
+    key=source_key or telegram_source(chat,message_id)
     if _work_request(text): return False
     direct=parse(text)
     if direct is not None:
-        return await claim_source(pool,owner,chat,message_id)
-    pending=await _pending(Repository(pool),owner,chat)
+        return await claim_key(pool,owner,chat,key,conn=conn)
+    pending=await _pending(Repository(pool),owner,chat,conn=conn)
     if pending is None: return False
     answer=_text(text)
     if not answer or answer[0] in '/«"\'>' or re.match(r'(?i)^(?:привет|спасибо|как\b|какая\b|какой\b|какие\b|что\b|кто\b|где\b|когда\b|почему\b|расскажи\b|помоги\b|объясни|переведи|мама|коллега|он |она )',answer) or answer.endswith('?'):
         return False
     root=pending['source_key']
-    match=re.fullmatch(r'telegram:'+str(chat)+r':([1-9][0-9]*)',root)
-    if not match: return False
-    await claim_source(pool,owner,chat,int(match[1]))
-    return await claim_source(pool,owner,chat,message_id,root+':user')
+    if not (re.fullmatch(r'telegram:'+str(chat)+r':[1-9][0-9]*',root) or re.fullmatch(r'miniapp:[0-9a-f-]{36}:[0-9a-f-]{36}',root)):
+        return False
+    await claim_key(pool,owner,chat,root+':user',conn=conn)
+    return await claim_key(pool,owner,chat,key,root+':user',conn=conn)
 
 
 async def cleanup_expired(pool,limit=500):

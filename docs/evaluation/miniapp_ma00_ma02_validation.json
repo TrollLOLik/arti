@@ -1,0 +1,41 @@
+{
+  "date": "2026-10-16",
+  "scope": ["MA00", "MA01", "MA02"],
+  "status": "implemented_and_locally_verified",
+  "python_tests": {
+    "total": 44,
+    "auth_and_http": 18,
+    "contracts_and_postgresql": 10,
+    "existing_request_codec": 16,
+    "result": "pass",
+    "database": "one disposable arti_miniapp_test_<uuid> per test",
+    "includes_real_pg_http_session_integration": true
+  },
+  "client": {
+    "typecheck": "pass",
+    "eslint": "pass",
+    "tests": 9,
+    "production_build": "pass",
+    "dependencies_locked": true,
+    "npm_audit_at_install": "0 vulnerabilities"
+  },
+  "visual_evaluation": {
+    "rounds": 2,
+    "result": "pass",
+    "widths": [320, 390, 768, 1440],
+    "themes": ["light", "dark", "system"],
+    "fixed": ["tablet_navigation_accessible_names", "browser_system_theme", "tab_scroll_reset", "stale_unavailable_resource_state"],
+    "browser_runtime_errors": 0,
+    "real_telegram_device": "not tested",
+    "evaluator": "independent fresh-context agent; no other model provider available"
+  },
+  "pip_check": "pass",
+  "git_diff_check": "pass; existing LF/CRLF warning on unrelated document",
+  "preview_url": "http://127.0.0.1:8767/",
+  "production_schema_changed": false,
+  "production_bot_restarted": false,
+  "env_file_changed": false,
+  "ai_provider_called": false,
+  "not_enabled_yet": ["chat_send", "history_sync", "sse", "human_chat_api", "rooms_api", "create_jobs", "memory_management"],
+  "next": ["MA03", "MA04"]
+}

@@ -1,0 +1,93 @@
+{
+  "package": "MA03-MA04",
+  "date": "2026-10-16",
+  "implementation_status": "complete_local_validation",
+  "production_deployed": false,
+  "server": {
+    "tests": 123,
+    "result": "PASS",
+    "seconds": 155.085,
+    "suites": [
+      "miniapp.auth",
+      "miniapp.server",
+      "miniapp.live_http",
+      "conversations.repository",
+      "conversations.live_chat",
+      "request_codec",
+      "request_store",
+      "request_runtime",
+      "request_delivery",
+      "organizer_ownership",
+      "cutover"
+    ],
+    "post_audit_targeted_rerun": {
+      "tests": 8,
+      "seconds": 27.196,
+      "result": "PASS",
+      "additional_sse_shutdown_test": {
+        "tests": 1,
+        "seconds": 7.164,
+        "result": "PASS"
+      }
+    },
+    "fixtures": "Disposable PostgreSQL only, RecordedInterpreter, fake providers and Telegram send",
+    "live_external_calls": false
+  },
+  "frontend": {
+    "tests": 28,
+    "typecheck": "PASS",
+    "lint": "PASS",
+    "production_build": "PASS"
+  },
+  "browser": {
+    "independent_evaluation": [
+      "PASS",
+      "PASS"
+    ],
+    "viewports": [
+      320,
+      375,
+      390,
+      768,
+      1440
+    ],
+    "real_api_fixture": "PASS: POST202, shared history, durable worker publication, SSE200, reset/revision2, mirror metadata without duplicates",
+    "html_execution": false,
+    "axe_wcag2a_aa_violations": 0,
+    "screenshots": [
+      "miniapp/qa/ma04-real-api-mobile.png",
+      "miniapp/qa/ma04-real-api-desktop.png"
+    ],
+    "evaluator_provider_limitation": "Only OpenAI available; evaluator used a fresh isolated context",
+    "fresh_reload": "PASS: session/bootstrap/list/messages/SSE200, POST202, one intent, no duplicates or runtime errors",
+    "test_servers_stopped": true
+  },
+  "checks": {
+    "compileall": "PASS",
+    "pip_check": "PASS",
+    "git_diff_check": "PASS"
+  },
+  "migrations": {
+    "added": [
+      "056_miniapp_live_chat.sql",
+      "057_miniapp_erasure.sql",
+      "058_miniapp_organizer_sources.sql"
+    ],
+    "applied_to_production": false
+  },
+  "preserved": [
+    "working .env",
+    "running bot",
+    "production database",
+    "BotFather settings",
+    "unrelated dirty changes",
+    "legacy ContextKey identity and material scope hashes"
+  ],
+  "limitations": [
+    "Real paid-provider and Telegram API behavior not exercised",
+    "HTTPS and Telegram WebView/device verification remain before pilot",
+    "Human chats and room inference remain MA05-MA06",
+    "Media and agent result cards remain later packages"
+  ],
+  "next_package": "MA05-MA06"
+}

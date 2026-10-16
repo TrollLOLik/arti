@@ -122,7 +122,9 @@ async def handle_natural(request,bot):
     from bot.request_runtime import checkpoint
     scope=request.get('_telegram_scope')
     text=str(request.get('_native_user_message',request.get('user_message','')))
-    if scope is None or scope.chat_type!='private' or scope.user_id!=scope.chat_id or request.get('user_id')!=scope.user_id or scope.sender_kind!='user' or request.get('chat_id')!=scope.chat_id or type(request.get('message_id')) is not int or request['message_id']<=0 or scope.message_id!=request['message_id'] or scope.topic_id>=0:
+    native = scope and scope.channel=='miniapp' and scope.source_key==request.get('_source_key') and scope.source_key is not None and request.get('message_id') is None
+    telegram = type(request.get('message_id')) is int and request['message_id']>0 and scope and scope.message_id==request['message_id']
+    if scope is None or scope.chat_type!='private' or scope.user_id!=scope.chat_id or request.get('user_id')!=scope.user_id or scope.sender_kind!='user' or request.get('chat_id')!=scope.chat_id or not (native or telegram) or scope.topic_id>=0:
         if parse(text) is None: return False
         await bot.send_message(chat_id=request['chat_id'],text='Для личных задач и напоминаний открой личный чат с Арти.',parse_mode=None)
         return True
@@ -131,7 +133,7 @@ async def handle_natural(request,bot):
         from organizer.scenarios import perform as native_perform
         try:
             return await native_perform(repo,scope.user_id,scope.chat_id,text,
-                f'telegram:{scope.chat_id}:{request["message_id"]}',reply_to_id=scope.reply_to_id)
+                scope.source_key.removesuffix(':user') if native else f'telegram:{scope.chat_id}:{request["message_id"]}',reply_to_id=scope.reply_to_id)
         except OrganizerError as exc:
             return dict(response=ERRORS.get(str(exc),'Не удалось сохранить запись: проверь название, дату и часовой пояс.'),clear_source=None)
     outcome=await checkpoint('organizer_result',perform)
@@ -139,7 +141,8 @@ async def handle_natural(request,bot):
     from organizer.scenarios import current_outcome
     outcome=await current_outcome(repo,scope.user_id,scope.chat_id,outcome)
     sent=await bot.send_message(chat_id=scope.chat_id,text=outcome['response'],parse_mode=None)
-    await repo.record_reply(scope.user_id,scope.chat_id,getattr(sent,'message_id',None),outcome.get('items',[]),source_key=outcome.get('source_key'),generation=outcome.get('generation'))
+    if not native:
+        await repo.record_reply(scope.user_id,scope.chat_id,getattr(sent,'message_id',None),outcome.get('items',[]),source_key=outcome.get('source_key'),generation=outcome.get('generation'))
     if outcome['clear_source']:
         await clear_pending(repo,scope.user_id,scope.chat_id,outcome['clear_source'])
     return True

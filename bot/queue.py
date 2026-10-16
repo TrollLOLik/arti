@@ -980,7 +980,12 @@ def _resumed_request():
     return job is not None and job.get('attempts', 1) > 1
 
 
-async def process_user_reply(request, bot):
+async def process_user_reply(request, bot, *, sink=None):
+    native = sink is not None
+    if native:
+        from types import SimpleNamespace
+        request = dict(request, context=SimpleNamespace(bot=sink), bot=sink, is_voice=False)
+        bot = sink
     turn_started = asyncio.get_running_loop().time()
     from cognition.scope import CURRENT_SCOPE
     CURRENT_SCOPE.set(request.get('_telegram_scope'))
@@ -1062,12 +1067,12 @@ async def process_user_reply(request, bot):
     mode = request.get('_request_mode', "rp" if rp_mode_state.get(chat_id) else "default")
     from cognition.runtime import get_runtime
     runtime=get_runtime()
-    if runtime and CURRENT_SCOPE.get() and CURRENT_SCOPE.get().chat_type=='private':
+    if not native and runtime and CURRENT_SCOPE.get() and CURRENT_SCOPE.get().chat_type=='private':
         from organizer.natural import claim_input
         from bot.agent_requests import direct_text
         await claim_input(runtime.pool,user_id,chat_id,message_id,direct_text(request),mode=mode)
     from bot.request_runtime import prepare_turn
-    cognitive_turn = await prepare_turn(chat_id,profile_user_id,user_message,message_id,mode,source_context=request.get('_cognitive_context'))
+    cognitive_turn = await prepare_turn(chat_id,profile_user_id,user_message,message_id,mode,source_context=request.get('_cognitive_context'),source_key=request.get('_source_key'))
     cognitive_turn.supporting_event_ids=sorted(set(getattr(cognitive_turn,'supporting_event_ids',())) | set(request.get('_cognitive_source_ids',[])))
     if cognitive_turn.repeated_delivery:
         return
@@ -1087,14 +1092,14 @@ async def process_user_reply(request, bot):
     request['_intent_raw']=native_text
     request['_intent'] = await checkpoint('intent', lambda: resolve_intent(native_text,chat_id,
         has_materials=bool(request.get('_material_uses') or document_text),
-        allow_work=enabled() and os.getenv('ARTI_AGENTS_ENABLED','0').lower() in ('1','true','yes'),
+        allow_work=not native and enabled() and os.getenv('ARTI_AGENTS_ENABLED','0').lower() in ('1','true','yes'),
         recent_maps=map_scope_key is not None and time.time()-_recent_map_sessions.get(map_scope_key,0)<300,context=intent_context)) if mode!='rp' else {}
     if request['_intent'].get('clarification'):
         await bot.send_message(chat_id=chat_id, text=request['_intent']['clarification'], reply_to_message_id=message_id)
         return
     from bot.agent_requests import handle_agent_request,recover_agent_request
     from bot.request_runtime import agent_handoff
-    if mode!='rp' and user_id and await agent_handoff(lambda: handle_agent_request(request,bot),recover=lambda: recover_agent_request(request,bot,resume_reserved=True)):
+    if not native and mode!='rp' and user_id and await agent_handoff(lambda: handle_agent_request(request,bot),recover=lambda: recover_agent_request(request,bot,resume_reserved=True)):
         return
     if cognitive_turn.preferences.get('voice') is False or cognitive_turn.preferences.get('text') is True:
         is_voice = False
@@ -1162,6 +1167,9 @@ async def process_user_reply(request, bot):
                 location = await get_user_location(user_id, chat_id=chat_id)
 
                 if not location:
+                    if native:
+                        await callback_context.bot.send_message(chat_id=chat_id,text='Пришли геопозицию в личный чат Telegram-бота, затем продолжим здесь. В Mini App передача геопозиции пока не подключена.')
+                        return
                     # Нет геопозиции — просим пользователя скинуть
                     if repeating_task:
                         repeating_task.cancel()
@@ -1192,10 +1200,10 @@ async def process_user_reply(request, bot):
 
         # Личный чат: недавний диалог нативными ролями (H2, P3); группы — стенограммой.
         from utils.chat_history import get_dialogue_turns
-        chat_context = await get_dialogue_turns(chat_id, 'rp' if rp_mode_state.get(chat_id) else 'default')
+        chat_context = await get_dialogue_turns(chat_id, mode)
         if chat_context is None:
             # RP-режим: используем отдельную историю
-            if rp_mode_state.get(chat_id):
+            if mode=='rp':
                 chat_context = await get_chat_context_rp(chat_id)
             else:
                 chat_context = await get_chat_context(chat_id)
@@ -1209,7 +1217,10 @@ async def process_user_reply(request, bot):
 
         # --- ПОДГОТОВКА СИСТЕМНОГО ПРОМПТА ДЛЯ КРУГЛЕШКОВ ---
         custom_system_prompt = None
-        is_rp = rp_mode_state.get(chat_id, False)
+        if native:
+            from config import ARTI_SYSTEM_PROMPT
+            custom_system_prompt = ARTI_SYSTEM_PROMPT + '\nТекущий канал: Mini App, текстовый чат с общей историей личного Telegram-чата. Доступен текст и поиск. Голос, вложения, генерация медиа и карточки агентских заданий здесь пока недоступны; не обещай выполнить такие действия и не используй медиа-теги. Ссылки пиши прямо в тексте.'
+        is_rp = mode=='rp'
         if is_video_note and not is_rp:
             from config import ARTI_SYSTEM_PROMPT
             custom_system_prompt = (
@@ -1245,6 +1256,9 @@ async def process_user_reply(request, bot):
         # MEM-06: ответ-заглушка об ошибке генерации — покажем пользователю, но НЕ
         # сохраняем в историю/память (иначе экстрактор учится на «у меня ошибка»).
         generation_failed = is_error_response(response_text)
+        if native and generation_failed:
+            from conversations.publication import GenerationUnavailable
+            raise GenerationUnavailable()
 
         if repeating_task:
             repeating_task.cancel()
@@ -1314,7 +1328,14 @@ async def process_user_reply(request, bot):
         display_text = strip_voice_tags(display_text)
 
         # Извлекаем ссылки и создаем кнопки
-        display_text, reply_markup = extract_urls_and_make_keyboard(display_text, extra_links=grounding_links)
+        if native:
+            reply_markup = None
+            if grounding_links:
+                display_text += '\n' + '\n'.join(str(link.get('uri') or link.get('url') or '') if isinstance(link,dict) else str(link) for link in grounding_links)
+        else:
+            display_text, reply_markup = extract_urls_and_make_keyboard(display_text, extra_links=grounding_links)
+        if native and (image_requests or video_request_prompt or music_request):
+            display_text += '\nГенерация медиа пока доступна в чате Telegram-бота.'
         
         # Удаляем неподдерживаемые HTML теги
         # The shared delivery helper sanitizes HTML while planning valid parts.
@@ -1413,7 +1434,7 @@ async def process_user_reply(request, bot):
                     await _initiative_question(callback_context.bot, chat_id, cognitive_turn)
 
         # === ОТПРАВКА СТИКЕРА В ФОНЕ ===
-        if sticker_mood:
+        if sticker_mood and not native:
             from ai.stickers import send_mood_sticker_task
             sticker_reply_to_message_id = sent_msg.message_id if sent_msg else message_id
             
@@ -1431,7 +1452,7 @@ async def process_user_reply(request, bot):
         # MEM-06: не учим долговременную память на заглушке об ошибке.
 
         # === ОТПРАВЛЯЕМ КАРТИНКИ ИЗ ПОИСКА ===
-        if found_search_images:
+        if found_search_images and not native:
             logger.info(f"Отправляем {len(found_search_images)} картинок из поиска.")
             for img_url in found_search_images:
                 try:
@@ -1446,8 +1467,8 @@ async def process_user_reply(request, bot):
 
         # Обработка медиа-тегов из ответа.
         # VAL-07: LLM-инициированная генерация считается в per-user медиа-квоту.
-        media_allowed = True
-        if image_requests or video_request_prompt or music_request:
+        media_allowed = not native
+        if not native and (image_requests or video_request_prompt or music_request):
             media_allowed = _llm_media_quota_ok(user_id)
             if not media_allowed:
                 logger.info(f"LLM-медиа-теги пропущены: квота медиа исчерпана для user {user_id}")

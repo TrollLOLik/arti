@@ -132,6 +132,8 @@ def run_with_restart():
                     runtime=await start_runtime(connection._pool)
                     runtime.bot_id=app.bot.id
                     runtime.bot_username=app.bot.username
+                    from miniapp.server import start_for_bot
+                    app.bot_data['miniapp_runner'] = await start_for_bot(app.bot, connection._pool)
                     from bot.menu import install
                     try:
                         await install(app.bot)
@@ -191,6 +193,9 @@ def run_with_restart():
 
             # Создаём приложение с кастомными таймаутами и RetryBot
             async def post_stop(app):
+                miniapp_runner = app.bot_data.pop('miniapp_runner', None)
+                if miniapp_runner is not None:
+                    await miniapp_runner.cleanup()
                 tasks = app.bot_data.pop('owned_workers',[])
                 for task in tasks:
                     task.cancel()

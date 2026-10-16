@@ -1,16 +1,19 @@
 """Explicit wire format; importing this module never initializes a provider client."""
 import json
+import uuid
 from dataclasses import asdict
 from datetime import datetime
 
 from cognition.types import (CognitiveEvent, CognitiveState, ContextKey, EmotionEpisode,AffectiveResidue,
-                             EvidenceRef, Origin, AudienceScope)
+                             EvidenceRef, Origin, AudienceScope,NativeContextKey,NativeAudienceScope)
 
 
 def dump(value) -> str:
     def encode(obj):
         if isinstance(obj, datetime):
             return obj.isoformat()
+        if isinstance(obj,uuid.UUID):
+            return str(obj)
         if isinstance(obj, (frozenset, set)):
             return sorted(obj)
         raise TypeError(type(obj).__name__)
@@ -22,13 +25,29 @@ def object_value(value):
     return json.loads(value) if isinstance(value, str) else value
 
 
+def load_context(value):
+    data=dict(value)
+    if 'native_id' in data:
+        data['native_id']=uuid.UUID(data['native_id'])
+        return NativeContextKey(**data)
+    return ContextKey(**data)
+
+
+def load_audience(value):
+    data=dict(value)
+    if data.get('kind')=='native_room':
+        data['native_id']=uuid.UUID(data['native_id'])
+        return NativeAudienceScope(**data)
+    return AudienceScope(**data)
+
+
 def load_event(value) -> CognitiveEvent:
     data = object_value(value)
-    return CognitiveEvent(data['event_id'], ContextKey(**data['context']),
+    return CognitiveEvent(data['event_id'], load_context(data['context']),
                           EvidenceRef(**{**data['evidence'], 'origin': Origin(data['evidence']['origin'])}),
                           datetime.fromisoformat(data['occurred_at']), datetime.fromisoformat(data['observed_at']),
                           data['text'], data['actor_id'], data.get('target_id'),data.get('event_kind','utterance'),
-                          AudienceScope(**data.get('audience',{})),data.get('addressed_to_arti',True),data.get('reply_to_id'))
+                          load_audience(data.get('audience',{})),data.get('addressed_to_arti',True),data.get('reply_to_id'))
 
 
 def upgrade_state(data):
@@ -42,7 +61,7 @@ def upgrade_state(data):
 
 def load_state(value) -> CognitiveState:
     data = upgrade_state(dict(object_value(value)))
-    data['context'] = ContextKey(**data['context'])
+    data['context'] = load_context(data['context'])
     data['last_at'] = datetime.fromisoformat(data['last_at'])
     data['episodes'] = tuple(EmotionEpisode(**{**ep, 'created_at': datetime.fromisoformat(ep['created_at'])}) for ep in data['episodes'])
     data['applied_groups'] = frozenset(data['applied_groups'])

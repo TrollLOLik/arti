@@ -1,0 +1,4 @@
+# Replace this hostname with your own domain; point its DNS at this server.
+arti.example.com {
+    reverse_proxy 127.0.0.1:8765
+}

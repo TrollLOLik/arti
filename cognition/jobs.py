@@ -6,8 +6,11 @@ class JobQueue:
     def __init__(self, pool):
         self.pool = pool
 
-    async def enqueue(self, context_id: int, event_id: int, kind: str = 'interpret', max_attempts: int = 3):
-        async with self.pool.acquire() as conn:
+    async def enqueue(self, context_id: int, event_id: int, kind: str = 'interpret', max_attempts: int = 3, *, conn=None):
+        if conn is None:
+            async with self.pool.acquire() as connection:
+                return await self.enqueue(context_id, event_id, kind, max_attempts, conn=connection)
+        async with conn.transaction():
             return await conn.fetchval("""
                 INSERT INTO cognitive_jobs(context_id,event_id,kind,max_attempts)
                 SELECT $1,$2,$3,$4 FROM cognitive_events WHERE context_id=$1 AND id=$2 AND suppressed_at IS NULL

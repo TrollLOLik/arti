@@ -29,7 +29,7 @@ def source_key(chat,message_id):
 def _validate(owner,chat,key):
     if type(owner) is not int or type(chat) is not int or owner<=0 or owner!=chat:
         raise OrganizerError('private_chat_required')
-    if not isinstance(key,str) or not re.fullmatch(r'telegram:'+str(chat)+r':[1-9][0-9]*:user',key):
+    if not isinstance(key,str) or not (re.fullmatch(r'telegram:'+str(chat)+r':[1-9][0-9]*:user',key) or re.fullmatch(r'miniapp:[0-9a-f-]{36}:[0-9a-f-]{36}:user',key)):
         raise OrganizerError('invalid_native_source')
 
 
@@ -38,8 +38,16 @@ def _lock(owner): return f'organizer-cognitive-routing:{owner}'
 
 async def claim_source(pool,owner,chat,message_id,root_source_key=None):
     key=source_key(chat,message_id); root=root_source_key or key
+    return await claim_key(pool,owner,chat,key,root)
+
+
+async def claim_key(pool,owner,chat,key,root_source_key=None,*,conn=None):
+    root=root_source_key or key
     _validate(owner,chat,key); _validate(owner,chat,root)
-    async with pool.acquire() as conn,conn.transaction():
+    if conn is None:
+        async with pool.acquire() as connection,connection.transaction():
+            return await claim_key(pool,owner,chat,key,root,conn=connection)
+    async with conn.transaction():
         await conn.execute('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',_lock(owner))
         existing=await conn.fetchval('SELECT 1 FROM arti_organizer_source_routes WHERE owner_id=$1 AND chat_id=$2 AND source_key=$3',owner,chat,key)
         if existing: return True
@@ -51,7 +59,7 @@ async def claim_source(pool,owner,chat,message_id,root_source_key=None):
 
 async def link_source(pool,owner,chat,root_source_key,current_source_key):
     _validate(owner,chat,current_source_key)
-    return await claim_source(pool,owner,chat,int(current_source_key.split(':')[2]),root_source_key)
+    return await claim_key(pool,owner,chat,current_source_key,root_source_key)
 
 
 # Interpretation stores retrieval dependencies too. Merely remembering a native

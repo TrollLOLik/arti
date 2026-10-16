@@ -416,6 +416,10 @@ async def start(update, context):
         return
 
     await set_responses_enabled(chat_id, True)
+    if getattr(context, 'args', None) and context.args[0].startswith('ma_'):
+        from miniapp.handoffs import handle_start
+        if await handle_start(update, context):
+            return
     logger.info(f"Бот включен в чате {chat_id}.")
     if getattr(context.bot,'_menu_panel',None) is not None:
         await update.message.reply_text('Ответы включены. Я на связи.')

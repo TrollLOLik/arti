@@ -113,25 +113,31 @@ class RequestStore:
             if count!=len(deps['material_ids']): return False
         return True
 
-    async def enqueue(self, kind, chat_id, topic_id, dedupe_key, payload, budget_seconds=900, *, resources=(), debounce_seconds=None):
+    async def enqueue(self, kind, chat_id, topic_id, dedupe_key, payload, budget_seconds=900, *, resources=(), debounce_seconds=None, conn=None):
+        if conn is None:
+            async with self.pool.acquire() as connection, connection.transaction():
+                return await self.enqueue(kind, chat_id, topic_id, dedupe_key, payload, budget_seconds,
+                    resources=resources, debounce_seconds=debounce_seconds, conn=connection)
         if not isinstance(payload, dict) or not dedupe_key or not 1 <= budget_seconds <= (604800 if kind in ('dubbing','vclone') else 86400):
             raise ValueError('invalid_request')
         resources=self._resource_names(resources)
         deps=self._dependencies(payload)
-        debounce=kind=='text' and payload.get('kind')=='request'
+        from bot.request_codec import _items
+        fields=_items(payload.get('value')) or {}
+        debounce=kind=='text' and payload.get('kind')=='request' and not fields.get('_request_no_coalesce')
         if debounce and resources: raise ValueError('disk_resources_not_debounceable')
         from bot.human_rhythm import DEBOUNCE_MAX_SECONDS, LEGACY_WAIT
         # The latest fragment decides how long to wait for the rest of a burst;
         # the whole burst never waits longer than DEBOUNCE_MAX_SECONDS.
         wait=LEGACY_WAIT if debounce_seconds is None else min(DEBOUNCE_MAX_SECONDS,max(.3,float(debounce_seconds)))
-        async with self.pool.acquire() as conn, conn.transaction():
+        async with conn.transaction():
+            await self._lock_dependencies(conn,deps)
             await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",f'request:{chat_id}:{topic_id}:{kind}')
             existing=await conn.fetchrow('SELECT * FROM arti_requests WHERE chat_id=$1 AND topic_id=$2 AND dedupe_key=$3',chat_id,topic_id,dedupe_key)
             if existing:
                 if existing['parent_id']:
                     existing=await conn.fetchrow('SELECT * FROM arti_requests WHERE id=$1',existing['parent_id'])
                 return _row(existing)
-            await self._lock_dependencies(conn,deps)
             if not await self._allowed(conn,deps): raise ValueError('suppressed_request_source')
             parent=None; merged=None
             if debounce:

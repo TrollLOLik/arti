@@ -1,0 +1,27 @@
+{
+  "date": "2026-10-16",
+  "scope": "MA00-MA02",
+  "baseline": {
+    "miniapp_tests": 15,
+    "result": "pass",
+    "python": "3.12.14 (.venv-miniapp)",
+    "node": "24.15.0",
+    "npm": "11.12.1",
+    "postgresql_service": "18 / running",
+    "old_venvs": "venv/.venv reference unavailable Python310; preserved"
+  },
+  "preexisting_modified": [
+    ".env.example", ".gitignore", "ai/group_participation.py", "bot/commands.py",
+    "bot/menu/__init__.py", "cognition/affect.py", "cognition/group_context.py",
+    "cognition/proactivity.py", "cognition/runtime.py", "cognition/types.py",
+    "config.py", "docs/ARTI_HUMANLIKENESS_ANALYSIS.md", "main.py", "utils/chat_history.py"
+  ],
+  "preexisting_untracked": [
+    "docs/ARTI_H5_FINE_TUNING.md", "docs/ARTI_MINIAPP_IMPLEMENTATION_PLAN.md",
+    "docs/evaluation/fine_tuning_h5_validation.json", "miniapp/", "mockup/",
+    "tests/cognition/test_fine_tuning.py", "tests/miniapp/"
+  ],
+  "production_actions": "No production schema migration, bot restart, .env change or provider call",
+  "test_isolation": "Fresh arti_miniapp_test_<uuid> PostgreSQL database per test; exact generated name checked before DROP",
+  "provider_imports": "conversations/ and miniapp.server import without provider credentials"
+}

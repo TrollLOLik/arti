@@ -1,0 +1,6 @@
+# Standalone preview and HTTP contract tests; main bot uses root requirements.txt.
+aiohttp>=3.9,<4
+asyncpg>=0.29,<1
+python-dotenv>=1,<2
+python-telegram-bot>=21,<23
+tzdata>=2024.1

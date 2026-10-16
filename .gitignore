@@ -17,3 +17,11 @@ __pycache__/
 *.wav
 *.session
 *.session-journal
+
+# Isolated Mini App development environment and browser QA output
+.venv-miniapp/
+miniapp/qa/
+miniapp/frontend/node_modules/
+miniapp/frontend/dist/
+miniapp/frontend/test-results/
+miniapp/frontend/playwright-report/

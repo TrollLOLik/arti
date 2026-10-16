@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from math import isfinite
 from typing import Any
+import uuid
 
 MODEL_VERSION = 'cognition-2026-09-30.4'
 PERCEPTION_VERSION = 'appraisal-2026-09-30.1'
@@ -62,6 +63,30 @@ class ContextKey:
 
 
 @dataclass(frozen=True)
+class NativeContextKey:
+    native_id: uuid.UUID
+    persona_id: str = 'arti'
+    mode: str = 'default'
+
+    def __post_init__(self):
+        if not isinstance(self.native_id,uuid.UUID) or self.persona_id!='arti' or self.mode!='default':
+            raise ValueError('Invalid native context')
+
+    def identity(self):
+        return self.persona_id,'native_room',str(self.native_id),self.mode
+
+
+@dataclass(frozen=True)
+class NativeAudienceScope:
+    native_id: uuid.UUID
+    kind: str = 'native_room'
+
+    def __post_init__(self):
+        if not isinstance(self.native_id,uuid.UUID) or self.kind!='native_room':
+            raise ValueError('Invalid native audience')
+
+
+@dataclass(frozen=True)
 class AudienceScope:
     kind: str = 'unknown'
     chat_id: int | None = None
@@ -102,7 +127,7 @@ class EvidenceRef:
 @dataclass(frozen=True)
 class CognitiveEvent:
     event_id: str
-    context: ContextKey
+    context: ContextKey | NativeContextKey
     evidence: EvidenceRef
     occurred_at: datetime
     observed_at: datetime
@@ -110,7 +135,7 @@ class CognitiveEvent:
     actor_id: int | None
     target_id: int | None = None
     event_kind: str = 'utterance'
-    audience: AudienceScope = field(default_factory=AudienceScope)
+    audience: AudienceScope | NativeAudienceScope = field(default_factory=AudienceScope)
     addressed_to_arti: bool = True
     reply_to_id: int | None = None
 
@@ -121,9 +146,12 @@ class CognitiveEvent:
             raise ValueError('Event text budget exceeded')
         if self.event_kind not in ('utterance','reaction','media_request','media_source','delivery','system','historical'):
             raise ValueError('Invalid event kind')
-        if not isinstance(self.audience,AudienceScope) or not isinstance(self.addressed_to_arti,bool):
+        if not isinstance(self.audience,(AudienceScope,NativeAudienceScope)) or not isinstance(self.addressed_to_arti,bool):
             raise ValueError('Invalid audience or addressing')
-        if self.audience.kind!='unknown' and self.audience.chat_id!=self.context.chat_id:
+        if isinstance(self.context,NativeContextKey):
+            if not isinstance(self.audience,NativeAudienceScope) or self.audience.native_id!=self.context.native_id:
+                raise ValueError('Audience differs from native context')
+        elif isinstance(self.audience,NativeAudienceScope) or self.audience.kind!='unknown' and self.audience.chat_id!=self.context.chat_id:
             raise ValueError('Audience differs from context')
         for name in ('actor_id','target_id'):
             value = getattr(self,name)
@@ -334,7 +362,7 @@ class AffectiveResidue:
 
 @dataclass(frozen=True)
 class CognitiveState:
-    context: ContextKey
+    context: ContextKey | NativeContextKey
     last_at: datetime
     model_version: str = MODEL_VERSION
     temperament_version: str = TEMPERAMENT_VERSION

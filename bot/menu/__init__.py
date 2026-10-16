@@ -18,7 +18,14 @@ MENU_WORDS = ('Меню', 'меню', '🧭 Меню')
 async def install(bot):
     await bot.set_my_commands([BotCommand('menu','Открыть меню Арти'), BotCommand('start','Начать общение'),
                               BotCommand('cancel','Остановить запросы'), BotCommand('request','Статус последнего запроса'), BotCommand('organizer','Личные задачи и напоминания')])
-    await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+    import os
+    if os.getenv('ARTI_MINIAPP_ENABLED', '0').lower() in ('1', 'true', 'yes'):
+        from miniapp.settings import public_url
+        from telegram import MenuButtonWebApp, WebAppInfo
+        url = public_url(os.getenv('ARTI_MINIAPP_URL', ''))
+        await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text='Открыть Арти', web_app=WebAppInfo(url)))
+    else:
+        await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
 
 
 def pool_for_menu():

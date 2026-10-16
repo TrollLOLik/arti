@@ -69,11 +69,14 @@ class CognitiveRepository:
             state = replace(appraise(state,load_event(row['payload']),Perception.from_dict(object_value(row['revised'] or row['perception']))),applied_groups=frozenset())
         return available_goals(state,event.evidence.owner_id)
 
-    async def observe(self, event: CognitiveEvent) -> tuple[int, int]:
+    async def observe(self, event: CognitiveEvent, conn=None) -> tuple[int, int]:
+        if conn is None:
+            async with self.pool.acquire() as connection, connection.transaction():
+                return await self.observe(event, connection)
         payload = dump(event)
         fingerprint = hashlib.sha256(payload.encode('utf-8')).hexdigest()
         state = initial_state(event.context, event.observed_at)
-        async with self.pool.acquire() as conn, conn.transaction():
+        async with conn.transaction():
             cid = await conn.fetchval("""
                 INSERT INTO cognitive_contexts(persona_id, chat_id, mode, scene_id, topic_id, model_version, state, authority)
                 VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8)

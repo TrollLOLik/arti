@@ -197,14 +197,26 @@ class CognitiveRuntime:
             return await conn.fetchval('''INSERT INTO cognitive_scenes(chat_id,scene_id,topic_id) VALUES($1,$2,$3)
                 ON CONFLICT(chat_id,topic_id) DO UPDATE SET scene_id=EXCLUDED.scene_id,updated_at=NOW() RETURNING scene_id''',chat_id,uuid.uuid4().hex,topic)
 
-    async def ingest(self,chat_id,owner,text,message_id,mode='default',occurred_at=None,origin=Origin.USER,context=None,event_kind='utterance',audience=None,addressed_to_arti=None,reply_to_id=None):
+    async def ingest(self,chat_id,owner,text,message_id,mode='default',occurred_at=None,origin=Origin.USER,context=None,event_kind='utterance',audience=None,addressed_to_arti=None,reply_to_id=None,*,source_key=None,conn=None):
         context = context or await self.context(chat_id,mode)
-        if self.strict and context != await self.context(chat_id,mode,context.topic_id):
-            raise SuppressedEvidence()
+        if not isinstance(context,ContextKey):
+            raise ValueError('Native room inference requires MA06 policy')
+        if conn is None:
+            if self.strict:
+                await self.ensure_context(context)
+            async with self.pool.acquire() as connection, connection.transaction():
+                return await self.ingest(chat_id,owner,text,message_id,mode,occurred_at,origin,context,
+                    event_kind,audience,addressed_to_arti,reply_to_id,source_key=source_key,conn=connection)
         if self.strict:
-            await self.ensure_context(context)
-        source = f'telegram:{chat_id}:{message_id}:{origin.value}'
-        async with self.pool.acquire() as conn:
+            scene=await conn.fetchval('SELECT scene_id FROM cognitive_scenes WHERE chat_id=$1 AND topic_id=$2',chat_id,context.topic_id) if mode=='rp' else ''
+            if context != ContextKey('arti',chat_id,mode,scene or '',context.topic_id):
+                raise SuppressedEvidence()
+        source = source_key or f'telegram:{chat_id}:{message_id}:{origin.value}'
+        if source_key is not None:
+            import re
+            if message_id is not None or not re.fullmatch(r'miniapp:[0-9a-f-]{36}:[0-9a-f-]{36}:user',source_key) or origin!=Origin.USER:
+                raise ValueError('invalid_native_source')
+        async with conn.transaction():
             existing = await conn.fetchrow('''SELECT e.* FROM cognitive_events e JOIN cognitive_contexts c ON c.id=e.context_id
                 WHERE c.persona_id=$1 AND c.chat_id=$2 AND c.mode=$3 AND c.scene_id=$4 AND c.topic_id=$5 AND e.event_key=$6''',*context.identity(),source)
         if existing:
@@ -225,10 +237,10 @@ class CognitiveRuntime:
         reply_to_id = reply_to_id if reply_to_id is not None else scope.reply_to_id if scoped else None
         evidence = EvidenceRef(source,source,origin,owner)
         event = CognitiveEvent(source,context,evidence,occurred_at,at,str(text or ''),owner if origin==Origin.USER else None,owner if origin==Origin.DELIVERED_ACTION else None,event_kind,audience,addressed_to_arti,reply_to_id)
-        cid,eid = await self.repo.observe(event)
-        async with self.pool.acquire() as conn:
+        cid,eid = await self.repo.observe(event,conn=conn)
+        async with conn.transaction():
             await conn.execute('UPDATE cognitive_contexts SET authority=$2 WHERE id=$1 AND revision=0 AND NOT authority_explicit',cid,self.mode)
-        await self.jobs.enqueue(cid,eid,'interpret' if origin==Origin.USER else 'encode')
+        await self.jobs.enqueue(cid,eid,'interpret' if origin==Origin.USER else 'encode',conn=conn)
         return cid,eid,event
 
     async def handle_job(self,job):
@@ -405,10 +417,10 @@ class CognitiveRuntime:
                     await conn.execute("UPDATE cognitive_jobs SET available_at=GREATEST(available_at,NOW()+INTERVAL '1 day') WHERE id=$1 AND status='pending'",jid)
             return after
 
-    async def prepare(self,chat_id,owner,text,message_id,mode='default',task_serious=False,source_context=None):
+    async def prepare(self,chat_id,owner,text,message_id,mode='default',task_serious=False,source_context=None,source_key=None):
         if source_context is not None and source_context!=await self.context(chat_id,mode):
             raise SuppressedEvidence()
-        cid,eid,event = await self.ingest(chat_id,owner,text,message_id,mode,context=source_context)
+        cid,eid,event = await self.ingest(chat_id,owner,text,message_id,mode,context=source_context,source_key=source_key)
         # The input may have been registered before debounce. Process every
         # earlier observation before preparing the latest response.
         async with self.pool.acquire() as conn:
@@ -709,7 +721,7 @@ async def stop_runtime():
         _runtime = None
 
 
-async def prepare_turn(chat_id,user_id,text,message_id,mode='default',task_serious=False,source_context=None):
+async def prepare_turn(chat_id,user_id,text,message_id,mode='default',task_serious=False,source_context=None,source_key=None):
     runtime = get_runtime()
     scope=CURRENT_SCOPE.get()
     if runtime and runtime.mode!='legacy' and scope and scope.group and scope.sender_kind=='chat' and message_id is not None:
@@ -723,7 +735,8 @@ async def prepare_turn(chat_id,user_id,text,message_id,mode='default',task_serio
             turn=PreparedTurn(runtime,cid,source['id'],event,style,'',ctx['suppression_epoch'],ctx['authority'])
             CURRENT_TURN.set(turn)
             return turn
-    if not runtime or runtime.mode=='legacy' or user_id is None or message_id is None:
+    native = scope and scope.channel=='miniapp' and scope.source_key==source_key and source_key is not None
+    if not runtime or runtime.mode=='legacy' or user_id is None or (message_id is None and not native):
         CURRENT_TURN.set(None)
         raise SuppressedEvidence('A cognitive response requires an available runtime and authored source')
-    return await runtime.prepare(chat_id,user_id,text,message_id,mode,task_serious,source_context)
+    return await runtime.prepare(chat_id,user_id,text,message_id,mode,task_serious,source_context,source_key)

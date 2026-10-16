@@ -1,0 +1,3 @@
+-r requirements.lock
+# Existing transport codec regression imports material image validation.
+Pillow==12.3.0

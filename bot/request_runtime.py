@@ -277,11 +277,17 @@ async def _execute(job, bot):
     if await _media_context_busy(job):
         raise MediaContextBusy()
     request = await decode_request(job['payload'], bot)
-    if not await is_responses_enabled(request['chat_id']):
+    # A Mini App POST is an explicit private request. The Telegram automatic
+    # response switch defaults off until /start and must not silently cancel it.
+    if request.get('_channel')!='miniapp' and not await is_responses_enabled(request['chat_id']):
         await store().finish(job['id'], job['token'], 'cancelled')
         return
     if job['kind'] == 'text':
-        await process_user_reply(request, bot)
+        if request.get('_channel') == 'miniapp':
+            from conversations.publication import NativeTextSink
+            await process_user_reply(request, bot, sink=NativeTextSink(store().pool, request))
+        else:
+            await process_user_reply(request, bot)
     elif job['kind'] in ('dubbing', 'vclone'):
         from bot.media_jobs import execute
         await execute(request, bot)
@@ -449,7 +455,14 @@ async def cancel_own_request(update, context):
     await message.reply_text(text)
 
 
+def _native_job(job):
+    from bot.request_codec import _items
+    return (_items(job.get('payload',{}).get('value')) or {}).get('_channel') == 'miniapp'
+
+
 async def _notice(job, bot, ordinal, text, *, markup=None, parse_mode=None):
+    if _native_job(job):
+        return
     from cognition.runtime import CURRENT_TURN
     turn_token = CURRENT_TURN.set(None)
     request_token = CURRENT_REQUEST.set(dict(job, _ordinal=ordinal-1))
@@ -467,6 +480,8 @@ async def _notice(job, bot, ordinal, text, *, markup=None, parse_mode=None):
 
 async def _progress(job, bot):
     """One durable wait notice in a separate ordinal; never changes reply ordinals."""
+    if _native_job(job):
+        return
     await asyncio.sleep(8)
     try:
         from bot.cards import request_card

@@ -17,6 +17,8 @@ class TransportScope:
     sender_kind: str = 'user'
     reply_to_id: int | None = None
     sender_ref: str | None = None
+    channel: str = 'telegram'
+    source_key: str | None = None
 
     @property
     def group(self):
