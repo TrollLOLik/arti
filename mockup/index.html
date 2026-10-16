@@ -1,0 +1,962 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Арти — Telegram Mini App. Концепция 04 «Левая рука»: интерактивный прототип.">
+<meta name="theme-color" content="#0E0D0E">
+<title>Арти — концепция 04 «Левая рука»</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;600&family=Cormorant+Garamond:ital,wght@0,500;0,600;0,700;1,500;1,600&family=IBM+Plex+Mono:wght@400;500&family=Onest:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<!-- ============ SVG sprite: icons (1.6 stroke, round caps) + shared defs ============ -->
+<svg class="sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="pupilGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="1"/>
+      <stop offset=".22" stop-color="#FFE3EC" stop-opacity=".95"/>
+      <stop offset=".5" stop-color="#FFB3C8" stop-opacity=".55"/>
+      <stop offset="1" stop-color="#FF8FB0" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="irisGrad" cx="50%" cy="45%" r="55%">
+      <stop offset="0" stop-color="#3A1220"/>
+      <stop offset=".35" stop-color="#9C3858"/>
+      <stop offset=".75" stop-color="#E07E98"/>
+      <stop offset="1" stop-color="#5B1A2C"/>
+    </radialGradient>
+    <linearGradient id="woodGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#E2C9A2"/>
+      <stop offset=".45" stop-color="#C19D70"/>
+      <stop offset=".7" stop-color="#D9BC92"/>
+      <stop offset="1" stop-color="#9C7650"/>
+    </linearGradient>
+    <linearGradient id="needleGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8E8A86"/>
+      <stop offset=".5" stop-color="#F4F1EC"/>
+      <stop offset="1" stop-color="#9A9590"/>
+    </linearGradient>
+    <radialGradient id="hoopShade" cx="50%" cy="45%" r="55%">
+      <stop offset=".7" stop-color="#000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000" stop-opacity=".16"/>
+    </radialGradient>
+    <pattern id="linenPat" patternUnits="userSpaceOnUse" width="128" height="128">
+      <image href="assets/linen-v4.png" width="128" height="128"/>
+    </pattern>
+  </defs>
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 0C12.6 7.6 16.4 11.4 24 12 16.4 12.6 12.6 16.4 12 24 11.4 16.4 7.6 12.6 0 12 7.6 11.4 11.4 7.6 12 0Z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M14.5 5.5 8 12l6.5 6.5"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6"/></symbol>
+  <symbol id="i-chev-down" viewBox="0 0 24 24"><path d="m6.5 9.5 5.5 5.5 5.5-5.5"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4.5 12h15M13.5 6l6 6-6 6"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m15.6 15.6 4.2 4.2"/></symbol>
+  <symbol id="i-compose" viewBox="0 0 24 24"><path d="M13.8 6.2 17.8 10.2"/><path d="M16.2 3.8a1.9 1.9 0 0 1 2.7 0l1.3 1.3a1.9 1.9 0 0 1 0 2.7L9.4 18.6 4.5 19.5l.9-4.9z"/><path d="M13 20h7"/></symbol>
+  <symbol id="i-attach" viewBox="0 0 24 24"><path d="m19.5 11.3-7.6 7.6a5 5 0 0 1-7.1-7.1l8.1-8.1a3.3 3.3 0 0 1 4.7 4.7l-8 8a1.7 1.7 0 0 1-2.4-2.4l7.3-7.3"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19.5v-15M6 10.5l6-6 6 6"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3.2" width="6" height="11" rx="3"/><path d="M5.6 11.2a6.4 6.4 0 0 0 12.8 0M12 17.6v3.2"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8.2 5.6v12.8a.8.8 0 0 0 1.2.7l10.4-6.4a.8.8 0 0 0 0-1.4L9.4 4.9a.8.8 0 0 0-1.2.7z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><rect x="7" y="5.5" width="3.6" height="13" rx="1.1" fill="currentColor" stroke="none"/><rect x="13.4" y="5.5" width="3.6" height="13" rx="1.1" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5.5" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.6" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5.5 12.6 4.2 4.2 8.8-9.6"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="m6.5 6.5 11 11M17.5 6.5l-11 11"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-pin" viewBox="0 0 24 24"><path d="M9.2 4h5.6l-.8 5.2 3.2 3.3H6.8L10 9.2z"/><path d="M12 12.5v7.5"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6.2 16.2V11a5.8 5.8 0 0 1 11.6 0v5.2l1.6 2H4.6z"/><path d="M10 20.6a2.1 2.1 0 0 0 4 0"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2.6"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.6"/><circle cx="9" cy="10" r="1.7"/><path d="m4 17.2 5-4.4 4 3.4 3-2.4 4.5 3.6"/></symbol>
+  <symbol id="i-video" viewBox="0 0 24 24"><rect x="3.5" y="6" width="12.2" height="12" rx="2.6"/><path d="m15.7 10.4 4.8-2.9v9l-4.8-2.9"/></symbol>
+  <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 17.6V5.8l10-2v11.8"/><circle cx="6.6" cy="17.6" r="2.4"/><circle cx="16.6" cy="15.6" r="2.4"/></symbol>
+  <symbol id="i-doc" viewBox="0 0 24 24"><path d="M6.5 3.5h7.3l4.7 4.7v12.3h-12z"/><path d="M13.6 3.6v4.8h4.8M9 12.6h6M9 16.2h6"/></symbol>
+  <symbol id="i-table" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2.2"/><path d="M3.5 10h17M3.5 14.5h17M9.5 5v14"/></symbol>
+  <symbol id="i-voice" viewBox="0 0 24 24"><path d="M4.5 10.2v3.6M8.2 7.2v9.6M12 4.2v15.6M15.8 8v8M19.5 10.4v3.2"/></symbol>
+  <symbol id="i-box" viewBox="0 0 24 24"><path d="m4 7.8 8-4.1 8 4.1v8.4l-8 4.1-8-4.1z"/><path d="m4 7.8 8 4.1 8-4.1M12 11.9v8.4"/></symbol>
+  <symbol id="i-tab-chats" viewBox="0 0 24 24"><path d="M4.4 12.1C4.4 8 7.8 4.8 12 4.8s7.6 3.2 7.6 7.3-3.4 7.2-7.6 7.2c-1.3 0-2.6-.3-3.7-.9l-3.9 1.1 1.1-3.5a6.9 6.9 0 0 1-1.1-3.9z"/></symbol>
+  <symbol id="i-tab-create" viewBox="0 0 24 24"><path d="M12 3.2 17 11l-5 9.8L7 11z"/><path d="M12 11v4.4"/><circle cx="12" cy="10.6" r=".9" fill="currentColor"/></symbol>
+  <symbol id="i-tab-space" viewBox="0 0 24 24"><circle cx="12" cy="13.8" r="7.2"/><circle cx="12" cy="13.8" r="5.2" stroke-width="1" opacity=".55"/><path d="M10.2 3.6h3.6v3h-3.6z"/><path d="M12 3.6V2.4"/><path d="M8.8 16.6c1.4-.6 2.3-1.7 3-3s1.7-2.4 3.4-2.9" stroke-dasharray="1.7 1.5"/></symbol>
+  <symbol id="i-tab-profile" viewBox="0 0 24 24"><circle cx="12" cy="8.4" r="3.8"/><path d="M4.6 20c1.2-3.7 4.1-5.6 7.4-5.6s6.2 1.9 7.4 5.6"/></symbol>
+  <symbol id="i-tg" viewBox="0 0 24 24"><path d="M20.6 4.6 3.6 11.1l5.6 2.1 2.1 6.1 3.2-3.9 4.6 3.4z"/><path d="m9.2 13.2 11.4-8.6"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10.2 13.8a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M13.8 10.2a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></symbol>
+  <symbol id="i-user-plus" viewBox="0 0 24 24"><circle cx="10" cy="8.4" r="3.5"/><path d="M3.6 19.6c1-3.3 3.5-5 6.4-5s5.4 1.7 6.4 5"/><path d="M18.6 8.2v6M15.6 11.2h6"/></symbol>
+  <symbol id="i-share" viewBox="0 0 24 24"><path d="M12 14.8V4.2M7.6 8.6 12 4.2l4.4 4.4"/><path d="M5 13v5.6A1.4 1.4 0 0 0 6.4 20h11.2a1.4 1.4 0 0 0 1.4-1.4V13"/></symbol>
+  <symbol id="i-files" viewBox="0 0 24 24"><path d="M3.6 7.4a1.9 1.9 0 0 1 1.9-1.9h3.9l2 2h7.1a1.9 1.9 0 0 1 1.9 1.9v8.2a1.9 1.9 0 0 1-1.9 1.9H5.5a1.9 1.9 0 0 1-1.9-1.9z"/></symbol>
+  <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 8.4h3.2l1.5-2.4h6.6l1.5 2.4H20v10.2H4z"/><circle cx="12" cy="13.4" r="3.3"/></symbol>
+  <symbol id="i-cal" viewBox="0 0 24 24"><rect x="4" y="5.6" width="16" height="14" rx="2.6"/><path d="M4 10h16M8.5 3.6v4M15.5 3.6v4"/></symbol>
+  <symbol id="i-pencil" viewBox="0 0 24 24"><path d="m14.6 5.4 4 4"/><path d="M16.4 3.6a1.8 1.8 0 0 1 2.6 0l1.4 1.4a1.8 1.8 0 0 1 0 2.6L9.2 18.8 4.4 19.6l.8-4.8z"/></symbol>
+  <symbol id="i-strike" viewBox="0 0 24 24"><path d="M4 12.2h16"/><path d="M16.6 7.6c-.5-1.7-2.2-2.8-4.5-2.8-2.6 0-4.4 1.3-4.4 3.2 0 1 .5 1.8 1.4 2.4"/><path d="M8 16.4c.4 1.8 2.2 2.9 4.4 2.9 2.7 0 4.5-1.4 4.5-3.3"/></symbol>
+  <symbol id="i-lamp" viewBox="0 0 24 24"><path d="M8.4 3.6h7.2l3 7H5.4z"/><path d="M12 10.6v8.2M8.4 20.4h7.2"/></symbol>
+  <symbol id="i-notebook" viewBox="0 0 24 24"><rect x="5.5" y="3.5" width="13" height="17" rx="2"/><path d="M15.2 3.6v17M9 3.6v4.6l1.3-1 1.3 1V3.6"/></symbol>
+  <symbol id="i-smile" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M8.6 14c.8 1.3 2 2 3.4 2s2.6-.7 3.4-2"/><path d="M9.2 9.6h.01M14.8 9.6h.01" stroke-width="2.4"/></symbol>
+  <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 6.8 4.6 11.2 9 15.6"/><path d="M5 11.2h9.4a4.8 4.8 0 0 1 0 9.6H12"/></symbol>
+  <symbol id="i-save" viewBox="0 0 24 24"><path d="M12 4v10.6M7.6 10.2 12 14.6l4.4-4.4"/><path d="M5 19.6h14"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M19.4 12a7.4 7.4 0 1 1-2.2-5.3"/><path d="M19.6 4.2v4.6H15"/></symbol>
+  <symbol id="i-people" viewBox="0 0 24 24"><circle cx="9" cy="9" r="3.2"/><circle cx="16.6" cy="10" r="2.6"/><path d="M3.4 19c.8-3 3-4.6 5.6-4.6s4.8 1.6 5.6 4.6"/><path d="M15 14.6c2.6-.3 4.8 1.2 5.6 4.4"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.2"/><path d="M12 7.6V12l3 2"/></symbol>
+  <symbol id="i-sparkle-line" viewBox="0 0 24 24"><path d="M12 3.5c.4 5.3 3.2 8.1 8.5 8.5-5.3.4-8.1 3.2-8.5 8.5-.4-5.3-3.2-8.1-8.5-8.5 5.3-.4 8.1-3.2 8.5-8.5z"/></symbol>
+</svg>
+
+<div class="stage">
+  <header class="stage-head">
+    <div class="brand">
+      <p class="wordmark" aria-label="арти.">арти<i>.</i></p>
+      <div class="brand-meta">
+        <p class="concept">Концепция 04 · «Левая рука»</p>
+        <p class="sub">Telegram Mini App · интерактивный прототип · октябрь 2026</p>
+      </div>
+    </div>
+    <nav class="versions" aria-label="Предыдущие концепции">
+      <a href="archive/v3/index.html">Концепция 03 ↗</a>
+      <a href="archive/v2/index.html">02 ↗</a>
+    </nav>
+  </header>
+
+  <main class="stage-main">
+    <div class="device-col">
+      <div class="device-scaler" id="deviceScaler">
+        <div class="device" id="device">
+          <div class="device-screen">
+            <div class="statusbar" aria-hidden="true">
+              <span class="sb-time">9:41</span>
+              <span class="sb-icons">
+                <svg viewBox="0 0 18 12" width="18" height="12"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5.5" width="3" height="6.5" rx="1"/><rect x="10" y="3" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="12" rx="1"/></svg>
+                <svg viewBox="0 0 16 12" width="16" height="12"><path d="M8 2.4c2.3 0 4.4.9 6 2.4l1.2-1.3A10.4 10.4 0 0 0 8 .6C5.2.6 2.7 1.7.8 3.5L2 4.8a8.6 8.6 0 0 1 6-2.4zm0 3.6c1.3 0 2.5.5 3.4 1.4l1.2-1.3A6.6 6.6 0 0 0 8 4.2c-1.8 0-3.4.7-4.6 1.9l1.2 1.3c.9-.9 2.1-1.4 3.4-1.4zm0 3.4c-.6 0-1.1.2-1.5.6L8 11.6l1.5-1.6c-.4-.4-.9-.6-1.5-.6z"/></svg>
+                <svg viewBox="0 0 27 12" width="27" height="12"><rect x=".5" y=".5" width="23" height="11" rx="3.4" fill="none" stroke="currentColor" opacity=".45"/><rect x="2" y="2" width="20" height="8" rx="2"/><path d="M25 4v4c.8-.3 1.3-1.1 1.3-2S25.8 4.3 25 4z" opacity=".45"/></svg>
+              </span>
+            </div>
+            <div class="tg-head" aria-hidden="false">
+              <button class="tg-close" type="button" id="tgClose" title="Повторить заставку">Закрыть</button>
+              <span class="tg-title" aria-hidden="true">Арти <svg class="ic ic-xs"><use href="#i-chev-down"/></svg></span>
+              <span class="tg-more" aria-hidden="true"><svg class="ic"><use href="#i-more"/></svg></span>
+            </div>
+
+            <!-- ================= APP ================= -->
+            <div class="app" id="app" data-theme="day">
+              <div class="app-glow" aria-hidden="true"></div>
+              <div class="viewport" id="viewport">
+
+                <!-- ============ 1. ЧАТЫ ============ -->
+                <section class="screen is-root" data-screen="chats" aria-label="Чаты">
+                  <div class="scroll">
+                    <header class="page-head">
+                      <h1 class="display">Чаты</h1>
+                      <p class="margin-note mn-chats" aria-label="Пометка Арти">
+                        <svg class="mn-arrow" viewBox="0 0 60 34" aria-hidden="true"><path d="M56 6C42 2 22 4 12 18c-2 3-3 6-3 10M3 22l6 8 6-7"/></svg>
+                        <span class="hand" id="timeNote">ты сегодня поздно</span>
+                      </p>
+                    </header>
+
+                    <div class="search-row">
+                      <label class="search">
+                        <svg class="ic"><use href="#i-search"/></svg>
+                        <input type="search" id="chatSearch" placeholder="Поиск по чатам и сообщениям" aria-label="Поиск по чатам и сообщениям" autocomplete="off">
+                      </label>
+                      <button class="icon-btn icon-btn--ink" type="button" data-go="new" aria-label="Новый разговор"><svg class="ic"><use href="#i-compose"/></svg></button>
+                    </div>
+
+                    <div class="chips" role="tablist" aria-label="Фильтр чатов" id="chatFilter">
+                      <button class="chip is-on" role="tab" aria-selected="true" data-filter="all">Все</button>
+                      <button class="chip" role="tab" aria-selected="false" data-filter="private">Личные</button>
+                      <button class="chip" role="tab" aria-selected="false" data-filter="group">Группы</button>
+                    </div>
+
+                    <button class="presence" type="button" data-open="artiroom" aria-label="Сейчас у Арти. Открыть комнату Арти">
+                      <span class="presence-eyes">
+                        <span class="pt" data-pt="eyes"></span>
+                        <span class="lid lid-t" aria-hidden="true"></span><span class="lid lid-b" aria-hidden="true"></span>
+                        <span class="presence-tag mono"><i class="live"></i>Сейчас у Арти</span>
+                      </span>
+                      <span class="presence-body">
+                        <span class="presence-line hand" id="presenceLine">Реставрирую Запись № 7. Не хватает одной фразы — и меня это раздражает больше, чем следует.</span>
+                        <span class="frame-tag mono" id="presenceFrame" data-frame="image">В образе</span>
+                        <span class="presence-foot">
+                          <span class="mood mono"><i class="orb" aria-hidden="true"></i><span class="mood-k">Настроение · </span>ясное, с интересом</span>
+                          <span class="presence-go">Комната <svg class="ic ic-xs"><use href="#i-arrow"/></svg></span>
+                        </span>
+                      </span>
+                    </button>
+
+                    <ul class="chat-list" id="chatList">
+                      <li class="chat-item" data-kind="private" data-text="арти нашла пропавшую фразу хочешь услышать первой вечер без повода">
+                        <button class="chat-row is-arti" type="button" data-go="arti">
+                          <span class="avatar"><span class="pt" data-pt="avatar"></span></span>
+                          <span class="row-main">
+                            <span class="row-top"><span class="row-name">Арти</span><svg class="ic ic-xs pin" aria-label="Закреплён"><use href="#i-pin"/></svg><time class="mono row-time">19:40</time></span>
+                            <span class="row-bottom"><span class="row-preview is-strong">Нашла пропавшую фразу. Хочешь услышать первой?</span><span class="first-star" title="Арти написала первой"><svg class="ic"><use href="#i-star"/></svg><span class="sr">Арти написала первой</span></span></span>
+                          </span>
+                        </button>
+                        <button class="continue" type="button" data-go="project">
+                          <svg class="continue-thread" viewBox="0 0 40 34" aria-hidden="true"><path d="M8 0C8 16 13 25 38 25"/></svg>
+                          <span class="continue-body"><span class="mono">Продолжить проект</span><span class="continue-name">Вечер без повода</span></span>
+                          <svg class="ic ic-sm"><use href="#i-chev"/></svg>
+                        </button>
+                      </li>
+                      <li class="chat-item" data-kind="private" data-text="аня этот красный очень в твоём духе">
+                        <button class="chat-row" type="button" data-go="anya">
+                          <span class="avatar mono-av av-rose">А</span>
+                          <span class="row-main">
+                            <span class="row-top"><span class="row-name">Аня</span><time class="mono row-time">18:36</time></span>
+                            <span class="row-bottom"><span class="row-preview">Этот красный — очень в твоём духе.</span><span class="badge">2</span></span>
+                          </span>
+                        </button>
+                      </li>
+                      <li class="chat-item" data-kind="group" data-text="идеи на выходные арти ранний подъём исключила группа">
+                        <button class="chat-row" type="button" data-go="group">
+                          <span class="avatar mono-av av-group"><span>И</span><i><svg class="ic"><use href="#i-star"/></svg></i></span>
+                          <span class="row-main">
+                            <span class="row-top"><span class="row-name">Идеи на выходные</span><time class="mono row-time">17:58</time></span>
+                            <span class="row-bottom"><span class="row-preview"><b>Арти:</b> Ранний подъём исключила.</span><span class="badge">4</span></span>
+                          </span>
+                        </button>
+                      </li>
+                      <li class="chat-item" data-kind="private" data-text="макс голосовое сообщение">
+                        <button class="chat-row" type="button" data-go="person" data-person="max">
+                          <span class="avatar mono-av av-sage">М</span>
+                          <span class="row-main">
+                            <span class="row-top"><span class="row-name">Макс</span><time class="mono row-time">17:24</time></span>
+                            <span class="row-bottom"><span class="row-preview"><svg class="ic ic-xs"><use href="#i-mic"/></svg> Голосовое сообщение · 0:18</span><svg class="ic ic-sm ticks" aria-label="Прочитано"><use href="#i-check"/></svg></span>
+                          </span>
+                        </button>
+                      </li>
+                      <li class="chat-item" data-kind="private" data-text="даша спасибо уже смотрю наброски">
+                        <button class="chat-row" type="button" data-go="person" data-person="dasha">
+                          <span class="avatar mono-av av-sand">Д</span>
+                          <span class="row-main">
+                            <span class="row-top"><span class="row-name">Даша</span><time class="mono row-time">Вчера</time></span>
+                            <span class="row-bottom"><span class="row-preview">Спасибо! Уже смотрю наброски</span></span>
+                          </span>
+                        </button>
+                      </li>
+                    </ul>
+                    <p class="empty-note" id="chatEmpty" hidden><span class="hand">Не нашла. Может, это было в тетради?</span><span class="mono">0 совпадений</span></p>
+                  </div>
+                </section>
+
+                <!-- ============ 2. РАЗГОВОР С АРТИ ============ -->
+                <section class="screen chat-screen" data-screen="arti" aria-label="Разговор с Арти">
+                  <header class="chat-head">
+                    <button class="icon-btn back" type="button" data-back aria-label="Назад"><svg class="ic"><use href="#i-back"/></svg></button>
+                    <button class="chat-id" type="button" data-open="artiroom" aria-label="Арти. Открыть её комнату">
+                      <span class="avatar avatar-sm"><span class="pt" data-pt="avatar"></span></span>
+                      <span class="chat-id-text"><span class="chat-name serif">Арти</span><span class="chat-status mono" id="artiStatus">реставрирует запись</span></span>
+                    </button>
+                    <button class="icon-btn" type="button" data-go="notebook" aria-label="Тетрадь Арти"><svg class="ic"><use href="#i-notebook"/></svg></button>
+                  </header>
+                  <div class="scroll thread" id="artiThread">
+                    <div class="tg-sync" aria-label="Общая история с Telegram">
+                      <svg class="sync-thread" viewBox="0 0 300 12" preserveAspectRatio="none" aria-hidden="true"><path d="M0 6c40-4 80 4 120 0s30 3 60 0 80-4 120 0"/></svg>
+                      <span class="sync-label"><span class="tg-dot"><svg class="ic ic-xs"><use href="#i-tg"/></svg></span><span class="mono">Общая история с Telegram</span></span>
+                    </div>
+                    <button class="topic-chip" type="button" data-go="project"><svg class="ic ic-xs"><use href="#i-tab-space"/></svg><span>Вечер без повода</span><span class="mono">Проект</span><svg class="ic ic-xs"><use href="#i-arrow"/></svg></button>
+
+                    <div class="date-sep"><span class="mono">Сегодня, 15 октября</span></div>
+
+                    <div class="msg me"><div class="bubble" tabindex="0">Как спасти совершенно скучный вечер?<span class="meta"><span class="origin"><svg class="ic ic-xs"><use href="#i-tg"/></svg>из Telegram</span><span class="mono">19:08</span><svg class="ic ic-xs tick2"><use href="#i-check"/></svg></span></div></div>
+                    <div class="msg arti"><div class="bubble" tabindex="0">Нашла запись без помех. Не спрашивай, какую практическую задачу это решает.<span class="meta"><span class="mono">19:10</span></span></div></div>
+                    <div class="msg me"><div class="bubble" tabindex="0">И всё же?<span class="meta"><span class="mono">19:11</span><svg class="ic ic-xs tick2"><use href="#i-check"/></svg></span></div></div>
+                    <div class="msg arti"><div class="bubble" tabindex="0"><b>Никакую. В этом и достоинство.</b> Ставим музыку и делаем один кадр. Свет я бы выбрала красный.<span class="meta"><span class="mono">19:12</span></span></div></div>
+
+                    <div class="date-sep"><span class="mono">Сегодня · 19:40 · написала первой</span></div>
+
+                    <div class="msg arti initiative" id="initiative">
+                      <div class="bubble" tabindex="0">
+                        <span class="init-tag mono"><svg class="ic ic-xs"><use href="#i-star"/></svg>Написала первой · в образе</span>
+                        <span class="init-text">Нашла пропавшую фразу. Хочешь услышать первой?</span>
+                        <span class="player player--found" data-player="found" data-dur="46" data-gap="31-34" data-title="Запись № 7"></span>
+                        <span class="meta"><span class="mono">19:40</span></span>
+                      </div>
+                    </div>
+                    <div class="msg arti"><div class="bubble" tabindex="0">Вот два варианта, которые я приготовила.<span class="meta"><span class="mono">19:41</span></span></div></div>
+
+                    <div class="deck" id="deck" role="group" aria-label="Варианты от Арти">
+                      <button class="card card-a" type="button" data-choice="Твоя музыка + мой кадр">
+                        <span class="card-tag mono">Вариант I</span>
+                        <span class="card-title hand">Твоя музыка + мой кадр</span>
+                        <span class="card-text">Ты выбираешь запись, я ставлю свет.</span>
+                        <span class="card-mark" aria-hidden="true"><svg class="ic"><use href="#i-star"/></svg></span>
+                      </button>
+                      <button class="card card-b" type="button" data-choice="Тишина и чай">
+                        <span class="card-tag mono">Вариант II</span>
+                        <span class="card-title hand">Тишина и чай</span>
+                        <span class="card-text">Без музыки. Один кадр при лампе.</span>
+                        <span class="card-mark" aria-hidden="true"><svg class="ic"><use href="#i-star"/></svg></span>
+                      </button>
+                      <button class="card card-c" type="button" id="card3" aria-label="Третий — твой. Перевернуть карту">
+                        <span class="flip">
+                          <span class="card-back"><span class="back-pattern" aria-hidden="true"></span><span class="back-label hand">Третий — твой</span></span>
+                          <span class="card-front"><span class="mono">Твой вариант</span><span class="front-prompt">Я бы…</span><span class="hand front-note">Да. Их не только два.</span></span>
+                        </span>
+                      </button>
+                    </div>
+                    <div class="live-end" aria-hidden="true"></div>
+                  </div>
+                  <form class="composer" data-thread="arti" autocomplete="off">
+                    <button class="icon-btn" type="button" data-toast="Можно приложить фото, файл или материал из проекта." aria-label="Прикрепить"><svg class="ic"><use href="#i-attach"/></svg></button>
+                    <textarea rows="1" placeholder="Сообщение Арти" aria-label="Сообщение Арти"></textarea>
+                    <button class="send" type="submit" aria-label="Записать голосовое"><svg class="ic i-mic"><use href="#i-mic"/></svg><svg class="ic i-send"><use href="#i-send"/></svg></button>
+                  </form>
+                </section>
+
+                <!-- ============ 3. АНЯ ============ -->
+                <section class="screen chat-screen" data-screen="anya" aria-label="Чат с Аней">
+                  <header class="chat-head">
+                    <button class="icon-btn back" type="button" data-back aria-label="Назад"><svg class="ic"><use href="#i-back"/></svg></button>
+                    <span class="chat-id">
+                      <span class="avatar avatar-sm mono-av av-rose">А</span>
+                      <span class="chat-id-text"><span class="chat-name">Аня</span><span class="chat-status online">в сети</span></span>
+                    </span>
+                    <button class="icon-btn" type="button" data-toast="Звонки — в самом Telegram." aria-label="Позвонить"><svg class="ic"><use href="#i-more"/></svg></button>
+                  </header>
+                  <div class="scroll thread" id="anyaThread">
+                    <div class="date-sep"><span class="mono">Сегодня</span></div>
+                    <div class="msg them"><div class="bubble" tabindex="0">Смотри, какой свет был утром. Надо сохранить это настроение.<span class="meta"><span class="mono">12:28</span></span></div></div>
+                    <div class="msg them photo"><div class="bubble" tabindex="0"><img src="assets/paper-bloom-v4.webp" alt="Бумажный антуриум на светло-розовом фоне" width="240" height="240" loading="lazy"><span class="meta on-photo"><span class="mono">12:29</span></span></div></div>
+                    <div class="msg me"><div class="bubble" tabindex="0"><span class="quote"><span class="quote-name">Аня</span><span class="quote-text">Смотри, какой свет был утром…</span></span>Да! Именно такая палитра нужна для нашего проекта.<span class="meta"><span class="mono">12:32</span><svg class="ic ic-xs tick2"><use href="#i-check"/></svg></span></div></div>
+                    <div class="msg them"><div class="bubble voice-bubble" tabindex="0"><span class="player player--voice" data-player="voice" data-dur="18"></span><span class="meta"><span class="mono">12:36</span></span></div></div>
+                    <div class="msg them"><div class="bubble" tabindex="0">Этот красный — очень в твоём духе.<span class="meta"><span class="mono">18:36</span></span></div></div>
+                    <div class="live-end" aria-hidden="true"></div>
+                  </div>
+                  <form class="composer" data-thread="anya" autocomplete="off">
+                    <button class="icon-btn" type="button" data-toast="Можно приложить фото, файл или материал из проекта." aria-label="Прикрепить"><svg class="ic"><use href="#i-attach"/></svg></button>
+                    <textarea rows="1" placeholder="Сообщение" aria-label="Сообщение Ане"></textarea>
+                    <button class="send" type="submit" aria-label="Записать голосовое"><svg class="ic i-mic"><use href="#i-mic"/></svg><svg class="ic i-send"><use href="#i-send"/></svg></button>
+                  </form>
+                </section>
+
+                <!-- ============ 3b. ЛИЧНЫЙ ЧАТ (Макс / Даша) ============ -->
+                <section class="screen chat-screen" data-screen="person" aria-label="Личный чат">
+                  <header class="chat-head">
+                    <button class="icon-btn back" type="button" data-back aria-label="Назад"><svg class="ic"><use href="#i-back"/></svg></button>
+                    <span class="chat-id">
+                      <span class="avatar avatar-sm mono-av" id="personAv">М</span>
+                      <span class="chat-id-text"><span class="chat-name" id="personName">Макс</span><span class="chat-status" id="personStatus">был недавно</span></span>
+                    </span>
+                    <button class="icon-btn" type="button" data-toast="Звонки — в самом Telegram." aria-label="Ещё"><svg class="ic"><use href="#i-more"/></svg></button>
+                  </header>
+                  <div class="scroll thread" id="personThread"></div>
+                  <form class="composer" data-thread="person" autocomplete="off">
+                    <button class="icon-btn" type="button" data-toast="Можно приложить фото, файл или материал из проекта." aria-label="Прикрепить"><svg class="ic"><use href="#i-attach"/></svg></button>
+                    <textarea rows="1" placeholder="Сообщение" aria-label="Сообщение"></textarea>
+                    <button class="send" type="submit" aria-label="Записать голосовое"><svg class="ic i-mic"><use href="#i-mic"/></svg><svg class="ic i-send"><use href="#i-send"/></svg></button>
+                  </form>
+                </section>
+
+                <!-- ============ 4. ИДЕИ НА ВЫХОДНЫЕ ============ -->
+                <section class="screen chat-screen" data-screen="group" aria-label="Группа «Идеи на выходные»">
+                  <header class="chat-head">
+                    <button class="icon-btn back" type="button" data-back aria-label="Назад"><svg class="ic"><use href="#i-back"/></svg></button>
+                    <button class="chat-id" type="button" data-go="room" aria-label="Идеи на выходные. О комнате">
+                      <span class="avatar avatar-sm mono-av av-group"><span>И</span><i><svg class="ic"><use href="#i-star"/></svg></i></span>
+                      <span class="chat-id-text"><span class="chat-name">Идеи на выходные</span><span class="chat-status">4 человека и Арти</span></span>
+                    </button>
+                    <button class="icon-btn" type="button" data-go="room" aria-label="О комнате"><svg class="ic"><use href="#i-people"/></svg></button>
+                  </header>
+                  <div class="scroll thread" id="groupThread">
+                    <div class="date-sep"><span class="mono">Сегодня</span></div>
+                    <div class="msg them"><span class="avatar avatar-xs mono-av av-rose" aria-hidden="true">А</span><div class="bubble" tabindex="0"><span class="sender s-rose">Аня</span>Предлагаю прогулку, кофе и немного поснимать город.<span class="meta"><span class="mono">17:52</span></span></div></div>
+                    <div class="msg me"><div class="bubble" tabindex="0">Я за! Только без раннего подъёма.<span class="meta"><span class="mono">17:54</span><svg class="ic ic-xs tick2"><use href="#i-check"/></svg></span></div></div>
+                    <div class="msg them"><span class="avatar avatar-xs mono-av av-sage" aria-hidden="true">М</span><div class="bubble" tabindex="0"><span class="sender s-sage">Макс</span><span class="mention">@Арти</span>, собери план на субботу. Начинаем после 12.<span class="meta"><span class="mono">17:56</span></span></div></div>
+                    <div class="msg arti in-group"><span class="avatar avatar-xs"><span class="pt" data-pt="avatar"></span></span><div class="bubble" tabindex="0"><span class="ribbon-mark" aria-hidden="true"></span><span class="sender">Арти <span class="ai-tag mono">ИИ</span></span>
+                      <span class="plan">
+                        <span class="plan-title mono">Суббота · план</span>
+                        <span class="plan-row"><span class="mono">12:30</span><span>кофе</span></span>
+                        <span class="plan-row"><span class="mono">13:15</span><span>прогулка с камерой</span></span>
+                        <span class="plan-row"><span class="mono">15:00</span><span>обед и обмен снимками</span></span>
+                      </span>
+                      Ранний подъём исключила. Возражение было убедительным.<span class="meta"><span class="mono">17:58</span></span></div></div>
+                    <div class="live-end" aria-hidden="true"></div>
+                  </div>
+                  <form class="composer" data-thread="group" autocomplete="off">
+                    <button class="icon-btn" type="button" data-toast="Можно приложить фото, файл или материал из проекта." aria-label="Прикрепить"><svg class="ic"><use href="#i-attach"/></svg></button>
+                    <textarea rows="1" placeholder="Сообщение или @Арти" aria-label="Сообщение в группу"></textarea>
+                    <button class="send" type="submit" aria-label="Записать голосовое"><svg class="ic i-mic"><use href="#i-mic"/></svg><svg class="ic i-send"><use href="#i-send"/></svg></button>
+                  </form>
+                </section>
+
+                <!-- ============ 5. О КОМНАТЕ ============ -->
+                <section class="screen" data-screen="room" aria-label="О комнате">
+                  <header class="bar-head">
+                    <button class="icon-btn back" type="button" data-back aria-label="Назад"><svg class="ic"><use href="#i-back"/></svg></button>
+                    <span class="bar-title">О комнате</span>
+                    <span class="bar-spacer"></span>
+                  </header>
+                  <div class="scroll pad">
+                    <div class="room-hero">
+                      <span class="avatar avatar-xl mono-av av-group"><span>И</span><i><svg class="ic"><use href="#i-star"/></svg></i></span>
+                      <h2 class="display display-md">Идеи на выходные</h2>
+                      <p class="mono muted">4 человека и Арти</p>
+                    </div>
+                    <div class="room-actions">
+                      <button type="button" class="ra" data-go="new"><svg class="ic"><use href="#i-user-plus"/></svg><span>Добавить</span></button>
+                      <button type="button" class="ra" data-toast="Ссылка-приглашение скопирована."><svg class="ic"><use href="#i-share"/></svg><span>Пригласить</span></button>
+                      <button type="button" class="ra" data-tab="space" data-space-tab="files"><svg class="ic"><use href="#i-files"/></svg><span>12 файлов</span></button>
+                    </div>
+                    <div class="set-card">
+                      <div class="set-row">
+                        <span class="set-label"><span>Арти отвечает на обращения</span><span class="set-hint">Напишите @Арти, когда нужна помощь.</span></span>
+                        <button class="switch is-on" type="button" role="switch" aria-checked="true" id="roomArtiSwitch" aria-label="Арти отвечает на обращения"><i></i></button>
+                      </div>
+                    </div>
+                    <h3 class="section-label mono">Участники · 5</h3>
+                    <ul class="members">
+                      <li><span class="avatar avatar-sm mono-av av-ink">Е</span><span class="mem-name">Вы</span><span class="mem-role mono">Владелец</span></li>
+                      <li><span class="avatar avatar-sm mono-av av-rose">А</span><span class="mem-name">Аня</span><span class="mem-role mono">Участник</span></li>
+                      <li><span class="avatar avatar-sm mono-av av-sage">М</span><span class="mem-name">Макс</span><span class="mem-role mono">Участник</span></li>
+                      <li><span class="avatar avatar-sm mono-av av-sand">Д</span><span class="mem-name">Даша</span><span class="mem-role mono">Участник</span></li>
+                      <li class="mem-arti"><span class="avatar avatar-sm"><span class="pt" data-pt="avatar"></span></span><span class="mem-name">Арти</span><span class="mem-role mono">Помощник · ИИ</span></li>
+                    </ul>
+                    <p class="privacy-note"><svg class="ic ic-sm"><use href="#i-lock"/></svg><span>Тетрадь Арти о тебе не видна участникам этой комнаты.</span></p>
+                  </div>
+                </section>
+
+                <!-- ============ 6. НОВЫЙ РАЗГОВОР ============ -->
+                <section class="screen" data-screen="new" aria-label="Новый разговор">
+                  <header class="bar-head">
+                    <button class="icon-btn back" type="button" data-back aria-label="Назад"><svg class="ic"><use href="#i-back"/></svg></button>
+                    <span class="bar-title">Новый разговор</span>
+                    <span class="bar-spacer"></span>
+                  </header>
+                  <div class="scroll pad">
+                    <div class="segmented seg-wide" role="tablist" aria-label="Тип разговора" id="newTabs">
+                      <button role="tab" type="button" aria-selected="false" data-newtab="private">Личный чат</button>
+                      <button role="tab" type="button" aria-selected="true" class="is-on" data-newtab="group">Группа</button>
+                      <i class="seg-thumb" aria-hidden="true"></i>
+                    </div>
+                    <div class="new-panel" data-newpanel="group">
+                      <label class="field-block">
+                        <span class="mono field-label">Название группы</span>
+                        <input type="text" class="text-input serif-input" value="Идеи на выходные" id="groupName">
+                      </label>
+                      <label class="search search--block">
+                        <svg class="ic"><use href="#i-search"/></svg>
+                        <input type="search" id="peopleSearch" placeholder="Найти по имени" aria-label="Найти по имени" autocomplete="off">
+                      </label>
+                      <div class="pick-head"><span class="mono" id="pickCount">Выбрано 3</span><button type="button" class="link-btn" data-toast="Ссылка-приглашение скопирована."><svg class="ic ic-sm"><use href="#i-link"/></svg>Пригласить по ссылке</button></div>
+                      <ul class="people" id="peoplePick">
+                        <li><button type="button" class="person is-on" aria-pressed="true" data-name="аня"><span class="avatar avatar-sm mono-av av-rose">А</span><span class="person-name">Аня<span class="person-sub">в сети</span></span><span class="check"><svg class="ic ic-sm"><use href="#i-check"/></svg></span></button></li>
+                        <li><button type="button" class="person is-on" aria-pressed="true" data-name="макс"><span class="avatar avatar-sm mono-av av-sage">М</span><span class="person-name">Макс<span class="person-sub">был недавно</span></span><span class="check"><svg class="ic ic-sm"><use href="#i-check"/></svg></span></button></li>
+                        <li><button type="button" class="person is-on" aria-pressed="true" data-name="даша"><span class="avatar avatar-sm mono-av av-sand">Д</span><span class="person-name">Даша<span class="person-sub">была вчера</span></span><span class="check"><svg class="ic ic-sm"><use href="#i-check"/></svg></span></button></li>
+                      </ul>
+                      <button type="button" class="btn-primary btn-block" id="createGroup">Создать группу</button>
+                      <p class="hint-hand"><span class="hand">Арти можно добавить в комнате позже</span></p>
+                    </div>
+                    <div class="new-panel" data-newpanel="private" hidden>
+                      <ul class="people">
+                        <li><button type="button" class="person" data-go="arti"><span class="avatar avatar-sm"><span class="pt" data-pt="avatar"></span></span><span class="person-name">Арти<span class="person-sub">общая история с Telegram</span></span><svg class="ic ic-sm"><use href="#i-chev"/></svg></button></li>
+                        <li><button type="button" class="person" data-go="anya"><span class="avatar avatar-sm mono-av av-rose">А</span><span class="person-name">Аня<span class="person-sub">в сети</span></span><svg class="ic ic-sm"><use href="#i-chev"/></svg></button></li>
+                        <li><button type="button" class="person" data-go="person" data-person="max"><span class="avatar avatar-sm mono-av av-sage">М</span><span class="person-name">Макс<span class="person-sub">был недавно</span></span><svg class="ic ic-sm"><use href="#i-chev"/></svg></button></li>
+                        <li><button type="button" class="person" data-go="person" data-person="dasha"><span class="avatar avatar-sm mono-av av-sand">Д</span><span class="person-name">Даша<span class="person-sub">была вчера</span></span><svg class="ic ic-sm"><use href="#i-chev"/></svg></button></li>
+                      </ul>
+                    </div>
+                  </div>
+                </section>
+
+                <!-- ============ 7. МАСТЕРСКАЯ ============ -->
+                <section class="screen is-root" data-screen="create" aria-label="Мастерская">
+                  <div class="scroll">
+                    <header class="page-head">
+                      <h1 class="display">Мастерская</h1>
+                      <p class="margin-note mn-create"><span class="hand">начни с того, что уже цепляет</span>
+                        <svg class="mn-arrow" viewBox="0 0 60 40" aria-hidden="true"><path d="M8 4c10 2 22 10 26 22 1 4 1 7 0 10M27 31l7 6 6-8"/></svg></p>
+                    </header>
+
+                    <article class="work-hero">
+                      <span class="work-tag mono"><svg class="ic ic-xs"><use href="#i-star"/></svg>Работа Арти</span>
+                      <h2 class="display display-md">Запись № 7</h2>
+                      <p class="mono work-sub">Реставрация · 86% · пропуск на 0:31</p>
+                      <span class="player player--gap player--dark" data-player="rec7-create" data-dur="46" data-gap="31-34" data-title="Запись № 7"></span>
+                      <p class="hand work-note">Не хватает одной фразы. Найду.</p>
+                    </article>
+
+                    <h2 class="section-label mono pad-x">Инструменты</h2>
+                    <div class="table-top">
+                      <button type="button" class="tool tool-image" data-go="image">
+                        <span class="print"><img src="assets/paper-bloom-v4.webp" alt="" width="132" height="132" loading="lazy"></span>
+                        <span class="tool-name"><svg class="ic ic-sm"><use href="#i-image"/></svg>Изображение</span>
+                        <span class="tool-sub">Из описания — в кадр</span>
+                      </button>
+                      <button type="button" class="tool tool-video" data-toast="Видео: опиши идею — Арти соберёт раскадровку.">
+                        <span class="film" aria-hidden="true"><i></i><i></i><i></i></span>
+                        <span class="tool-name"><svg class="ic ic-sm"><use href="#i-video"/></svg>Видео</span>
+                        <span class="tool-sub">Оживить идею</span>
+                      </button>
+                      <button type="button" class="tool tool-music" data-toast="Музыка: напой или опиши настроение.">
+                        <span class="disc" aria-hidden="true"></span>
+                        <span class="tool-name"><svg class="ic ic-sm"><use href="#i-music"/></svg>Музыка</span>
+                        <span class="tool-sub">Найти звучание</span>
+                      </button>
+                      <div class="tool-row">
+                        <button type="button" class="tool-mini" data-toast="Документ: план, письмо или заметки."><svg class="ic"><use href="#i-doc"/></svg><span>Документ</span></button>
+                        <button type="button" class="tool-mini" data-toast="Таблица: бюджет, список, расписание."><svg class="ic"><use href="#i-table"/></svg><span>Таблица</span></button>
+                        <button type="button" class="tool-mini" data-toast="Голос: Арти прочитает текст вслух."><svg class="ic"><use href="#i-voice"/></svg><span>Голос</span></button>
+                        <button type="button" class="tool-mini" data-tab="space" data-space-tab="files"><svg class="ic"><use href="#i-box"/></svg><span>Материалы</span></button>
+                      </div>
+                    </div>
+
+                    <h2 class="section-label mono pad-x">Недавние результаты</h2>
+                    <div class="recent" role="list">
+                      <button type="button" class="recent-item" role="listitem" data-go="image"><span class="recent-thumb"><img src="assets/paper-bloom-v4.webp" alt="" width="88" height="88" loading="lazy"></span><span class="recent-name">Красный, без повода</span><span class="mono">Изображение · сегодня</span></button>
+                      <button type="button" class="recent-item" role="listitem" data-go="project"><span class="recent-thumb thumb-doc"><svg class="ic"><use href="#i-doc"/></svg></span><span class="recent-name">Идеи для вечера</span><span class="mono">Документ · сегодня</span></button>
+                      <button type="button" class="recent-item" role="listitem" data-open="artiroom"><span class="recent-thumb thumb-audio"><svg class="ic"><use href="#i-music"/></svg></span><span class="recent-name">Запись № 7</span><span class="mono">Музыка · черновик</span></button>
+                    </div>
+                  </div>
+                </section>
+
+                <!-- ============ 8. ИЗОБРАЖЕНИЕ ============ -->
+                <section class="screen" data-screen="image" aria-label="Изображение">
+                  <header class="bar-head">
+                    <button class="icon-btn back" type="button" data-back aria-label="Назад"><svg class="ic"><use href="#i-back"/></svg></button>
+                    <span class="bar-title">Изображение<span class="bar-sub">Проект «Вечер без повода»</span></span>
+                    <span class="bar-spacer"></span>
+                  </header>
+                  <div class="scroll pad" id="imageScroll">
+                    <label class="field-block">
+                      <span class="mono field-label">Описание</span>
+                      <textarea class="prompt" id="imgPrompt" rows="3">Бумажный цветок. Лаконичная форма, глубокий красный, свет сбоку. Никаких лишних деталей.</textarea>
+                    </label>
+                    <div class="gen-opts">
+                      <div class="chips chips-tight" role="radiogroup" aria-label="Формат" id="formatChips">
+                        <button type="button" class="chip is-on" role="radio" aria-checked="true" data-format="1:1">1:1</button>
+                        <button type="button" class="chip" role="radio" aria-checked="false" data-format="4:5">4:5</button>
+                        <button type="button" class="chip" role="radio" aria-checked="false" data-format="16:9">16:9</button>
+                      </div>
+                      <div class="style-pick">
+                        <button type="button" class="chip chip-select" id="styleBtn" aria-haspopup="listbox" aria-expanded="false"><span id="styleName">Бумажная пластика</span><svg class="ic ic-xs"><use href="#i-chev-down"/></svg></button>
+                        <ul class="menu" id="styleMenu" role="listbox" aria-label="Стиль" hidden>
+                          <li><button type="button" role="option" aria-selected="true">Бумажная пластика</button></li>
+                          <li><button type="button" role="option" aria-selected="false">Плёночная фотография</button></li>
+                          <li><button type="button" role="option" aria-selected="false">Гравюра</button></li>
+                          <li><button type="button" role="option" aria-selected="false">Акварель</button></li>
+                        </ul>
+                      </div>
+                    </div>
+                    <button type="button" class="btn-primary btn-block" id="genBtn"><svg class="ic ic-sm"><use href="#i-sparkle-line"/></svg><span>Создать</span></button>
+
+                    <div class="tray-wrap">
+                      <div class="tray" id="tray" data-format="1:1" data-state="idle">
+                        <div class="tray-idle"><span class="tray-ripple" aria-hidden="true"></span><span class="mono">Кювета пуста · ждёт описания</span></div>
+                        <img class="dev-img" id="devImg" src="assets/paper-bloom-v4.webp" alt="Результат: бумажный антуриум глубокого красного цвета" width="1024" height="1024">
+                        <span class="dev-grain" aria-hidden="true"></span>
+                        <span class="dev-sheen" aria-hidden="true"></span>
+                        <span class="dev-progress mono" id="devProgress" aria-live="polite"></span>
+                      </div>
+                      <svg class="dev-arrow" id="devArrow" aria-hidden="true"><path class="halo"/><path class="ink"/></svg>
+                      <p class="dev-note" id="devNote"><span class="hand">Я бы оставила красный.</span></p>
+                    </div>
+                    <div class="result-meta" id="resultMeta" hidden>
+                      <p><span class="serif result-name">Красный, без повода</span><span class="mono" id="resultSize">1024 × 1024</span></p>
+                      <div class="result-actions">
+                        <button type="button" class="btn-primary" id="saveToProject"><svg class="ic ic-sm"><use href="#i-save"/></svg>Сохранить в проект</button>
+                        <button type="button" class="btn-ghost" id="toChat"><svg class="ic ic-sm"><use href="#i-tab-chats"/></svg>В чат</button>
+                        <button type="button" class="btn-ghost" id="againBtn"><svg class="ic ic-sm"><use href="#i-refresh"/></svg>Ещё вариант</button>
+                      </div>
+                    </div>
+                    <p class="caption mono">Иллюстративный пример результата</p>
+                    <svg class="thread-fly" id="threadFly" aria-hidden="true"><path d=""/></svg>
+                  </div>
+                </section>
+
+                <!-- ============ 9. ПРОСТРАНСТВО ============ -->
+                <section class="screen is-root" data-screen="space" aria-label="Пространство">
+                  <div class="scroll">
+                    <header class="page-head">
+                      <h1 class="display">Пространство</h1>
+                    </header>
+                    <div class="tabs-line pad-x" role="tablist" aria-label="Разделы пространства" id="spaceTabs">
+                      <button role="tab" type="button" class="is-on" aria-selected="true" data-spacetab="projects">Проекты</button>
+                      <button role="tab" type="button" aria-selected="false" data-spacetab="files">Файлы</button>
+                      <button role="tab" type="button" aria-selected="false" data-go="organizer">Дела</button>
+                    </div>
+                    <div class="space-panel" data-spacepanel="projects">
+                      <div class="hoops">
+                        <p class="margin-note mn-space"><span class="hand">этот мне нравится больше всех</span>
+                          <svg class="mn-arrow" viewBox="0 0 50 46" aria-hidden="true"><path d="M44 4C30 6 16 14 12 30c-1 4-1 8 0 12M5 34l7 8 7-7"/></svg></p>
+                        <button type="button" class="hoop-card hoop-main" data-go="project">
+                          <span class="hoop-slot" data-hoop="evening"></span>
+                          <span class="hoop-name serif">Вечер без повода</span>
+                          <span class="mono hoop-count" data-count="evening">2 из 5</span>
+                        </button>
+                        <button type="button" class="hoop-card hoop-gift" data-toast="«Подарок Ане»: осталось выбрать бумагу и написать открытку.">
+                          <span class="hoop-slot" data-hoop="gift"></span>
+                          <span class="hoop-name serif">Подарок Ане</span>
+                          <span class="mono hoop-count">1 из 3</span>
+                        </button>
+                        <button type="button" class="hoop-card hoop-walk" data-toast="«Фотопрогулка» завершена. Узелок завязан.">
+                          <span class="hoop-slot" data-hoop="walk"></span>
+                          <span class="hoop-name serif">Фотопрогулка</span>
+                          <span class="mono hoop-count is-done">4 из 4 · готово</span>
+                        </button>
+                      </div>
+                      <button type="button" class="next-task" data-go="project">
+                        <span class="mono">Следующая задача</span>
+                        <span class="next-title" id="nextTask">Сделать один кадр</span>
+                        <span class="next-proj">Вечер без повода <svg class="ic ic-xs"><use href="#i-arrow"/></svg></span>
+                      </button>
+                      <h2 class="section-label mono pad-x">Недавние файлы</h2>
+                      <ul class="files pad-x" data-files="recent"></ul>
+                    </div>
+                    <div class="space-panel" data-spacepanel="files" hidden>
+                      <h2 class="section-label mono pad-x">Все файлы · 12</h2>
+                      <ul class="files pad-x" data-files="all"></ul>
+                    </div>
+                  </div>
+                </section>
+
+                <!-- ============ 10. ПРОЕКТ ============ -->
+                <section class="screen" data-screen="project" aria-label="Проект «Вечер без повода»">
+                  <header class="bar-head">
+                    <button class="icon-btn back" type="button" data-back aria-label="Назад"><svg class="ic"><use href="#i-back"/></svg></button>
+                    <span class="bar-title"><span class="mono bar-kicker">Проект</span></span>
+                    <button class="icon-btn" type="button" data-toast="Проект виден только тебе и Арти." aria-label="Доступ"><svg class="ic"><use href="#i-lock"/></svg></button>
+                  </header>
+                  <div class="scroll" id="projectScroll">
+                    <div class="proj-head pad-x">
+                      <h1 class="display">Вечер без повода</h1>
+                      <p class="proj-desc">Собрать из музыки, света и одного кадра вечер, который хочется сохранить.</p>
+                    </div>
+                    <div class="proj-hoop">
+                      <span class="hoop-slot hoop-lg" data-hoop="evening" data-big="1"></span>
+                      <span class="proj-count"><span class="serif big-num" id="projDone">2</span><span class="serif of">из 5</span><span class="mono">стежков</span></span>
+                      <p class="proj-done-note hand" id="projDoneNote" hidden>Готово. Я бы повесила это над лампой.</p>
+                    </div>
+                    <button type="button" class="linked" data-go="arti">
+                      <span class="avatar avatar-sm"><span class="pt" data-pt="avatar"></span></span>
+                      <span class="linked-body"><span class="linked-title">Обсуждение проекта</span><span class="mono">15 октября · из разговора с Арти</span></span>
+                      <svg class="ic ic-sm"><use href="#i-chev"/></svg>
+                    </button>
+                    <div class="path pad-x" aria-label="Разговор, проект, результат">
+                      <span class="path-node is-done">Разговор</span>
+                      <svg class="path-thread" viewBox="0 0 60 10" preserveAspectRatio="none" aria-hidden="true"><path d="M0 5c15-4 30 4 60 0"/></svg>
+                      <span class="path-node is-now">Проект</span>
+                      <svg class="path-thread is-pending" viewBox="0 0 60 10" preserveAspectRatio="none" aria-hidden="true"><path d="M0 5c15 4 30-4 60 0"/></svg>
+                      <span class="path-node" id="pathResult">Результат</span>
+                    </div>
+                    <h2 class="section-label mono pad-x">Задачи</h2>
+                    <ul class="tasks pad-x" id="projTasks"></ul>
+                    <h2 class="section-label mono pad-x">Материалы</h2>
+                    <div class="materials pad-x" id="materials">
+                      <button type="button" class="material mat-image" data-go="image"><img src="assets/paper-bloom-v4.webp" alt="" width="120" height="120" loading="lazy"><span class="mat-name">Красный, без повода.png</span><span class="mono">Изображение</span></button>
+                      <button type="button" class="material mat-doc" data-toast="«Идеи для вечера» откроется в просмотрщике документов."><span class="doc-sheet" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span class="mat-name">Идеи для вечера.docx</span><span class="mono">Документ</span></button>
+                    </div>
+                  </div>
+                </section>
+
+                <!-- ============ 11. ДЕЛА ============ -->
+                <section class="screen" data-screen="organizer" aria-label="Дела">
+                  <header class="bar-head">
+                    <button class="icon-btn back" type="button" data-back aria-label="Назад"><svg class="ic"><use href="#i-back"/></svg></button>
+                    <span class="bar-title">Дела</span>
+                    <button class="icon-btn" type="button" data-toast="Скажи Арти: «напомни завтра в десять» — она запишет." aria-label="Добавить дело"><svg class="ic"><use href="#i-plus"/></svg></button>
+                  </header>
+                  <div class="scroll pad">
+                    <h1 class="display month">Октябрь <span class="month-year">2026</span></h1>
+                    <div class="week" role="listbox" aria-label="Неделя" id="week"></div>
+                    <p class="day-note" id="dayNote" hidden><span class="hand">На этот день ничего. Можно оставить его пустым — это тоже план.</span></p>
+                    <div class="segmented" role="tablist" aria-label="Статус дел" id="todoTabs">
+                      <button role="tab" type="button" class="is-on" aria-selected="true" data-todotab="open">Предстоит <span class="mono" id="openCount">4</span></button>
+                      <button role="tab" type="button" aria-selected="false" data-todotab="done">Готово <span class="mono" id="doneCount">2</span></button>
+                      <i class="seg-thumb" aria-hidden="true"></i>
+                    </div>
+                    <div id="todoList"></div>
+                    <p class="tz mono"><svg class="ic ic-xs"><use href="#i-clock"/></svg>Екатеринбург · UTC+5</p>
+                  </div>
+                </section>
+
+                <!-- ============ 12. ПРОФИЛЬ ============ -->
+                <section class="screen is-root" data-screen="profile" aria-label="Профиль">
+                  <div class="scroll">
+                    <header class="page-head">
+                      <h1 class="display">Профиль</h1>
+                    </header>
+                    <div class="me-card pad-x">
+                      <span class="avatar avatar-lg mono-av av-ink">Е</span>
+                      <span class="me-text"><span class="me-name">Елена</span><span class="mono">Личное пространство</span></span>
+                    </div>
+
+                    <button type="button" class="notebook-object" data-go="notebook" aria-label="Тетрадь Арти: 5 записей, последняя 16.10. Открыть">
+                      <span class="nb-cover" aria-hidden="true">
+                        <span class="nb-emboss serif">Тетрадь</span>
+                        <span class="nb-star"><svg class="ic"><use href="#i-star"/></svg></span>
+                        <span class="nb-band"></span>
+                        <span class="nb-ribbon"></span>
+                      </span>
+                      <span class="nb-info">
+                        <span class="nb-title serif">Тетрадь Арти</span>
+                        <span class="mono" id="nbCount">5 записей · последняя 16.10</span>
+                        <span class="hand nb-hand">тут всё, что я о тебе помню. проверяй</span>
+                        <span class="nb-open">Открыть <svg class="ic ic-xs"><use href="#i-arrow"/></svg></span>
+                      </span>
+                    </button>
+
+                    <div class="settings pad-x">
+                      <h2 class="section-label mono">Оформление</h2>
+                      <div class="segmented seg-3" role="radiogroup" aria-label="Оформление" id="themeSeg">
+                        <button role="radio" type="button" aria-checked="true" class="is-on" data-mode="day">День</button>
+                        <button role="radio" type="button" aria-checked="false" data-mode="evening">Вечер</button>
+                        <button role="radio" type="button" aria-checked="false" data-mode="auto">Как в Telegram</button>
+                        <i class="seg-thumb" aria-hidden="true"></i>
+                      </div>
+
+                      <h2 class="section-label mono">Арти пишет первой</h2>
+                      <div class="segmented seg-3" role="radiogroup" aria-label="Арти пишет первой" id="initSeg">
+                        <button role="radio" type="button" aria-checked="true" class="is-on" data-init="sometimes">Иногда</button>
+                        <button role="radio" type="button" aria-checked="false" data-init="business">Только по делу</button>
+                        <button role="radio" type="button" aria-checked="false" data-init="never">Нет</button>
+                        <i class="seg-thumb" aria-hidden="true"></i>
+                      </div>
+                      <p class="set-explain" id="initHint">Напишет, если найдёт что-то стоящее. Не чаще раза в день.</p>
+
+                      <h2 class="section-label mono">Жизнь Арти в образе</h2>
+                      <div class="segmented seg-2" role="radiogroup" aria-label="Жизнь Арти в образе" id="lifeSeg">
+                        <button role="radio" type="button" aria-checked="true" class="is-on" data-life="on">Показывать</button>
+                        <button role="radio" type="button" aria-checked="false" data-life="off">Не упоминать</button>
+                        <i class="seg-thumb" aria-hidden="true"></i>
+                      </div>
+                      <p class="set-explain" id="lifeHint">Чай, вышивка и запись — жизнь её персонажа. Если выключить, Арти не будет о них рассказывать, а в Комнате останутся чтение и настроение.</p>
+
+                      <div class="set-card">
+                        <div class="set-row">
+                          <span class="set-label"><span><svg class="ic ic-sm"><use href="#i-bell"/></svg>Напоминания</span><span class="set-hint">Дела и встречи — за 30 минут</span></span>
+                          <button class="switch is-on" type="button" role="switch" aria-checked="true" aria-label="Напоминания" id="remSwitch"><i></i></button>
+                        </div>
+                        <div class="set-row">
+                          <span class="set-label"><span><svg class="ic ic-sm"><use href="#i-lock"/></svg>Приватность</span><span class="set-hint">Тетрадь видна только тебе.</span></span>
+                          <span class="mono set-value">Только я</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                <!-- ============ 13. ТЕТРАДЬ АРТИ ============ -->
+                <section class="screen nb-screen" data-screen="notebook" aria-label="Тетрадь Арти">
+                  <header class="bar-head">
+                    <button class="icon-btn back" type="button" data-back aria-label="Назад"><svg class="ic"><use href="#i-back"/></svg></button>
+                    <span class="bar-title">Тетрадь Арти<span class="bar-sub mono" id="nbSub">5 записей · последняя 16.10</span></span>
+                    <span class="bar-spacer"></span>
+                  </header>
+                  <p class="nb-privacy mono"><svg class="ic ic-xs"><use href="#i-lock"/></svg>Тетрадь видна только тебе.</p>
+                  <div class="book" id="book">
+                    <div class="pages" id="pages"></div>
+                    <div class="book-cover" aria-hidden="true"><span class="serif">Тетрадь</span><span class="nb-ribbon"></span></div>
+                  </div>
+                  <div class="pager">
+                    <button type="button" class="icon-btn" id="pgPrev" aria-label="Предыдущая страница"><svg class="ic"><use href="#i-back"/></svg></button>
+                    <span class="mono" id="pgNum" aria-live="polite">Стр. 1 / 3</span>
+                    <button type="button" class="icon-btn" id="pgNext" aria-label="Следующая страница"><svg class="ic"><use href="#i-chev"/></svg></button>
+                  </div>
+                </section>
+
+              </div><!-- /viewport -->
+
+              <span class="ceiling" aria-hidden="true"></span>
+              <!-- Lamp cord -->
+              <button class="cord" id="cord" type="button" aria-label="Включить вечерний свет">
+                <span class="cord-mount" aria-hidden="true"></span>
+                <span class="cord-swing" aria-hidden="true"><span class="cord-line"></span><span class="cord-bead"></span></span>
+                <span class="cord-hint hand" aria-hidden="true">потяни</span>
+              </button>
+
+              <!-- Tab bar -->
+              <nav class="tabbar" id="tabbar" aria-label="Разделы">
+                <span class="tab-ribbon" id="tabRibbon" aria-hidden="true"></span>
+                <button type="button" class="tab is-on" data-tab="chats" aria-current="page"><svg class="ic"><use href="#i-tab-chats"/></svg><span>Чаты</span></button>
+                <button type="button" class="tab" data-tab="create"><svg class="ic"><use href="#i-tab-create"/></svg><span>Создать</span></button>
+                <button type="button" class="tab" data-tab="space"><svg class="ic"><use href="#i-tab-space"/></svg><span>Пространство</span></button>
+                <button type="button" class="tab" data-tab="profile"><svg class="ic"><use href="#i-tab-profile"/></svg><span>Профиль</span></button>
+              </nav>
+
+              <!-- ============ 14. КОМНАТА АРТИ (sheet) ============ -->
+              <div class="sheet-wrap" id="roomSheet" hidden>
+                <div class="sheet-scrim" data-close-sheet></div>
+                <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="roomTitle" tabindex="-1">
+                  <div class="sheet-grab" id="sheetGrab"><span></span></div>
+                  <header class="sheet-head">
+                    <div>
+                      <p class="mono muted" id="roomKicker">Жизнь в образе · ведётся последовательно</p>
+                      <h2 class="display display-md" id="roomTitle">Комната Арти</h2>
+                      <button type="button" class="how-btn" id="lifeHowBtn" aria-expanded="false" aria-controls="lifeExplainer">Как это устроено</button>
+                    </div>
+                    <button class="icon-btn" type="button" data-close-sheet aria-label="Закрыть комнату"><svg class="ic"><use href="#i-close"/></svg></button>
+                  </header>
+                  <div class="sheet-body">
+                    <div class="life-explainer" id="lifeExplainer" role="region" aria-labelledby="lifeExplainerTitle" hidden>
+                      <h3 class="serif" id="lifeExplainerTitle">Как живёт Арти</h3>
+                      <p>Арти — ИИ. Чай, вышивка и реставрация записи — жизнь её персонажа. Физически их нет, но ведутся они по-настоящему: у каждого занятия есть история, и Арти не придумывает сверх неё.</p>
+                      <p>Настроение — настоящее состояние её модели в разговоре с тобой.</p>
+                      <p>Прочитанное — реальные материалы со ссылками.</p>
+                      <button type="button" class="btn-ghost btn-sm" id="lifeExplainerOk">Понятно</button>
+                    </div>
+                    <p class="life-off-note" id="lifeOffNote">Жизнь в образе выключена в профиле — здесь только прочитанное и настроение.</p>
+
+                    <div class="room-portrait">
+                      <span class="pt" data-pt="room"></span>
+                      <span class="room-mood mono"><i class="orb" aria-hidden="true"></i>Настроение · ясное, с интересом</span>
+                      <span class="room-hand hand in-image">заходи. лампу я уже починила</span>
+                    </div>
+
+                    <article class="pursuit p-rec in-image">
+                      <p class="mono p-kicker"><span class="frame-word">В образе</span> · шаг 4 из 5</p>
+                      <h3 class="serif p-title">Запись № 7</h3>
+                      <span class="player player--gap" data-player="rec7-room" data-dur="46" data-gap="31-34" data-title="Запись № 7"></span>
+                      <p class="hand p-note">Я её почти слышу.</p>
+                    </article>
+
+                    <div class="pursuit-pair in-image">
+                      <article class="pursuit p-emb">
+                        <span class="hoop-slot" data-hoop="hers"></span>
+                        <h3 class="serif p-title">Вышивка</h3>
+                        <p class="hand p-note">узор сменила на третьей неделе</p>
+                        <p class="mono p-kicker"><span class="frame-word">В образе</span> · 62%</p>
+                      </article>
+                      <article class="pursuit p-taste">
+                        <p class="mono p-kicker"><span class="frame-word">В образе</span> · её выбор</p>
+                        <h3 class="serif p-title">Вкусы</h3>
+                        <p class="hand p-note">Пробую понять, что выбираю сама.</p>
+                        <ul class="tastes">
+                          <li><span>Бергамот</span><span class="hand mark yes">да ✓</span></li>
+                          <li><span>Мята</span><span class="hand mark no">нет ✕</span></li>
+                          <li><span>Чернослив</span><span class="hand mark maybe">спорно ~</span></li>
+                        </ul>
+                      </article>
+                    </div>
+
+                    <article class="pursuit p-read">
+                      <p class="mono p-kicker"><span class="frame-word frame-real">По-настоящему</span> · ссылка ↗</p>
+                      <h3 class="serif p-title">Читала</h3>
+                      <button type="button" class="read-link" id="readLink">«Как чай возили клиперами через полмира»<span class="mono">пример источника</span></button>
+                      <p class="hand p-note">Скорость ради вкуса — это я понимаю.</p>
+                    </article>
+
+                    <article class="pursuit p-room in-image">
+                      <svg class="lamp-art" viewBox="0 0 120 120" aria-hidden="true">
+                        <ellipse class="lamp-light" cx="60" cy="74" rx="52" ry="40"/>
+                        <path class="lamp-shade" d="M38 30h44l12 30H26z"/>
+                        <path class="lamp-stem" d="M60 60v38M44 104h32M60 30V16"/>
+                        <path class="lamp-chain" d="M86 60v16"/><circle class="lamp-bead" cx="86" cy="79" r="2.6"/>
+                      </svg>
+                      <div class="p-room-text">
+                        <p class="mono p-kicker"><span class="frame-word">В образе</span></p>
+                        <h3 class="serif p-title">Комната</h3>
+                        <p class="hand p-note">Починила лампу. Стулья выбрала сама, а не нашла.</p>
+                        <button type="button" class="btn-ghost btn-sm" id="roomLampBtn"><svg class="ic ic-sm"><use href="#i-lamp"/></svg><span>Включить лампу</span></button>
+                      </div>
+                    </article>
+                    <p class="why mono">Настроение · по вашему разговору<br>Почему: ты вернулась к нашему проекту</p>
+                  </div>
+                </section>
+              </div>
+
+              <!-- Reaction picker -->
+              <div class="picker" id="picker" role="menu" aria-label="Реакция" hidden>
+                <button type="button" role="menuitem" data-r="✦" aria-label="Звезда"><svg class="ic"><use href="#i-star"/></svg></button>
+                <button type="button" role="menuitem" data-r="♥" aria-label="Сердце">♥</button>
+                <button type="button" role="menuitem" data-r="😁" aria-label="Смех">😁</button>
+                <button type="button" role="menuitem" data-r="👍" aria-label="Нравится">👍</button>
+                <button type="button" role="menuitem" data-r="🔥" aria-label="Огонь">🔥</button>
+                <button type="button" role="menuitem" data-r="🤔" aria-label="Задумалась">🤔</button>
+              </div>
+
+              <div class="toast" id="toast" role="status" aria-live="polite"><svg class="ic ic-sm"><use href="#i-star"/></svg><span></span></div>
+
+              <!-- ============ 15. ВЗГЛЯД (splash) ============ -->
+              <div class="splash" id="splash" hidden>
+                <button class="splash-skip" type="button" aria-label="Пропустить заставку"></button>
+                <svg class="splash-eye" viewBox="0 0 240 120" aria-hidden="true">
+                  <defs>
+                    <clipPath id="almondClip"><path d="M24 68C58 30 150 20 214 48 176 86 92 98 24 68Z"/></clipPath>
+                    <linearGradient id="lidShade" x1="0" y1="0" x2="0" y2="1"><stop offset=".15" stop-color="#000" stop-opacity=".75"/><stop offset=".55" stop-color="#000" stop-opacity="0"/></linearGradient>
+                  </defs>
+                  <line class="lid-line" x1="24" y1="68" x2="214" y2="48"/>
+                  <g class="almond">
+                    <path class="almond-fill" d="M24 68C58 30 150 20 214 48 176 86 92 98 24 68Z"/>
+                    <g clip-path="url(#almondClip)">
+                      <g class="iris">
+                        <circle cx="122" cy="56" r="31" fill="url(#irisGrad)"/>
+                        <circle cx="122" cy="56" r="23" fill="none" stroke="#F7B9CA" stroke-opacity=".32" stroke-width="1.2"/>
+                        <circle cx="122" cy="56" r="17" fill="none" stroke="#5B1A2C" stroke-opacity=".6" stroke-width="3"/>
+                        <circle cx="122" cy="56" r="11" fill="#2A0C16" fill-opacity=".55"/>
+                        <circle cx="122" cy="56" r="30.4" fill="none" stroke="#1E070D" stroke-width="2.6"/>
+                        <ellipse cx="110" cy="44" rx="6.5" ry="3.2" fill="#fff" opacity=".2" transform="rotate(-28 110 44)"/>
+                      </g>
+                      <rect x="0" y="0" width="240" height="120" fill="url(#lidShade)"/>
+                    </g>
+                    <path class="lower-lid" d="M34 74C84 96 168 88 206 54"/>
+                    <path class="upper-lid" d="M22 69C56 26 152 14 216 47L238 36C226 35 214 33 206 31 150 8 56 20 22 69Z"/>
+                    <path class="crease" d="M56 35C98 8 168 6 204 26"/>
+                    <path class="lashes" d="M178 21c6-6 13-9 21-10M191 26c7-5 15-7 23-6M202 32c7-3 14-4 21-2"/>
+                  </g>
+                  <g class="pupil">
+                    <circle cx="122" cy="56" r="17" fill="url(#pupilGlow)"/>
+                    <use href="#i-star" x="112" y="46" width="20" height="20" class="pupil-star"/>
+                  </g>
+                </svg>
+                <p class="splash-word">арти<i>.</i></p>
+              </div>
+            </div><!-- /app -->
+            <span class="home-ind" aria-hidden="true"></span>
+          </div>
+          <span class="island" aria-hidden="true"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= NOTES PANEL ================= -->
+    <aside class="notes" id="notes" aria-label="Что здесь особенного" tabindex="-1">
+      <div class="notes-grab" aria-hidden="true"><span></span></div>
+      <button class="notes-close" type="button" id="notesClose" aria-label="Закрыть заметки"><svg class="ic"><use href="#i-close"/></svg></button>
+      <p class="manifesto">Всё, что Арти пишет сама, — <span class="hand">её почерком</span>. Всё, что знает система, — <span class="mono">машинописью</span>. Она здесь живёт, а не только отвечает.</p>
+      <dl class="registers">
+        <div><dt class="hand">Её рука</dt><dd>Заметки, тетрадь, выбор</dd></div>
+        <div><dt class="mono">Перчатка</dt><dd>Время, источник, уверенность</dd></div>
+        <div><dt class="r-ui">Интерфейс</dt><dd>Сообщения и кнопки</dd></div>
+      </dl>
+
+      <h2 class="notes-title">Что здесь особенного</h2>
+      <ol class="moments" id="moments">
+        <li class="moment"><span class="moment-n mono">01</span><h3>Взгляд</h3><p>Заставка: линия раскрывается в миндаль, загорается зрачок-звезда, проявляется имя.</p><button type="button" class="show" data-demo="splash">Показать <span aria-hidden="true">→</span></button></li>
+        <li class="moment"><span class="moment-n mono">02</span><h3>Лампа</h3><p>Шнурок справа сверху: потяни — день сменится вечером, а глаза Арти засветятся.</p><button type="button" class="show" data-demo="lamp">Показать <span aria-hidden="true">→</span></button></li>
+        <li class="moment"><span class="moment-n mono">03</span><h3>Своя жизнь</h3><p>«Сейчас у Арти»: чем она занята в образе, что читала по-настоящему и в каком настроении. Метки честно разделяют образ и правду; нажатие открывает её комнату.</p><button type="button" class="show" data-demo="presence">Показать <span aria-hidden="true">→</span></button></li>
+        <li class="moment"><span class="moment-n mono">04</span><h3>Она пишет первой</h3><p>Вместо счётчика — ✦: разговор начала она. Внутри — плеер с найденной фразой.</p><button type="button" class="show" data-demo="initiative">Показать <span aria-hidden="true">→</span></button></li>
+        <li class="moment"><span class="moment-n mono">05</span><h3>Третий вариант</h3><p>Два варианта на столе и третий рубашкой вверх. Перевернёшь — допишешь свой.</p><button type="button" class="show" data-demo="cards">Показать <span aria-hidden="true">→</span></button></li>
+        <li class="moment"><span class="moment-n mono">06</span><h3>Живые состояния</h3><p>Ответ рождается на глазах: подбирает слово, сверяется с тетрадью, ставит штамп-реакцию.</p><button type="button" class="show" data-demo="typing">Показать <span aria-hidden="true">→</span></button></li>
+        <li class="moment"><span class="moment-n mono">07</span><h3>Тетрадь Арти</h3><p>Память с источниками: почерком — что она помнит, машинописью — откуда знает. Можно исправить или вычеркнуть.</p><button type="button" class="show" data-demo="notebook">Показать <span aria-hidden="true">→</span></button></li>
+        <li class="moment"><span class="moment-n mono">08</span><h3>Вышивка</h3><p>Проект — это пяльцы. Отмеченная задача пришивает стежок красной нитью.</p><button type="button" class="show" data-demo="stitch">Показать <span aria-hidden="true">→</span></button></li>
+        <li class="moment"><span class="moment-n mono">09</span><h3>Проявка</h3><p>Картинка проявляется, как снимок в кювете, а на полях остаётся её пометка.</p><button type="button" class="show" data-demo="develop">Показать <span aria-hidden="true">→</span></button></li>
+      </ol>
+
+      <h2 class="notes-sub">Карта экранов</h2>
+      <div class="screen-map" id="screenMap">
+        <button type="button" data-jump="splash">Заставка</button>
+        <button type="button" data-jump="chats">Чаты</button>
+        <button type="button" data-jump="arti">Арти</button>
+        <button type="button" data-jump="anya">Аня</button>
+        <button type="button" data-jump="group">Идеи на выходные</button>
+        <button type="button" data-jump="room">О комнате</button>
+        <button type="button" data-jump="new">Новый разговор</button>
+        <button type="button" data-jump="create">Мастерская</button>
+        <button type="button" data-jump="image">Изображение</button>
+        <button type="button" data-jump="space">Пространство</button>
+        <button type="button" data-jump="project">Проект</button>
+        <button type="button" data-jump="organizer">Дела</button>
+        <button type="button" data-jump="profile">Профиль</button>
+        <button type="button" data-jump="notebook">Тетрадь</button>
+        <button type="button" data-jump="artiroom">Комната Арти</button>
+      </div>
+
+      <h2 class="notes-sub">Откуда это</h2>
+      <p class="origin-text">Из карточки персонажа взяты внешность, почерк левой рукой, тетрадь с источниками, реставрация записи, вышивка, лампа и чай. Тёмная предыстория персонажа в продукт не переносится.</p>
+      <h2 class="notes-sub">Опора на движок</h2>
+      <p class="origin-text">Настроение — настоящее состояние модели (H3–H4a); чай, вышивка и запись — жизнь в образе из будущей подсистемы занятий, которую персона держит последовательно; „Читала“ — настоящее чтение со ссылками (H4c); „пишет первой“ — проактивность с согласием (H4c); тетрадь — память с источником и уверенностью (H2).</p>
+      <p class="notes-foot mono">Ссылки для ревью: <code>#screen=notebook</code>, <code>#theme=evening</code></p>
+    </aside>
+  </main>
+</div>
+
+<button class="notes-fab" id="notesFab" type="button" aria-label="Что здесь особенного" aria-controls="notes" aria-expanded="false"><svg class="ic"><use href="#i-star"/></svg></button>
+<div class="notes-scrim" id="notesScrim" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>
